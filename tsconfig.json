@@ -1,0 +1,19 @@
+{
+  "include": ["./src/**/*"],
+  "compilerOptions": {
+    "target": "es6",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "lib": ["es2023", "dom"],
+    "types": ["@webgpu/types"],
+    "rootDir": "./src/",
+    "outDir": "./dist/",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "esModuleInterop": false,
+    "strict": true,
+    "removeComments": true,
+    "skipLibCheck": true
+  }
+}

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8"/>
+        <title>WasmGPU ESM Example</title>
+        <style>
+            html, body { margin: 0; height: 100%; }
+            canvas { width: 100%; height: 100%; display: block; }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <script type="module">
+            import { WasmGPU } from "../dist/WasmGPU.min.js";
+
+            const canvas = document.querySelector("canvas");
+            const wgpu = await WasmGPU.create(canvas);
+            wgpu.setClearColor(255, 255, 255);
+
+            function frame(t) {
+                wgpu.renderFrame(t * 0.001);
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+
+            console.log("WasmGPU global:", typeof WasmGPU !== "undefined" ? "yes" : "no");
+        </script>
+    </body>
+</html>

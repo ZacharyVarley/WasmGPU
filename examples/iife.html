@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8"/>
+        <title>WasmGPU IIFE Example</title>
+        <style>
+            html, body { margin: 0; height: 100%; }
+            canvas { width: 100%; height: 100%; display: block; }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <script src="../dist/WasmGPU.iife.min.js"></script>
+        <script>
+            const canvas = document.querySelector("canvas");
+
+            WasmGPU.create(canvas).then(wgpu => {
+                wgpu.setClearColor(255, 255, 255);
+
+                function frame(t) {
+                    wgpu.renderFrame(t * 0.001);
+                    requestAnimationFrame(frame);
+                }
+                requestAnimationFrame(frame);
+            }).catch(err => {
+                console.error(err);
+                alert(String(err));
+            });
+
+            console.log("WasmGPU global:", typeof WasmGPU !== "undefined" ? "yes" : "no");
+        </script>
+    </body>
+</html>

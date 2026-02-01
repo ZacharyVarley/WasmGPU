@@ -1,0 +1,69 @@
+{
+  "name": "@zushah/wasmgpu",
+  "version": "0.1.0",
+  "author": "Zushah",
+  "license": "MPL-2.0",
+  "description": "WasmGPU = WebGPU + WebAssembly.",
+  "main": "dist/WasmGPU.js",
+  "module": "./dist/WasmGPU.js",
+  "files": [
+    "dist/",
+    "LICENSE.md",
+    "package.json",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.2",
+    "@webgpu/types": "^0.1.69",
+    "assemblyscript": "^0.28.9",
+    "esbuild": "^0.27.2",
+    "typedoc": "^0.28.16",
+    "typedoc-github-theme": "^0.3.1",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build:as": "asc assembly/math.ts --target release",
+    "build:ts": "tsc --noEmit --project tsconfig.json",
+    "build:es": "node esbuild.config.js",
+    "build": "npm run build:as && npm run build:ts && npm run build:es",
+    "docs": "typedoc --options typedoc.json",
+    "test:math": "node test/math.test.js",
+    "start": "npx serve ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zushah/WasmGPU.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Zushah/WasmGPU/issues"
+  },
+  "homepage": "https://zushah.github.io/WasmGPU",
+  "publishConfig": {
+    "access": "public"
+  },
+  "save-prefix": "",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/WasmGPU.js"
+    },
+    "./min": {
+      "import": "./dist/WasmGPU.min.js"
+    },
+    "./iife": {
+      "default": "./dist/WasmGPU.iife.min.js"
+    }
+  },
+  "keywords": [
+    "typescript",
+    "javascript",
+    "webgpu",
+    "webassembly",
+    "webgl",
+    "3d",
+    "graphics",
+    "rendering",
+    "mathematics",
+    "fast"
+  ]
+}

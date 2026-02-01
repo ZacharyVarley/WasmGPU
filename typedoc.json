@@ -1,0 +1,15 @@
+{
+  "entryPoints": ["./src/index.ts"],
+  "entryPointStrategy": "resolve",
+  "out": "../zushah.github.io/WasmGPU/",
+  "cleanOutputDir": false,
+  "readme": "./README.md",
+  "name": "WasmGPU",
+  "includeVersion": true,
+  "sidebarLinks": {
+    "Source code": "https://raw.githubusercontent.com/Zushah/WasmGPU/main/dist/WasmGPU.js",
+    "Examples (ESM)": "https://zushah.github.io/WasmGPU/examples/esm.html",
+    "Examples (IIFE)": "https://zushah.github.io/WasmGPU/examples/iife.html"
+  },
+  "plugin": ["typedoc-github-theme"]
+}
