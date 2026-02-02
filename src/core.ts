@@ -1,5 +1,5 @@
 import { WGSL } from "./shaders";
-import { assert, createBuffer, createDepthTexture } from "./util";
+import { assert, createBuffer, createDepthTexture } from "./utils";
 import { initMath, mat4 } from "./math";
 
 type WasmGPUOptions = {

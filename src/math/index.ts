@@ -1,6 +1,6 @@
 declare const __WASMGPU_BASE_URL__: string;
 
-type MathModule = typeof import("../build/math.js");
+type MathModule = typeof import("../../build/math.js");
 
 let modPromise: Promise<MathModule> | null = null;
 let mod: MathModule | null = null;
