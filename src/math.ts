@@ -6,35 +6,31 @@ let modPromise: Promise<MathModule> | null = null;
 let mod: MathModule | null = null;
 
 const IIFE_SCRIPT_URL: string | null = (() => {
-	if (typeof document === "undefined") return null;
-	const cs = document.currentScript as HTMLScriptElement | null;
-	const src = cs?.src;
-	return (src && src.length > 0) ? src : null;
+    if (typeof document === "undefined") return null;
+    const cs = document.currentScript as HTMLScriptElement | null;
+    const src = cs?.src;
+    return (src && src.length > 0) ? src : null;
 })();
 
 const defaultBaseURL = (): string => {
-	if (__WASMGPU_BASE_URL__ !== "__CURRENT_SCRIPT__") {
-		return new URL(".", __WASMGPU_BASE_URL__).toString();
-	}
-	const base = IIFE_SCRIPT_URL ?? location.href;
-	return new URL(".", base).toString();
+    if (__WASMGPU_BASE_URL__ !== "__CURRENT_SCRIPT__") {
+        return new URL(".", __WASMGPU_BASE_URL__).toString();
+    }
+    const base = IIFE_SCRIPT_URL ?? location.href;
+    return new URL(".", base).toString();
 }
 
 export const initMath = async (baseURL?: string): Promise<void> => {
-	if (mod) return;
-
-	const base = baseURL ?? defaultBaseURL();
-	const mathURL = new URL("math.js", base).toString();
-
-	modPromise ??= import(mathURL) as Promise<MathModule>;
-	mod = await modPromise;
+    if (mod) return;
+    const base = baseURL ?? defaultBaseURL();
+    const mathURL = new URL("math.js", base).toString();
+    modPromise ??= import(mathURL) as Promise<MathModule>;
+    mod = await modPromise;
 }
 
 const ensure = (): MathModule => {
-	if (!mod) {
-		throw new Error("Math module not initialized. Call await initMath() first.");
-	}
-	return mod;
+    if (!mod) throw new Error("Math module not initialized. Call await initMath() first.");
+    return mod;
 }
 
 const mat4 = {
