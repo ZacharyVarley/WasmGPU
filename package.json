@@ -1,6 +1,6 @@
 {
   "name": "@zushah/wasmgpu",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Zushah",
   "license": "MPL-2.0",
   "description": "WasmGPU = WebGPU + WebAssembly.",
@@ -26,7 +26,7 @@
     "build:ts": "tsc --noEmit --project tsconfig.json",
     "build:es": "node esbuild.config.js",
     "build": "npm run build:as && npm run build:ts && npm run build:es",
-    "docs": "typedoc --options typedoc.json",
+    "docs": "typedoc --options typedoc.json --favicon ./assets/logo.png",
     "test:math": "node test/math.test.js",
     "start": "npx serve ."
   },
