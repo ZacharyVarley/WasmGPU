@@ -1,33 +1,135 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <meta charset="utf-8"/>
+        <meta charset="utf-8">
         <title>WasmGPU IIFE Example</title>
         <style>
-            html, body { margin: 0; height: 100%; }
-            canvas { width: 100%; height: 100%; display: block; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #000; overflow: hidden; }
+            canvas { display: block; width: 100%; height: 100%; }
         </style>
     </head>
     <body>
         <canvas></canvas>
         <script src="../dist/WasmGPU.iife.min.js"></script>
         <script>
-            const canvas = document.querySelector("canvas");
+            const main = async () => {
+                const canvas = document.querySelector("canvas");
+                const wgpu = await WasmGPU.create(canvas);
 
-            WasmGPU.create(canvas).then(wgpu => {
-                wgpu.setClearColor(255, 255, 255);
+                // Scene
+                const scene = wgpu.createScene([0.05, 0.05, 0.1]);
 
-                function frame(t) {
-                    wgpu.renderFrame(t * 0.001);
-                    requestAnimationFrame(frame);
-                }
-                requestAnimationFrame(frame);
-            }).catch(err => {
-                console.error(err);
-                alert(String(err));
-            });
+                // Camera
+                const camera = wgpu.createCamera.perspective({ fov: 60, near: 0.1, far: 1000 });
+                camera.transform.setPosition(0, 4, 8);
+                camera.lookAt(0, 0, 0);
 
-            console.log("WasmGPU global:", typeof WasmGPU !== "undefined" ? "yes" : "no");
+                // Lights
+                scene.addLight(wgpu.createLight.ambient({
+                    color: [1, 1, 1],
+                    intensity: 0.15
+                }));
+                scene.addLight(wgpu.createLight.directional({
+                    direction: [-1, -2, -1],
+                    color: [1, 0.95, 0.9],
+                    intensity: 1.2
+                }));
+                scene.addLight(wgpu.createLight.point({
+                    position: [3, 2, 0],
+                    color: [0.5, 0.8, 1],
+                    intensity: 8,
+                    range: 10
+                }));
+
+                // Shapes
+                const ground = wgpu.createMesh(
+                    wgpu.geometry.plane(12, 12),
+                    wgpu.material.standard({ color: [0.3, 0.3, 0.35], roughness: 0.9, metallic: 0.0 })
+                );
+                scene.add(ground);
+                const cube = wgpu.createMesh(
+                    wgpu.geometry.box(1.2, 1.2, 1.2),
+                    wgpu.material.standard({ color: [0.9, 0.2, 0.2], roughness: 0.3, metallic: 0.7 })
+                );
+                cube.transform.setPosition(0, 0.8, 0);
+                scene.add(cube);
+                const sphere = wgpu.createMesh(
+                    wgpu.geometry.sphere(0.6, 32, 24),
+                    wgpu.material.standard({ color: [0.2, 0.6, 0.9], roughness: 0.1, metallic: 0.9 })
+                );
+                sphere.transform.setPosition(-2.5, 0.6, 0);
+                scene.add(sphere);
+                const torus = wgpu.createMesh(
+                    wgpu.geometry.torus(0.5, 0.2, 32, 24),
+                    wgpu.material.standard({ color: [0.9, 0.7, 0.2], roughness: 0.4, metallic: 0.6 })
+                );
+                torus.transform.setPosition(2.5, 0.7, 0);
+                scene.add(torus);
+                const cylinder = wgpu.createMesh(
+                    wgpu.geometry.cylinder(0.4, 0.4, 1.2, 32),
+                    wgpu.material.standard({ color: [0.3, 0.8, 0.4], roughness: 0.5, metallic: 0.3 })
+                );
+                cylinder.transform.setPosition(-1.2, 0.6, -2);
+                scene.add(cylinder);
+                const pyramid = wgpu.createMesh(
+                    wgpu.geometry.pyramid(1, 1, 1.2),
+                    wgpu.material.standard({ color: [0.8, 0.3, 0.7], roughness: 0.6, metallic: 0.2 })
+                );
+                pyramid.transform.setPosition(1.2, 0, -2);
+                scene.add(pyramid);
+                const prism = wgpu.createMesh(
+                    wgpu.geometry.prism(0.5, 1, 6),
+                    wgpu.material.standard({ color: [0.3, 0.7, 0.7], roughness: 0.3, metallic: 0.5 })
+                );
+                prism.transform.setPosition(0, 0.5, -2.5);
+                scene.add(prism);
+
+                // Light bulb
+                const lightbulb = wgpu.createMesh(
+                    wgpu.geometry.sphere(0.15, 16, 12),
+                    wgpu.material.standard({
+                        color: [0.5, 0.8, 1],
+                        emissive: [0.5, 0.8, 1],
+                        emissiveIntensity: 2,
+                        roughness: 0.5,
+                        metallic: 0.0
+                    })
+                );
+                lightbulb.transform.setPosition(3, 2, 0);
+                scene.add(lightbulb);
+
+                // Render loop
+                wgpu.run((dt, time) => {
+                    // Rotate shapes
+                    cube.transform.rotateY(dt * 0.8);
+                    cube.transform.rotateX(dt * 0.3);
+                    sphere.transform.rotateY(dt * 0.5);
+                    torus.transform.rotateX(dt * 1.2);
+                    torus.transform.rotateY(dt * 0.6);
+                    cylinder.transform.rotateY(dt * 0.7);
+                    prism.transform.rotateY(dt * 0.4);
+
+                    // Bob the cube up and down
+                    const bobY = 0.8 + Math.sin(time * 2) * 0.15;
+                    cube.transform.setPosition(0, bobY, 0);
+
+                    // Orbit the light bulb around
+                    const lightX = Math.cos(time * 0.8) * 3;
+                    const lightZ = Math.sin(time * 0.8) * 3;
+                    lightbulb.transform.setPosition(lightX, 2, lightZ);
+
+                    // Update the actual point light position too
+                    const pointLight = scene.lights.find((l) => l.type === "point");
+                    if (pointLight && "position" in pointLight) pointLight.position = [lightX, 2, lightZ];
+
+                    // Render the scene
+                    wgpu.render(scene, camera);
+                });
+            };
+
+            // Done!
+            main().catch(console.error);
         </script>
     </body>
 </html>
