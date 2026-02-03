@@ -1,2 +1,1 @@
-import { WasmGPU } from "./core";
-export default WasmGPU;
+export { WasmGPU as default } from "./core/engine";

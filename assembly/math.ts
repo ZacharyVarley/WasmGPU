@@ -145,9 +145,9 @@ export function mat4lookAt (eye: f32[], center: f32[], up: f32[]): f32[] {
         s[0] * f[1] - s[1] * f[0]
     ];
     return [
-        s[0], s[1], s[2], 0,
-        u[0], u[1], u[2], 0,
-        -f[0], -f[1], -f[2], 0,
+        s[0], u[0], -f[0], 0,
+        s[1], u[1], -f[1], 0,
+        s[2], u[2], -f[2], 0,
         -(s[0]*eye[0] + s[1]*eye[1] + s[2]*eye[2]),
         -(u[0]*eye[0] + u[1]*eye[1] + u[2]*eye[2]),
         (f[0]*eye[0] + f[1]*eye[1] + f[2]*eye[2]),
@@ -375,7 +375,7 @@ export function quatinit (a: f32, b: f32, c: f32, d: f32): f32[] {
 
 export function quatinvert (q: f32[]): f32[] {
     const n2: f32 = quatnormsq(q);
-    if (n2 == 0) return [0, 0, 0, 0];
+    if (n2 == 0) return [0, 0, 0, 1];
     const inorm2: f32 = 1 / n2;
     return [-q[0] * inorm2, -q[1] * inorm2, -q[2] * inorm2, q[3] * inorm2];
 }
@@ -394,10 +394,10 @@ export function quatisZero (q: f32[]): bool {
 
 export function quatmul (q1: f32[], q2: f32[]): f32[] {
     return [
-        q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3],
-        q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2],
-        q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1],
-        q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0]
+        q1[3] * q2[0] + q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1],
+        q1[3] * q2[1] - q1[0] * q2[2] + q1[1] * q2[3] + q1[2] * q2[0],
+        q1[3] * q2[2] + q1[0] * q2[1] - q1[1] * q2[0] + q1[2] * q2[3],
+        q1[3] * q2[3] - q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2]
     ];
 }
 
@@ -442,32 +442,30 @@ export function quatscl (q: f32[], n: f32): f32[] {
 }
 
 export function quatslerp (q1: f32[], q2: f32[], t: f32): f32[] {
-    const dot: f32 = q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3];
-    let q2b: f32[] = [q2[0], q2[1], q2[2], q2[3]];
+    let dot: f32 = q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3];
     if (dot < 0) {
-        q2b = [-q2[0], -q2[1], -q2[2], -q2[3]];
+        q2[0] = -q2[0]; q2[1] = -q2[1]; q2[2] = -q2[2]; q2[3] = -q2[3];
+        dot = -dot;
     }
-    const dotb: f32 = q1[0] * q2b[0] + q1[1] * q2b[1] + q1[2] * q2b[2] + q1[3] * q2b[3];
-    if (dotb > 0.9995) {
-        const result: f32[] = [
-            q1[0] + t * (q2b[0] - q1[0]),
-            q1[1] + t * (q2b[1] - q1[1]),
-            q1[2] + t * (q2b[2] - q1[2]),
-            q1[3] + t * (q2b[3] - q1[3])
-        ];
-        return quatnormalize(result);
+    if (dot > 0.9995) {
+        return quatnormalize([
+            q1[0] + t * (q2[0] - q1[0]),
+            q1[1] + t * (q2[1] - q1[1]),
+            q1[2] + t * (q2[2] - q1[2]),
+            q1[3] + t * (q2[3] - q1[3])
+        ]);
     }
-    const ang0: f32 = Mathf.acos(dotb);
-    const ang: f32 = ang0 * t;
-    const sang: f32 = Mathf.sin(ang);
-    const sang0: f32 = Mathf.sin(ang0);
-    const s0: f32 = Mathf.cos(ang) - dotb * sang / sang0;
-    const s1: f32 = sang / sang0;
+    const theta0: f32 = Mathf.acos(dot);
+    const theta: f32 = theta0 * t;
+    const sinTheta: f32 = Mathf.sin(theta);
+    const sinTheta0: f32 = Mathf.sin(theta0);
+    const s0: f32 = Mathf.cos(theta) - dot * sinTheta / sinTheta0;
+    const s1: f32 = sinTheta / sinTheta0;
     return [
-        (s0 * q1[0]) + (s1 * q2b[0]),
-        (s0 * q1[1]) + (s1 * q2b[1]),
-        (s0 * q1[2]) + (s1 * q2b[2]),
-        (s0 * q1[3]) + (s1 * q2b[3])
+        s0 * q1[0] + s1 * q2[0],
+        s0 * q1[1] + s1 * q2[1],
+        s0 * q1[2] + s1 * q2[2],
+        s0 * q1[3] + s1 * q2[3]
     ];
 }
 
@@ -476,10 +474,14 @@ export function quatsub (q1: f32[], q2: f32[]): f32[] {
 }
 
 export function quattoRotation (q: f32[], v: f32[]): f32[] {
-    const vq: f32[] = [0, v[0], v[1], v[2]];
-    const iq: f32[] = quatinvert(q);
-    const qvqiq: f32[] = quatmul(q, quatmul(vq, iq));
-    return [qvqiq[1], qvqiq[2], qvqiq[3]];
+    const tx: f32 = 2 * (q[1] * v[2] - q[2] * v[1]);
+    const ty: f32 = 2 * (q[2] * v[0] - q[0] * v[2]);
+    const tz: f32 = 2 * (q[0] * v[1] - q[1] * v[0]);
+    return [
+        v[0] + q[3] * tx + q[1] * tz - q[2] * ty,
+        v[1] + q[3] * ty + q[2] * tx - q[0] * tz,
+        v[2] + q[3] * tz + q[0] * ty - q[1] * tx
+    ];
 }
 
 export function vec3abs (v: f32[]): f32[] {
