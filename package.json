@@ -4,13 +4,13 @@
   "author": "Zushah",
   "license": "MPL-2.0",
   "description": "WasmGPU = WebGPU + WebAssembly.",
-  "main": "dist/WasmGPU.js",
+  "main": "./dist/WasmGPU.js",
   "module": "./dist/WasmGPU.js",
   "files": [
-    "dist/",
-    "LICENSE.md",
-    "package.json",
-    "README.md"
+    "./dist/",
+    "./LICENSE.md",
+    "./package.json",
+    "./README.md"
   ],
   "devDependencies": {
     "@types/node": "^25.2",
@@ -22,12 +22,12 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "build:as": "asc assembly/math.ts --target release",
-    "build:ts": "tsc --noEmit --project tsconfig.json",
-    "build:es": "node esbuild.config.js",
+    "build:as": "asc ./assembly/math.ts --target release && node ./scripts/embed-wasm-base64.js",
+    "build:ts": "tsc --noEmit --project ./tsconfig.json",
+    "build:es": "node ./esbuild.config.js",
     "build": "npm run build:as && npm run build:ts && npm run build:es",
-    "docs": "typedoc --options typedoc.json --favicon ./assets/logo.png",
-    "test:math": "node test/math.test.js",
+    "docs": "typedoc --options ./typedoc.json --favicon ./assets/logo.png",
+    "test:math": "node ./test/math.test.js",
     "start": "npx serve ."
   },
   "repository": {
