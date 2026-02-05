@@ -227,7 +227,7 @@ export class Renderer {
         const i20 = (m10 * m21 - m11 * m20) * invDet;
         const i21 = (m01 * m20 - m00 * m21) * invDet;
         const i22 = (m00 * m11 - m01 * m10) * invDet;
-        return [i00, i10, i20, 0, i01, i11, i21, 0, i02, i12, i22, 0, 0, 0, 0, 1];
+        return [i00, i01, i02, 0, i10, i11, i12, 0, i20, i21, i22, 0, 0, 0, 0, 1];
     }
 
     private renderMesh(pass: GPURenderPassEncoder, mesh: Mesh, camera: Camera): void {
