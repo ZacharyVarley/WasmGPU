@@ -218,9 +218,10 @@ export class Geometry {
                 const b = ix + (radialSegments + 1) * (iy + 1);
                 const c = (ix + 1) + (radialSegments + 1) * (iy + 1);
                 const d = (ix + 1) + (radialSegments + 1) * iy;
-                indices.push(a, b, d, b, c, d);
+                indices.push(a, d, b, b, d, c);
             }
         }
+        index = positions.length / 3;
         const generateTopCap = () => {
             const centerIndex = index;
             positions.push(0, halfHeight, 0);
@@ -388,13 +389,13 @@ export class Geometry {
             const t1 = topRing[next];
             const b0 = bottomRing[i];
             const b1 = bottomRing[next];
-            const n = faceNormal(t0, b0, t1);
+            const n = faceNormal(t0, t1, b0);
             positions.push(...t0, ...b0, ...b1, ...t1);
             normals.push(...n, ...n, ...n, ...n);
             const u0 = i / sides;
             const u1 = (i + 1) / sides;
             uvs.push(u0, 0, u0, 1, u1, 1, u1, 0);
-            indices.push(idx, idx + 1, idx + 2, idx, idx + 2, idx + 3);
+            indices.push(idx, idx + 2, idx + 1, idx, idx + 3, idx + 2);
             idx += 4;
         }
         const topCenter: [number, number, number] = [0, halfHeight, 0];
@@ -414,7 +415,7 @@ export class Geometry {
         }
         for (let i = 0; i < sides; i++) {
             const next = (i + 1) % sides;
-            indices.push(topCenterIdx, topCenterIdx + 1 + i, topCenterIdx + 1 + next);
+            indices.push(topCenterIdx, topCenterIdx + 1 + next, topCenterIdx + 1 + i);
         }
         idx += sides;
         const bottomCenter: [number, number, number] = [0, -halfHeight, 0];
@@ -434,7 +435,7 @@ export class Geometry {
         }
         for (let i = 0; i < sides; i++) {
             const next = (i + 1) % sides;
-            indices.push(bottomCenterIdx, bottomCenterIdx + 1 + next, bottomCenterIdx + 1 + i);
+            indices.push(bottomCenterIdx, bottomCenterIdx + 1 + i, bottomCenterIdx + 1 + next);
         }
         return new Geometry({
             positions: new Float32Array(positions),
