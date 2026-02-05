@@ -200,7 +200,7 @@ export class Geometry {
         for (let iy = 0; iy <= heightSegments; iy++) {
             const v = iy / heightSegments;
             const y = v * height - halfHeight;
-            const radius = v * (radiusBottom - radiusTop) + radiusTop;
+            const radius = v * (radiusTop - radiusBottom) + radiusBottom;
             for (let ix = 0; ix <= radialSegments; ix++) {
                 const u = ix / radialSegments;
                 const theta = u * Math.PI * 2;
@@ -221,37 +221,45 @@ export class Geometry {
                 indices.push(a, b, d, b, c, d);
             }
         }
-        index = positions.length / 3;
-        const generateCap = (top: boolean) => {
-            const y = top ? halfHeight : -halfHeight;
-            const radius = top ? radiusTop : radiusBottom;
-            const normalY = top ? 1 : -1;
-            if (radius === 0) return;
-            const centerIndex = positions.length / 3;
-            positions.push(0, y, 0);
-            normals.push(0, normalY, 0);
+        const generateTopCap = () => {
+            const centerIndex = index;
+            positions.push(0, halfHeight, 0);
+            normals.push(0, 1, 0);
             uvs.push(0.5, 0.5);
+            index++;
             for (let ix = 0; ix <= radialSegments; ix++) {
                 const u = ix / radialSegments;
                 const theta = u * Math.PI * 2;
-                const x = radius * Math.sin(theta);
-                const z = radius * Math.cos(theta);
-                positions.push(x, y, z);
-                normals.push(0, normalY, 0);
+                const x = radiusTop * Math.sin(theta);
+                const z = radiusTop * Math.cos(theta);
+                positions.push(x, halfHeight, z);
+                normals.push(0, 1, 0);
                 uvs.push(Math.sin(theta) * 0.5 + 0.5, Math.cos(theta) * 0.5 + 0.5);
+                if (ix > 0) indices.push(centerIndex, index - 1, index);
+                index++;
             }
-            for (let ix = 0; ix < radialSegments; ix++) {
-                const i = centerIndex + 1 + ix;
-                if (top) {
-                    indices.push(centerIndex, i, i + 1);
-                } else {
-                    indices.push(centerIndex, i + 1, i);
-                }
+        };
+        const generateBottomCap = () => {
+            const centerIndex = index;
+            positions.push(0, -halfHeight, 0);
+            normals.push(0, -1, 0);
+            uvs.push(0.5, 0.5);
+            index++;
+            for (let ix = 0; ix <= radialSegments; ix++) {
+                const u = ix / radialSegments;
+                const theta = u * Math.PI * 2;
+                const x = radiusBottom * Math.sin(theta);
+                const z = radiusBottom * Math.cos(theta);
+                positions.push(x, -halfHeight, z);
+                normals.push(0, -1, 0);
+                uvs.push(Math.sin(theta) * 0.5 + 0.5, Math.cos(theta) * 0.5 + 0.5);
+                if (ix > 0) indices.push(centerIndex, index, index - 1);
+                index++;
             }
         };
         if (!openEnded) {
-            generateCap(true);
-            generateCap(false);
+            generateTopCap();
+            generateBottomCap();
         }
         return new Geometry({
             positions: new Float32Array(positions),
