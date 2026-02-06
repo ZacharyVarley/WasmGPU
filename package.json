@@ -1,6 +1,6 @@
 {
   "name": "@zushah/wasmgpu",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Zushah",
   "license": "MPL-2.0",
   "description": "WasmGPU = WebGPU + WebAssembly.",
