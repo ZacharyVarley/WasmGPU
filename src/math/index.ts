@@ -2,6 +2,8 @@ declare const __WASMGPU_BASE_URL__: string;
 
 type MathModule = typeof import("../../build/math.js");
 
+export type WasmPtr = number;
+
 let modPromise: Promise<MathModule> | null = null;
 let mod: MathModule | null = null;
 
@@ -18,7 +20,7 @@ const defaultBaseURL = (): string => {
     }
     const base = IIFE_SCRIPT_URL ?? location.href;
     return new URL(".", base).toString();
-}
+};
 
 export const initMath = async (baseURL?: string): Promise<void> => {
     if (mod) return;
@@ -26,14 +28,158 @@ export const initMath = async (baseURL?: string): Promise<void> => {
     const mathURL = new URL("math.js", base).toString();
     modPromise ??= import(mathURL) as Promise<MathModule>;
     mod = await modPromise;
-}
+};
 
 const ensure = (): MathModule => {
     if (!mod) throw new Error("Math module not initialized. Call await initMath() first.");
     return mod;
-}
+};
 
-const mat4 = {
+const bool = (x: unknown): boolean => !!x;
+
+export const wasm = {
+    memory: (): WebAssembly.Memory => ensure().memory as unknown as WebAssembly.Memory,
+    seed: (seed: number): void => { ensure().wasmgpu_seed(seed >>> 0); },
+    allocF32: (len: number): WasmPtr => ensure().wasmgpu_alloc_f32(len >>> 0) >>> 0,
+    freeF32: (ptr: WasmPtr, len: number): void => ensure().wasmgpu_free_f32(ptr >>> 0, len >>> 0),
+    f32view: (ptr: WasmPtr, len: number): Float32Array => ensure().f32view(ptr >>> 0, len >>> 0),
+    u32view: (ptr: WasmPtr, len: number): Uint32Array => ensure().u32view(ptr >>> 0, len >>> 0),
+    writeF32: (ptr: WasmPtr, len: number, src: ArrayLike<number> | null | undefined): void => {
+        const v = ensure().f32view(ptr >>> 0, len >>> 0);
+        const n = Math.min(len >>> 0, src ? (src.length >>> 0) : 0);
+        for (let i = 0; i < n; i++) v[i] = src![i] as number;
+        for (let i = n; i < (len >>> 0); i++) v[i] = 0;
+    },
+    readF32Array: (ptr: WasmPtr, len: number): number[] => Array.from(ensure().f32view(ptr >>> 0, len >>> 0)),
+};
+
+export const mat4f = {
+    alloc: (): WasmPtr => wasm.allocF32(16),
+    view: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 16),
+    set: (ptr: WasmPtr, src: ArrayLike<number>): void => wasm.writeF32(ptr, 16, src),
+    abs: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_abs(out >>> 0, m >>> 0); },
+    add: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().mat4_add(out >>> 0, a >>> 0, b >>> 0); },
+    copy: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_copy(out >>> 0, m >>> 0); },
+    det: (m: WasmPtr): number => ensure().mat4_det(m >>> 0),
+    identity: (out: WasmPtr): void => { ensure().mat4_identity(out >>> 0); },
+    init: (
+        out: WasmPtr,
+        m0: number, m1: number, m2: number, m3: number,
+        m4: number, m5: number, m6: number, m7: number,
+        m8: number, m9: number, m10: number, m11: number,
+        m12: number, m13: number, m14: number, m15: number
+    ): void => { ensure().mat4_init(out >>> 0, m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15); },
+    invert: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_invert(out >>> 0, m >>> 0); },
+    isEqual: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().mat4_isEqual(a >>> 0, b >>> 0)),
+    isIdentity: (m: WasmPtr): boolean => bool(ensure().mat4_isIdentity(m >>> 0)),
+    isInverse: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().mat4_isInverse(a >>> 0, b >>> 0)),
+    isZero: (m: WasmPtr): boolean => bool(ensure().mat4_isZero(m >>> 0)),
+    lookAt: (out: WasmPtr, eye3: WasmPtr, center3: WasmPtr, up3: WasmPtr): void => { ensure().mat4_lookAt(out >>> 0, eye3 >>> 0, center3 >>> 0, up3 >>> 0); },
+    mul: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().mat4_mul(out >>> 0, a >>> 0, b >>> 0); },
+    mulVec4: (outVec4: WasmPtr, m: WasmPtr, v4: WasmPtr): void => { ensure().mat4_mul_vec4(outVec4 >>> 0, m >>> 0, v4 >>> 0); },
+    neg: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_neg(out >>> 0, m >>> 0); },
+    norm: (m: WasmPtr): number => ensure().mat4_norm(m >>> 0),
+    normalize: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_normalize(out >>> 0, m >>> 0); },
+    normsq: (m: WasmPtr): number => ensure().mat4_normsq(m >>> 0),
+    perspective: (out: WasmPtr, fovY: number, aspect: number, near: number, far: number): void => { ensure().mat4_perspective(out >>> 0, fovY, aspect, near, far); },
+    random: (out: WasmPtr): void => { ensure().mat4_random(out >>> 0); },
+    randomRange: (out: WasmPtr, min: number, max: number): void => { ensure().mat4_random_range(out >>> 0, min, max); },
+    rotateX: (out: WasmPtr, m: WasmPtr, angle: number): void => { ensure().mat4_rotateX(out >>> 0, m >>> 0, angle); },
+    rotateY: (out: WasmPtr, m: WasmPtr, angle: number): void => { ensure().mat4_rotateY(out >>> 0, m >>> 0, angle); },
+    rotateZ: (out: WasmPtr, m: WasmPtr, angle: number): void => { ensure().mat4_rotateZ(out >>> 0, m >>> 0, angle); },
+    round: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_round(out >>> 0, m >>> 0); },
+    scl: (out: WasmPtr, m: WasmPtr, scalar: number): void => { ensure().mat4_scl(out >>> 0, m >>> 0, scalar); },
+    sub: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().mat4_sub(out >>> 0, a >>> 0, b >>> 0); },
+    trace: (m: WasmPtr): number => ensure().mat4_trace(m >>> 0),
+    translate: (out: WasmPtr, m: WasmPtr, v3: WasmPtr): void => { ensure().mat4_translate(out >>> 0, m >>> 0, v3 >>> 0); },
+    transpose: (out: WasmPtr, m: WasmPtr): void => { ensure().mat4_transpose(out >>> 0, m >>> 0); },
+    print: (m: WasmPtr): void => {
+        const a = wasm.f32view(m, 16);
+        console.log(
+            `[ ${a[0]} ${a[1]} ${a[2]} ${a[3]} ]\n` +
+            `[ ${a[4]} ${a[5]} ${a[6]} ${a[7]} ]\n` +
+            `[ ${a[8]} ${a[9]} ${a[10]} ${a[11]} ]\n` +
+            `[ ${a[12]} ${a[13]} ${a[14]} ${a[15]} ]`
+        );
+    },
+};
+
+export const quatf = {
+    alloc: (): WasmPtr => wasm.allocF32(4),
+    view: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 4),
+    set: (ptr: WasmPtr, src: ArrayLike<number>): void => wasm.writeF32(ptr, 4, src),
+    abs: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_abs(out >>> 0, q >>> 0); },
+    add: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().quat_add(out >>> 0, a >>> 0, b >>> 0); },
+    copy: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_copy(out >>> 0, q >>> 0); },
+    dist: (a: WasmPtr, b: WasmPtr): number => ensure().quat_dist(a >>> 0, b >>> 0),
+    distsq: (a: WasmPtr, b: WasmPtr): number => ensure().quat_distsq(a >>> 0, b >>> 0),
+    fromAxisAngle: (out: WasmPtr, axis3: WasmPtr, angle: number): void => { ensure().quat_fromAxisAngle(out >>> 0, axis3 >>> 0, angle); },
+    init: (out: WasmPtr, x: number, y: number, z: number, w: number): void => { ensure().quat_init(out >>> 0, x, y, z, w); },
+    invert: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_invert(out >>> 0, q >>> 0); },
+    isEqual: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().quat_isEqual(a >>> 0, b >>> 0)),
+    isNormalized: (q: WasmPtr): boolean => bool(ensure().quat_isNormalized(q >>> 0)),
+    isZero: (q: WasmPtr): boolean => bool(ensure().quat_isZero(q >>> 0)),
+    mul: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().quat_mul(out >>> 0, a >>> 0, b >>> 0); },
+    neg: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_neg(out >>> 0, q >>> 0); },
+    norm: (q: WasmPtr): number => ensure().quat_norm(q >>> 0),
+    normalize: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_normalize(out >>> 0, q >>> 0); },
+    normscl: (out: WasmPtr, q: WasmPtr, scalar: number): void => { ensure().quat_normscl(out >>> 0, q >>> 0, scalar); },
+    normsq: (q: WasmPtr): number => ensure().quat_normsq(q >>> 0),
+    random: (out: WasmPtr): void => { ensure().quat_random(out >>> 0); },
+    randomRange: (out: WasmPtr, min: number, max: number): void => { ensure().quat_random_range(out >>> 0, min, max); },
+    round: (out: WasmPtr, q: WasmPtr): void => { ensure().quat_round(out >>> 0, q >>> 0); },
+    scl: (out: WasmPtr, q: WasmPtr, scalar: number): void => { ensure().quat_scl(out >>> 0, q >>> 0, scalar); },
+    slerp: (out: WasmPtr, a: WasmPtr, b: WasmPtr, t: number): void => { ensure().quat_slerp(out >>> 0, a >>> 0, b >>> 0, t); },
+    sub: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().quat_sub(out >>> 0, a >>> 0, b >>> 0); },
+    toRotation: (outVec3: WasmPtr, q: WasmPtr, v3: WasmPtr): void => { ensure().quat_toRotation(outVec3 >>> 0, q >>> 0, v3 >>> 0); },
+    print: (q: WasmPtr): void => {
+        const a = wasm.f32view(q, 4);
+        console.log(`[ ${a[0]} ${a[1]} ${a[2]} ${a[3]} ]`);
+    },
+};
+
+export const vec3f = {
+    alloc: (): WasmPtr => wasm.allocF32(4),
+    view3: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 3),
+    view4: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 4),
+    set3: (ptr: WasmPtr, src: ArrayLike<number>): void => wasm.writeF32(ptr, 3, src),
+    abs: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_abs(out >>> 0, v >>> 0); },
+    add: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_add(out >>> 0, a >>> 0, b >>> 0); },
+    ang: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_ang(out >>> 0, v >>> 0); },
+    angBetween: (a: WasmPtr, b: WasmPtr): number => ensure().vec3_angBetween(a >>> 0, b >>> 0),
+    copy: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_copy(out >>> 0, v >>> 0); },
+    cross: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_cross(out >>> 0, a >>> 0, b >>> 0); },
+    dist: (a: WasmPtr, b: WasmPtr): number => ensure().vec3_dist(a >>> 0, b >>> 0),
+    distsq: (a: WasmPtr, b: WasmPtr): number => ensure().vec3_distsq(a >>> 0, b >>> 0),
+    dot: (a: WasmPtr, b: WasmPtr): number => ensure().vec3_dot(a >>> 0, b >>> 0),
+    init: (out: WasmPtr, x: number, y: number, z: number): void => { ensure().vec3_init(out >>> 0, x, y, z); },
+    interp: (out: WasmPtr, v: WasmPtr, a: number, b: number, c: number): void => { ensure().vec3_interp(out >>> 0, v >>> 0, a, b, c); },
+    isEqual: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().vec3_isEqual(a >>> 0, b >>> 0)),
+    isNormalized: (v: WasmPtr): boolean => bool(ensure().vec3_isNormalized(v >>> 0)),
+    isOrthogonal: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().vec3_isOrthogonal(a >>> 0, b >>> 0)),
+    isParallel: (a: WasmPtr, b: WasmPtr): boolean => bool(ensure().vec3_isParallel(a >>> 0, b >>> 0)),
+    isZero: (v: WasmPtr): boolean => bool(ensure().vec3_isZero(v >>> 0)),
+    neg: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_neg(out >>> 0, v >>> 0); },
+    norm: (v: WasmPtr): number => ensure().vec3_norm(v >>> 0),
+    normalize: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_normalize(out >>> 0, v >>> 0); },
+    normscl: (out: WasmPtr, v: WasmPtr, scalar: number): void => { ensure().vec3_normscl(out >>> 0, v >>> 0, scalar); },
+    normsq: (v: WasmPtr): number => ensure().vec3_normsq(v >>> 0),
+    oproj: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_oproj(out >>> 0, a >>> 0, b >>> 0); },
+    proj: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_proj(out >>> 0, a >>> 0, b >>> 0); },
+    random: (out: WasmPtr): void => { ensure().vec3_random(out >>> 0); },
+    randomRange: (out: WasmPtr, min: number, max: number): void => { ensure().vec3_random_range(out >>> 0, min, max); },
+    reflect: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_reflect(out >>> 0, a >>> 0, b >>> 0); },
+    refract: (out: WasmPtr, a: WasmPtr, b: WasmPtr, refractiveIndex: number): void => { ensure().vec3_refract(out >>> 0, a >>> 0, b >>> 0, refractiveIndex); },
+    round: (out: WasmPtr, v: WasmPtr): void => { ensure().vec3_round(out >>> 0, v >>> 0); },
+    scl: (out: WasmPtr, v: WasmPtr, scalar: number): void => { ensure().vec3_scl(out >>> 0, v >>> 0, scalar); },
+    sub: (out: WasmPtr, a: WasmPtr, b: WasmPtr): void => { ensure().vec3_sub(out >>> 0, a >>> 0, b >>> 0); },
+    print: (v: WasmPtr): void => {
+        const a = wasm.f32view(v, 3);
+        console.log(`[ ${a[0]} ${a[1]} ${a[2]} ]`);
+    },
+};
+
+export const mat4 = {
     abs: (matr: number[]): number[] => ensure().mat4abs(matr),
     add: (matr1: number[], matr2: number[]): number[] => ensure().mat4add(matr1, matr2),
     copy: (matr: number[]): number[] => ensure().mat4copy(matr),
@@ -67,67 +213,65 @@ const mat4 = {
     sub: (matr1: number[], matr2: number[]): number[] => ensure().mat4sub(matr1, matr2),
     trace: (matr: number[]): number => ensure().mat4trace(matr),
     translate: (matr: number[], vect: number[]): number[] => ensure().mat4translate(matr, vect),
-    transpose: (matr: number[]): number[] => ensure().mat4transpose(matr)
+    transpose: (matr: number[]): number[] => ensure().mat4transpose(matr),
 };
 
-const quat = {
-    abs: (quat: number[]): number[] => ensure().quatabs(quat),
-    add: (quat1: number[], quat2: number[]): number[] => ensure().quatadd(quat1, quat2),
-    copy: (quat: number[]): number[] => ensure().quatcopy(quat),
-    dist: (quat1: number[], quat2: number[]): number => ensure().quatdist(quat1, quat2),
-    distsq: (quat1: number[], quat2: number[]): number => ensure().quatdistsq(quat1, quat2),
+export const quat = {
+    abs: (q: number[]): number[] => ensure().quatabs(q),
+    add: (q1: number[], q2: number[]): number[] => ensure().quatadd(q1, q2),
+    copy: (q: number[]): number[] => ensure().quatcopy(q),
+    dist: (q1: number[], q2: number[]): number => ensure().quatdist(q1, q2),
+    distsq: (q1: number[], q2: number[]): number => ensure().quatdistsq(q1, q2),
     fromAxisAngle: (axis: number[], angle: number): number[] => ensure().quatfromAxisAngle(axis, angle),
     init: (a: number, b: number, c: number, d: number): number[] => ensure().quatinit(a, b, c, d),
-    invert: (quat: number[]): number[] => ensure().quatinvert(quat),
-    isEqual: (quat1: number[], quat2: number[]): boolean => ensure().quatisEqual(quat1, quat2),
-    isNormalized: (quat: number[]): boolean => ensure().quatisNormalized(quat),
-    isZero: (quat: number[]): boolean => ensure().quatisZero(quat),
-    mul: (quat1: number[], quat2: number[]): number[] => ensure().quatmul(quat1, quat2),
-    neg: (quat: number[]): number[] => ensure().quatneg(quat),
-    norm: (quat: number[]): number => ensure().quatnorm(quat),
-    normalize: (quat: number[]): number[] => ensure().quatnormalize(quat),
-    normscl: (quat: number[], scalar: number): number[] => ensure().quatnormscl(quat, scalar),
-    normsq: (quat: number[]): number => ensure().quatnormsq(quat),
-    print: (quat: number[]): void => ensure().quatprint(quat),
+    invert: (q: number[]): number[] => ensure().quatinvert(q),
+    isEqual: (q1: number[], q2: number[]): boolean => ensure().quatisEqual(q1, q2),
+    isNormalized: (q: number[]): boolean => ensure().quatisNormalized(q),
+    isZero: (q: number[]): boolean => ensure().quatisZero(q),
+    mul: (q1: number[], q2: number[]): number[] => ensure().quatmul(q1, q2),
+    neg: (q: number[]): number[] => ensure().quatneg(q),
+    norm: (q: number[]): number => ensure().quatnorm(q),
+    normalize: (q: number[]): number[] => ensure().quatnormalize(q),
+    normscl: (q: number[], scalar: number): number[] => ensure().quatnormscl(q, scalar),
+    normsq: (q: number[]): number => ensure().quatnormsq(q),
+    print: (q: number[]): void => ensure().quatprint(q),
     random: (min: number, max: number): number[] => ensure().quatrandom(min, max),
-    round: (quat: number[]): number[] => ensure().quatround(quat),
-    scl: (quat: number[], scalar: number): number[] => ensure().quatscl(quat, scalar),
-    slerp: (quat1: number[], quat2: number[], t: number): number[] => ensure().quatslerp(quat1, quat2, t),
-    sub: (quat1: number[], quat2: number[]): number[] => ensure().quatsub(quat1, quat2),
-    toRotation: (quat: number[], vect: number[]): number[] => ensure().quattoRotation(quat, vect)
+    round: (q: number[]): number[] => ensure().quatround(q),
+    scl: (q: number[], scalar: number): number[] => ensure().quatscl(q, scalar),
+    slerp: (q1: number[], q2: number[], t: number): number[] => ensure().quatslerp(q1, q2, t),
+    sub: (q1: number[], q2: number[]): number[] => ensure().quatsub(q1, q2),
+    toRotation: (q: number[], v: number[]): number[] => ensure().quattoRotation(q, v),
 };
 
-const vec3 = {
-    abs: (vect: number[]): number[] => ensure().vec3abs(vect),
-    add: (vect1: number[], vect2: number[]): number[] => ensure().vec3add(vect1, vect2),
-    ang: (vect: number[]): number[] => ensure().vec3ang(vect),
-    angBetween: (vect1: number[], vect2: number[]): number => ensure().vec3angBetween(vect1, vect2),
-    copy: (vect: number[]): number[] => ensure().vec3copy(vect),
-    cross: (vect1: number[], vect2: number[]): number[] => ensure().vec3cross(vect1, vect2),
-    dist: (vect1: number[], vect2: number[]): number => ensure().vec3dist(vect1, vect2),
-    distsq: (vect1: number[], vect2: number[]): number => ensure().vec3distsq(vect1, vect2),
-    dot: (vect1: number[], vect2: number[]): number => ensure().vec3dot(vect1, vect2),
+export const vec3 = {
+    abs: (v: number[]): number[] => ensure().vec3abs(v),
+    add: (v1: number[], v2: number[]): number[] => ensure().vec3add(v1, v2),
+    ang: (v: number[]): number[] => ensure().vec3ang(v),
+    angBetween: (v1: number[], v2: number[]): number => ensure().vec3angBetween(v1, v2),
+    copy: (v: number[]): number[] => ensure().vec3copy(v),
+    cross: (v1: number[], v2: number[]): number[] => ensure().vec3cross(v1, v2),
+    dist: (v1: number[], v2: number[]): number => ensure().vec3dist(v1, v2),
+    distsq: (v1: number[], v2: number[]): number => ensure().vec3distsq(v1, v2),
+    dot: (v1: number[], v2: number[]): number => ensure().vec3dot(v1, v2),
     init: (x: number, y: number, z: number): number[] => ensure().vec3init(x, y, z),
-    interp: (vect: number[], a: number, b: number, c: number): number[] => ensure().vec3interp(vect, a, b, c),
-    isEqual: (vect1: number[], vect2: number[]): boolean => ensure().vec3isEqual(vect1, vect2),
-    isNormalized: (vect: number[]): boolean => ensure().vec3isNormalized(vect),
-    isOrthogonal: (vect1: number[], vect2: number[]): boolean => ensure().vec3isOrthogonal(vect1, vect2),
-    isParallel: (vect1: number[], vect2: number[]): boolean => ensure().vec3isParallel(vect1, vect2),
-    isZero: (vect: number[]): boolean => ensure().vec3isZero(vect),
-    neg: (vect: number[]): number[] => ensure().vec3neg(vect),
-    norm: (vect: number[]): number => ensure().vec3norm(vect),
-    normalize: (vect: number[]): number[] => ensure().vec3normalize(vect),
-    normscl: (vect: number[], scalar: number): number[] => ensure().vec3normscl(vect, scalar),
-    normsq: (vect: number[]): number => ensure().vec3normsq(vect),
-    oproj: (vect1: number[], vect2: number[]): number[] => ensure().vec3oproj(vect1, vect2),
-    print: (vect: number[]): void => ensure().vec3print(vect),
-    proj: (vect1: number[], vect2: number[]): number[] => ensure().vec3proj(vect1, vect2),
+    interp: (v: number[], a: number, b: number, c: number): number[] => ensure().vec3interp(v, a, b, c),
+    isEqual: (v1: number[], v2: number[]): boolean => ensure().vec3isEqual(v1, v2),
+    isNormalized: (v: number[]): boolean => ensure().vec3isNormalized(v),
+    isOrthogonal: (v1: number[], v2: number[]): boolean => ensure().vec3isOrthogonal(v1, v2),
+    isParallel: (v1: number[], v2: number[]): boolean => ensure().vec3isParallel(v1, v2),
+    isZero: (v: number[]): boolean => ensure().vec3isZero(v),
+    neg: (v: number[]): number[] => ensure().vec3neg(v),
+    norm: (v: number[]): number => ensure().vec3norm(v),
+    normalize: (v: number[]): number[] => ensure().vec3normalize(v),
+    normscl: (v: number[], scalar: number): number[] => ensure().vec3normscl(v, scalar),
+    normsq: (v: number[]): number => ensure().vec3normsq(v),
+    oproj: (v1: number[], v2: number[]): number[] => ensure().vec3oproj(v1, v2),
+    print: (v: number[]): void => ensure().vec3print(v),
+    proj: (v1: number[], v2: number[]): number[] => ensure().vec3proj(v1, v2),
     random: (min: number, max: number): number[] => ensure().vec3random(min, max),
-    reflect: (vect1: number[], vect2: number[]): number[] => ensure().vec3reflect(vect1, vect2),
-    refract: (vect1: number[], vect2: number[], refractiveIndex: number): number[] => ensure().vec3refract(vect1, vect2, refractiveIndex),
-    round: (vect: number[]): number[] => ensure().vec3round(vect),
-    scl: (vect: number[], scalar: number): number[] => ensure().vec3scl(vect, scalar),
-    sub: (vect1: number[], vect2: number[]): number[] => ensure().vec3sub(vect1, vect2)
+    reflect: (v1: number[], v2: number[]): number[] => ensure().vec3reflect(v1, v2),
+    refract: (v1: number[], v2: number[], refractiveIndex: number): number[] => ensure().vec3refract(v1, v2, refractiveIndex),
+    round: (v: number[]): number[] => ensure().vec3round(v),
+    scl: (v: number[], scalar: number): number[] => ensure().vec3scl(v, scalar),
+    sub: (v1: number[], v2: number[]): number[] => ensure().vec3sub(v1, v2),
 };
-
-export { mat4, quat, vec3 };
