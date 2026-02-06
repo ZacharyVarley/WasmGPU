@@ -930,7 +930,7 @@ var Renderer = class _Renderer {
     const i20 = (m10 * m21 - m11 * m20) * invDet;
     const i21 = (m01 * m20 - m00 * m21) * invDet;
     const i22 = (m00 * m11 - m01 * m10) * invDet;
-    return [i00, i10, i20, 0, i01, i11, i21, 0, i02, i12, i22, 0, 0, 0, 0, 1];
+    return [i00, i01, i02, 0, i10, i11, i12, 0, i20, i21, i22, 0, 0, 0, 0, 1];
   }
   renderMesh(pass, mesh, camera) {
     const { geometry, material } = mesh;
@@ -1978,7 +1978,7 @@ var Geometry = class _Geometry {
     for (let iy = 0; iy <= heightSegments; iy++) {
       const v = iy / heightSegments;
       const y = v * height - halfHeight;
-      const radius = v * (radiusBottom - radiusTop) + radiusTop;
+      const radius = v * (radiusTop - radiusBottom) + radiusBottom;
       for (let ix = 0; ix <= radialSegments; ix++) {
         const u = ix / radialSegments;
         const theta = u * Math.PI * 2;
@@ -1996,40 +1996,49 @@ var Geometry = class _Geometry {
         const b = ix + (radialSegments + 1) * (iy + 1);
         const c = ix + 1 + (radialSegments + 1) * (iy + 1);
         const d = ix + 1 + (radialSegments + 1) * iy;
-        indices.push(a, b, d, b, c, d);
+        indices.push(a, d, b, b, d, c);
       }
     }
     index = positions.length / 3;
-    const generateCap = (top) => {
-      const y = top ? halfHeight : -halfHeight;
-      const radius = top ? radiusTop : radiusBottom;
-      const normalY = top ? 1 : -1;
-      if (radius === 0) return;
-      const centerIndex = positions.length / 3;
-      positions.push(0, y, 0);
-      normals.push(0, normalY, 0);
+    const generateTopCap = () => {
+      const centerIndex = index;
+      positions.push(0, halfHeight, 0);
+      normals.push(0, 1, 0);
       uvs.push(0.5, 0.5);
+      index++;
       for (let ix = 0; ix <= radialSegments; ix++) {
         const u = ix / radialSegments;
         const theta = u * Math.PI * 2;
-        const x = radius * Math.sin(theta);
-        const z = radius * Math.cos(theta);
-        positions.push(x, y, z);
-        normals.push(0, normalY, 0);
+        const x = radiusTop * Math.sin(theta);
+        const z = radiusTop * Math.cos(theta);
+        positions.push(x, halfHeight, z);
+        normals.push(0, 1, 0);
         uvs.push(Math.sin(theta) * 0.5 + 0.5, Math.cos(theta) * 0.5 + 0.5);
+        if (ix > 0) indices.push(centerIndex, index - 1, index);
+        index++;
       }
-      for (let ix = 0; ix < radialSegments; ix++) {
-        const i = centerIndex + 1 + ix;
-        if (top) {
-          indices.push(centerIndex, i, i + 1);
-        } else {
-          indices.push(centerIndex, i + 1, i);
-        }
+    };
+    const generateBottomCap = () => {
+      const centerIndex = index;
+      positions.push(0, -halfHeight, 0);
+      normals.push(0, -1, 0);
+      uvs.push(0.5, 0.5);
+      index++;
+      for (let ix = 0; ix <= radialSegments; ix++) {
+        const u = ix / radialSegments;
+        const theta = u * Math.PI * 2;
+        const x = radiusBottom * Math.sin(theta);
+        const z = radiusBottom * Math.cos(theta);
+        positions.push(x, -halfHeight, z);
+        normals.push(0, -1, 0);
+        uvs.push(Math.sin(theta) * 0.5 + 0.5, Math.cos(theta) * 0.5 + 0.5);
+        if (ix > 0) indices.push(centerIndex, index, index - 1);
+        index++;
       }
     };
     if (!openEnded) {
-      generateCap(true);
-      generateCap(false);
+      generateTopCap();
+      generateBottomCap();
     }
     return new _Geometry({
       positions: new Float32Array(positions),
@@ -2155,13 +2164,13 @@ var Geometry = class _Geometry {
       const t1 = topRing[next];
       const b0 = bottomRing[i];
       const b1 = bottomRing[next];
-      const n = faceNormal(t0, b0, t1);
+      const n = faceNormal(t0, t1, b0);
       positions.push(...t0, ...b0, ...b1, ...t1);
       normals.push(...n, ...n, ...n, ...n);
       const u0 = i / sides;
       const u1 = (i + 1) / sides;
       uvs.push(u0, 0, u0, 1, u1, 1, u1, 0);
-      indices.push(idx, idx + 1, idx + 2, idx, idx + 2, idx + 3);
+      indices.push(idx, idx + 2, idx + 1, idx, idx + 3, idx + 2);
       idx += 4;
     }
     const topCenter = [0, halfHeight, 0];
@@ -2181,7 +2190,7 @@ var Geometry = class _Geometry {
     }
     for (let i = 0; i < sides; i++) {
       const next = (i + 1) % sides;
-      indices.push(topCenterIdx, topCenterIdx + 1 + i, topCenterIdx + 1 + next);
+      indices.push(topCenterIdx, topCenterIdx + 1 + next, topCenterIdx + 1 + i);
     }
     idx += sides;
     const bottomCenter = [0, -halfHeight, 0];
@@ -2201,7 +2210,7 @@ var Geometry = class _Geometry {
     }
     for (let i = 0; i < sides; i++) {
       const next = (i + 1) % sides;
-      indices.push(bottomCenterIdx, bottomCenterIdx + 1 + next, bottomCenterIdx + 1 + i);
+      indices.push(bottomCenterIdx, bottomCenterIdx + 1 + i, bottomCenterIdx + 1 + next);
     }
     return new _Geometry({
       positions: new Float32Array(positions),
