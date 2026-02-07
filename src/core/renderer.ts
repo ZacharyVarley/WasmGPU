@@ -5,7 +5,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode } from "../graphics/material";
-import { wasm, WasmPtr } from "../math";
+import { mat4f, wasm, WasmPtr } from "../math";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -237,25 +237,6 @@ export class Renderer {
         this.queue.writeBuffer(this.lightingUniformBuffer, 0, data);
     }
 
-    private computeNormalMatrix(model: number[]): number[] {
-        const m00 = model[0], m01 = model[4], m02 = model[8];
-        const m10 = model[1], m11 = model[5], m12 = model[9];
-        const m20 = model[2], m21 = model[6], m22 = model[10];
-        const det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20);
-        if (Math.abs(det) < 1e-6) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-        const invDet = 1.0 / det;
-        const i00 = (m11 * m22 - m12 * m21) * invDet;
-        const i01 = (m02 * m21 - m01 * m22) * invDet;
-        const i02 = (m01 * m12 - m02 * m11) * invDet;
-        const i10 = (m12 * m20 - m10 * m22) * invDet;
-        const i11 = (m00 * m22 - m02 * m20) * invDet;
-        const i12 = (m02 * m10 - m00 * m12) * invDet;
-        const i20 = (m10 * m21 - m11 * m20) * invDet;
-        const i21 = (m01 * m20 - m00 * m21) * invDet;
-        const i22 = (m00 * m11 - m01 * m10) * invDet;
-        return [i00, i01, i02, 0, i10, i11, i12, 0, i20, i21, i22, 0, 0, 0, 0, 1];
-    }
-
     private renderMesh(pass: GPURenderPassEncoder, mesh: Mesh, camera: Camera): void {
         const { geometry, material } = mesh;
         geometry.upload(this.device);
@@ -266,13 +247,14 @@ export class Renderer {
             return;
         }
         const modelBuffer = this.modelUniformBuffers[this.modelBufferIndex++];
-        const model = mesh.worldMatrix;
-        const normalMatrix = this.computeNormalMatrix(model);
-        this.refreshWasmStagingViews();
-        const data = this.modelUniformStagingView;
-        data.set(model, 0);
-        data.set(normalMatrix, 16);
-        this.queue.writeBuffer(modelBuffer, 0, data);
+        const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
+        const invPtr = this.modelUniformStagingPtr;
+        const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+        mat4f.invert(invPtr, modelPtr);
+        mat4f.transpose(normalPtr, invPtr);
+        const mem = wasm.memory().buffer as ArrayBuffer;
+        this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
+        this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
         const globalBindGroup = this.device.createBindGroup({
             layout: this.globalBindGroupLayout,
             entries: [
