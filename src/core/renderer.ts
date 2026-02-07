@@ -13,6 +13,16 @@ export type RendererDescriptor = {
     powerPreference?: "high-performance" | "low-power";
 };
 
+type DrawItem = {
+    mesh: Mesh;
+    geometry: Geometry;
+    material: Material;
+    pipeline: GPURenderPipeline;
+    pipelineId: number;
+    materialId: number;
+    geometryId: number;
+};
+
 export class Renderer {
     private canvas: HTMLCanvasElement;
     private context!: GPUCanvasContext;
@@ -32,6 +42,12 @@ export class Renderer {
     private lightingUniformBuffer!: GPUBuffer;
     private pipelineCache: Map<string, GPURenderPipeline> = new Map();
     private shaderCache: Map<string, GPUShaderModule> = new Map();
+    private drawItemPool: DrawItem[] = [];
+    private drawItemPoolUsed: number = 0;
+    private opaqueDrawList: DrawItem[] = [];
+    private transparentDrawList: DrawItem[] = [];
+    private objectIds: WeakMap<object, number> = new WeakMap();
+    private nextObjectId: number = 1;
     private cameraUniformStagingPtr!: WasmPtr;
     private lightingUniformStagingPtr!: WasmPtr;
     private modelUniformStagingPtr!: WasmPtr;
@@ -104,6 +120,32 @@ export class Renderer {
         this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
     }
 
+    private getObjectId(obj: object): number {
+        let id = this.objectIds.get(obj);
+        if (id !== undefined) return id;
+        id = this.nextObjectId++;
+        this.objectIds.set(obj, id);
+        return id;
+    }
+
+    private acquireDrawItem(): DrawItem {
+        const i = this.drawItemPoolUsed++;
+        let item = this.drawItemPool[i];
+        if (!item) {
+            item = {
+                mesh: null as unknown as Mesh,
+                geometry: null as unknown as Geometry,
+                material: null as unknown as Material,
+                pipeline: null as unknown as GPURenderPipeline,
+                pipelineId: 0,
+                materialId: 0,
+                geometryId: 0
+            };
+            this.drawItemPool[i] = item;
+        }
+        return item;
+    }
+
     render(scene: Scene, camera: Camera): void {
         this.resize();
         this.modelBufferIndex = 0;
@@ -134,9 +176,9 @@ export class Renderer {
                 depthStoreOp: "store"
             }
         });
-        for (const mesh of scene.visibleMeshes) {
-            this.renderMesh(pass, mesh, camera);
-        }
+        this.buildDrawLists(scene);
+        this.executeDrawList(pass, this.opaqueDrawList);
+        this.executeDrawList(pass, this.transparentDrawList);
         pass.end();
         this.queue.submit([encoder.finish()]);
     }
@@ -252,37 +294,70 @@ export class Renderer {
         this.queue.writeBuffer(this.lightingUniformBuffer, 0, data);
     }
 
-    private renderMesh(pass: GPURenderPassEncoder, mesh: Mesh, camera: Camera): void {
-        const { geometry, material } = mesh;
-        geometry.upload(this.device);
-        const pipeline = this.getOrCreatePipeline(material);
-        this.ensureMaterialBindGroup(material);
-        if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
-            console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
-            return;
+    private buildDrawLists(scene: Scene): void {
+        this.drawItemPoolUsed = 0;
+        this.opaqueDrawList.length = 0;
+        this.transparentDrawList.length = 0;
+        for (const mesh of scene.meshes) {
+            if (!mesh.visible) continue;
+            const geometry = mesh.geometry;
+            const material = mesh.material;
+            const pipeline = this.getOrCreatePipeline(material);
+            const item = this.acquireDrawItem();
+            item.mesh = mesh;
+            item.geometry = geometry;
+            item.material = material;
+            item.pipeline = pipeline;
+            item.pipelineId = this.getObjectId(pipeline);
+            item.materialId = this.getObjectId(material);
+            item.geometryId = this.getObjectId(geometry);
+            if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
+            else this.transparentDrawList.push(item);
         }
-        const modelSlot = this.modelBufferIndex++;
-        const modelBuffer = this.modelUniformBuffers[modelSlot];
-        const globalBindGroup = this.globalBindGroups[modelSlot];
-        const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
-        const invPtr = this.modelUniformStagingPtr;
-        const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
-        mat4f.invert(invPtr, modelPtr);
-        mat4f.transpose(normalPtr, invPtr);
-        const mem = wasm.memory().buffer as ArrayBuffer;
-        this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
-        this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, globalBindGroup);
-        pass.setBindGroup(1, material.bindGroup!);
-        pass.setVertexBuffer(0, geometry.positionBuffer);
-        pass.setVertexBuffer(1, geometry.normalBuffer);
-        pass.setVertexBuffer(2, geometry.uvBuffer);
-        if (geometry.isIndexed) {
-            pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
-            pass.drawIndexed(geometry.indexCount);
-        } else {
-            pass.draw(geometry.vertexCount);
+        this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
+    }
+
+    private executeDrawList(pass: GPURenderPassEncoder, items: DrawItem[]): void {
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastMaterial: Material | null = null;
+        let lastGeometry: Geometry | null = null;
+        for (let i = 0; i < items.length; i++) {
+            if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
+                console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
+                return;
+            }
+            const { mesh, geometry, material, pipeline } = items[i];
+            if (geometry !== lastGeometry) geometry.upload(this.device);
+            if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
+            const modelSlot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[modelSlot];
+            const globalBindGroup = this.globalBindGroups[modelSlot];
+            const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            const mem = wasm.memory().buffer as ArrayBuffer;
+            this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
+            if (pipeline !== lastPipeline) {
+                pass.setPipeline(pipeline);
+                lastPipeline = pipeline;
+            }
+            pass.setBindGroup(0, globalBindGroup);
+            if (material !== lastMaterial) {
+                pass.setBindGroup(1, material.bindGroup!);
+                lastMaterial = material;
+            }
+            if (geometry !== lastGeometry) {
+                pass.setVertexBuffer(0, geometry.positionBuffer);
+                pass.setVertexBuffer(1, geometry.normalBuffer);
+                pass.setVertexBuffer(2, geometry.uvBuffer);
+                if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
+                lastGeometry = geometry;
+            }
+            if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
+            else pass.draw(geometry.vertexCount);
         }
     }
 
