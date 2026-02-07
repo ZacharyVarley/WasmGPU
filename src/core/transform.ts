@@ -24,7 +24,8 @@ class TransformStore {
     private _u32: Uint32Array<ArrayBuffer> | null = null;
     private _dirty: boolean = true;
     private _orderDirty: boolean = true;
-    private _nodes: Transform[] = [];
+    private _nodes: (Transform | null)[] = [];
+    private _freeList: number[] = [];
     private _visited: Uint8Array = new Uint8Array(0);
     private _stack: number[] = [];
 
@@ -78,8 +79,16 @@ class TransformStore {
     }
 
     alloc(node: Transform): number {
-        if (this.count >= this.cap) this.growTo(this.cap * 2);
-        const index = this.count++;
+        let index: number;
+        if (this._freeList.length > 0) {
+            index = this._freeList.pop()!;
+            if (index < 0) throw new Error("TransformStore.alloc: corrupted free list (negative index).");
+            if (index >= this.count) this.count = index + 1;
+            if (this._nodes[index] !== null && this._nodes[index] !== undefined) throw new Error(`TransformStore.alloc: free list returned an in-use slot ${index}.`);
+        } else {
+            if (this.count >= this.cap) this.growTo(this.cap * 2);
+            index = this.count++;
+        }
         this._nodes[index] = node;
         this.initDefaults(index);
         this._orderDirty = true;
@@ -113,6 +122,52 @@ class TransformStore {
         u32[(this.parentPtr >>> 2) + childIndex] = parentIndex === null ? NO_PARENT : (parentIndex >>> 0);
         this._orderDirty = true;
         this._dirty = true;
+    }
+
+    free(index: number): void {
+        if (index < 0 || index >= this.count) throw new Error(`TransformStore.free: index out of range: ${index} (count=${this.count})`);
+        const node = this._nodes[index];
+        if (!node) throw new Error(`TransformStore.free: double free or invalid slot: ${index}`);
+        this._nodes[index] = null;
+        this.ensureViews();
+        const f32 = this.f32();
+        const u32 = this.u32();
+        let p = (this.posPtr >>> 2) + index * 3;
+        f32[p + 0] = 0;
+        f32[p + 1] = 0;
+        f32[p + 2] = 0;
+        let r = (this.rotPtr >>> 2) + index * 4;
+        f32[r + 0] = 0;
+        f32[r + 1] = 0;
+        f32[r + 2] = 0;
+        f32[r + 3] = 1;
+        let s = (this.sclPtr >>> 2) + index * 3;
+        f32[s + 0] = 1;
+        f32[s + 1] = 1;
+        f32[s + 2] = 1;
+        u32[(this.parentPtr >>> 2) + index] = NO_PARENT;
+        const localBase = (this.localPtr >>> 2) + index * 16;
+        const worldBase = (this.worldPtr >>> 2) + index * 16;
+        for (let i = 0; i < 16; i++) {
+            f32[localBase + i] = 0;
+            f32[worldBase + i] = 0;
+        }
+        f32[localBase + 0] = 1;
+        f32[localBase + 5] = 1;
+        f32[localBase + 10] = 1;
+        f32[localBase + 15] = 1;
+        f32[worldBase + 0] = 1;
+        f32[worldBase + 5] = 1;
+        f32[worldBase + 10] = 1;
+        f32[worldBase + 15] = 1;
+        this._freeList.push(index);
+        this._orderDirty = true;
+        this._dirty = true;
+        while (this.count > 0) {
+            const last = this.count - 1;
+            if (this._nodes[last]) break;
+            this.count--;
+        }
     }
 
     updateIfNeeded(): void {
@@ -210,6 +265,7 @@ export class Transform {
         0, 0, 1, 0,
         0, 0, 0, 1
     ];
+    private _disposed: boolean = false;
 
     constructor() {
         const store = TransformStore.global();
@@ -218,6 +274,14 @@ export class Transform {
 
     static updateAll(): void {
         TransformStore.global().updateIfNeeded();
+    }
+
+    private assertAlive(): void {
+        if (this._disposed) throw new Error("Transform is disposed (use-after-dispose).");
+    }
+
+    get disposed(): boolean {
+        return this._disposed;
     }
 
     get parent(): Transform | null {
@@ -263,26 +327,31 @@ export class Transform {
     }
 
     get positionPtr(): WasmPtr {
+        this.assertAlive();
         const T = TransformStore.global();
         return (T.posPtr + (this.index * 3 * 4)) >>> 0;
     }
 
     get rotationPtr(): WasmPtr {
+        this.assertAlive();
         const T = TransformStore.global();
         return (T.rotPtr + (this.index * 4 * 4)) >>> 0;
     }
 
     get scalePtr(): WasmPtr {
+        this.assertAlive();
         const T = TransformStore.global();
         return (T.sclPtr + (this.index * 3 * 4)) >>> 0;
     }
 
     get localMatrixPtr(): WasmPtr {
+        this.assertAlive();
         const T = TransformStore.global();
         return (T.localPtr + (this.index * 16 * 4)) >>> 0;
     }
 
     get worldMatrixPtr(): WasmPtr {
+        this.assertAlive();
         const T = TransformStore.global();
         return (T.worldPtr + (this.index * 16 * 4)) >>> 0;
     }
@@ -292,6 +361,7 @@ export class Transform {
     }
 
     setPosition(x: number, y: number, z: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const base = (T.posPtr >>> 2) + this.index * 3;
@@ -306,6 +376,7 @@ export class Transform {
     }
 
     translate(x: number, y: number, z: number): this {
+        this.assertAlive();
         return this.setPosition(this._position[0] + x, this._position[1] + y, this._position[2] + z);
     }
 
@@ -314,6 +385,7 @@ export class Transform {
     }
 
     setRotation(x: number, y: number, z: number, w: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const rotPtr = this.rotationPtr;
         quatf.init(rotPtr, x, y, z, w);
@@ -325,6 +397,7 @@ export class Transform {
     }
 
     setRotationFromAxisAngle(axis: number[], angle: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const a = T.tmpAxisPtr >>> 2;
@@ -342,6 +415,7 @@ export class Transform {
     }
 
     setRotationFromEuler(x: number, y: number, z: number): this {
+        this.assertAlive();
         const hx = x * 0.5;
         const hy = y * 0.5;
         const hz = z * 0.5;
@@ -359,6 +433,7 @@ export class Transform {
     }
 
     rotateOnAxis(axis: number[], angle: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const a = T.tmpAxisPtr >>> 2;
@@ -377,6 +452,7 @@ export class Transform {
     }
 
     rotateX(angle: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const a = T.tmpAxisPtr >>> 2;
@@ -395,6 +471,7 @@ export class Transform {
     }
 
     rotateY(angle: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const a = T.tmpAxisPtr >>> 2;
@@ -413,6 +490,7 @@ export class Transform {
     }
 
     rotateZ(angle: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const a = T.tmpAxisPtr >>> 2;
@@ -435,6 +513,7 @@ export class Transform {
     }
 
     setScale(x: number, y: number, z: number): this {
+        this.assertAlive();
         const T = TransformStore.global();
         const f32 = T.f32();
         const base = (T.sclPtr >>> 2) + this.index * 3;
@@ -449,10 +528,12 @@ export class Transform {
     }
 
     setUniformScale(scalar: number): this {
+        this.assertAlive();
         return this.setScale(scalar, scalar, scalar);
     }
 
     get localMatrix(): number[] {
+        this.assertAlive();
         const T = TransformStore.global();
         T.updateIfNeeded();
         const base = (T.localPtr >>> 2) + this.index * 16;
@@ -461,6 +542,7 @@ export class Transform {
     }
 
     get worldMatrix(): number[] {
+        this.assertAlive();
         const T = TransformStore.global();
         T.updateIfNeeded();
         const base = (T.worldPtr >>> 2) + this.index * 16;
@@ -469,6 +551,7 @@ export class Transform {
     }
 
     get worldPosition(): number[] {
+        this.assertAlive();
         const T = TransformStore.global();
         T.updateIfNeeded();
         const base = (T.worldPtr >>> 2) + this.index * 16;
@@ -477,6 +560,7 @@ export class Transform {
     }
 
     setParent(parent: Transform | null): this {
+        this.assertAlive();
         if (parent === this._parent) return this;
         if (parent === this) throw new Error("Transform cannot be parented to itself.");
         for (let p = parent; p; p = p._parent) if (p === this) throw new Error("Transform parenting would create a cycle.");
@@ -492,17 +576,20 @@ export class Transform {
     }
 
     addChild(child: Transform): this {
+        this.assertAlive();
         child.setParent(this);
         return this;
     }
 
     removeChild(child: Transform): this {
+        this.assertAlive();
         if (child._parent !== this) return this;
         child.setParent(null);
         return this;
     }
 
     removeFromParent(): this {
+        this.assertAlive();
         if (!this._parent) return this;
         const p = this._parent;
         const i = p._children.indexOf(this);
@@ -513,6 +600,7 @@ export class Transform {
     }
 
     reset(): this {
+        this.assertAlive();
         this._parent = null;
         this._children.length = 0;
         TransformStore.global().setParent(this.index, null);
@@ -523,6 +611,7 @@ export class Transform {
     }
 
     copyFrom(other: Transform): this {
+        this.assertAlive();
         this.setPosition(other._position[0], other._position[1], other._position[2]);
         this.setRotation(other._rotation[0], other._rotation[1], other._rotation[2], other._rotation[3]);
         this.setScale(other._scale[0], other._scale[1], other._scale[2]);
@@ -530,8 +619,19 @@ export class Transform {
     }
 
     clone(): Transform {
+        this.assertAlive();
         const T = new Transform();
         T.copyFrom(this);
         return T;
+    }
+
+    dispose(): void {
+        if (this._disposed) return;
+        const children = this._children.slice();
+        for (const child of children) child.setParent(null);
+        this._children.length = 0;
+        this.removeFromParent();
+        TransformStore.global().free(this.index);
+        this._disposed = true;
     }
 }

@@ -62,6 +62,7 @@ export class Mesh {
     }
 
     destroy(): void {
+        this.transform.dispose();
         this.geometry.destroy();
         this.material.destroy();
     }
