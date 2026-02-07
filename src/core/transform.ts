@@ -1,4 +1,4 @@
-import { wasm, quatf, vec3f, transformf, WasmPtr } from "../math";
+import { wasm, quatf, vec3f, transformf, WasmPtr } from "../wasm";
 
 const NO_PARENT = 0xFFFFFFFF;
 

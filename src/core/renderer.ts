@@ -5,7 +5,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode } from "../graphics/material";
-import { frameArena, mat4f, wasm, WasmPtr } from "../math";
+import { frameArena, mat4f, wasm, WasmPtr } from "../wasm";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {

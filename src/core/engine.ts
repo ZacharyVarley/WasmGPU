@@ -1,4 +1,4 @@
-import { frameArena, initMath } from "../math";
+import { frameArena, initMath } from "../wasm";
 import { Renderer, RendererDescriptor } from "./renderer";
 import { Scene } from "../world/scene";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";

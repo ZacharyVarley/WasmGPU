@@ -1,5 +1,5 @@
 import { Transform } from "../core/transform";
-import { mat4, vec3 } from "../math";
+import { mat4, vec3 } from "../wasm";
 
 export type CameraType = "perspective" | "orthographic";
 
