@@ -76,13 +76,13 @@
                     wgpu.geometry.pyramid(1, 1, 1.2),
                     wgpu.material.standard({ color: [0.8, 0.3, 0.7], roughness: 0.6, metallic: 0.2 })
                 );
-                pyramid.transform.setPosition(1.2, 0, -2);
+                pyramid.transform.setPosition(1.2, 0, 2);
                 scene.add(pyramid);
                 const prism = wgpu.createMesh(
                     wgpu.geometry.prism(0.5, 1, 6),
                     wgpu.material.standard({ color: [0.3, 0.7, 0.7], roughness: 0.3, metallic: 0.5 })
                 );
-                prism.transform.setPosition(0, 0.5, -2.5);
+                prism.transform.setPosition(0, 0.5, 2.5);
                 scene.add(prism);
 
                 // Light bulb
@@ -104,11 +104,11 @@
                     // Rotate shapes
                     cube.transform.rotateY(dt * 0.8);
                     cube.transform.rotateX(dt * 0.3);
-                    sphere.transform.rotateY(dt * 0.5);
                     torus.transform.rotateX(dt * 1.2);
                     torus.transform.rotateY(dt * 0.6);
-                    cylinder.transform.rotateY(dt * 0.7);
-                    prism.transform.rotateY(dt * 0.4);
+                    cylinder.transform.rotateX(dt * 0.7);
+                    pyramid.transform.rotateY(dt * 0.9);
+                    prism.transform.rotateZ(dt * 0.4);
 
                     // Bob the cube up and down
                     const bobY = 0.8 + Math.sin(time * 2) * 0.15;
