@@ -4,7 +4,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode } from "../graphics/material";
-import { mat4 } from "../math";
+import { wasm, WasmPtr } from "../math";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -30,6 +30,13 @@ export class Renderer {
     private lightingUniformBuffer!: GPUBuffer;
     private pipelineCache: Map<string, GPURenderPipeline> = new Map();
     private shaderCache: Map<string, GPUShaderModule> = new Map();
+    private cameraUniformStagingPtr!: WasmPtr;
+    private lightingUniformStagingPtr!: WasmPtr;
+    private modelUniformStagingPtr!: WasmPtr;
+    private cameraUniformStagingView!: Float32Array<ArrayBuffer>;
+    private lightingUniformStagingView!: Float32Array<ArrayBuffer>;
+    private modelUniformStagingView!: Float32Array<ArrayBuffer>;
+    private _wasmBuffer: ArrayBuffer | null = null;
 
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -84,6 +91,15 @@ export class Renderer {
 
     get aspectRatio(): number {
         return this.width / this.height;
+    }
+
+    private refreshWasmStagingViews(): void {
+        const buf = wasm.memory().buffer;
+        if (this._wasmBuffer === buf) return;
+        this._wasmBuffer = buf;
+        this.cameraUniformStagingView = wasm.f32view(this.cameraUniformStagingPtr, 20);
+        this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 104);
+        this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
     }
 
     render(scene: Scene, camera: Camera): void {
@@ -165,12 +181,19 @@ export class Renderer {
             size: 416,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
+        this.cameraUniformStagingPtr = wasm.allocF32(20);
+        this.lightingUniformStagingPtr = wasm.allocF32(104);
+        this.modelUniformStagingPtr = wasm.allocF32(32);
+        if (!this.cameraUniformStagingPtr || !this.lightingUniformStagingPtr || !this.modelUniformStagingPtr) throw new Error("Failed to allocate WASM staging buffers.");
+        this._wasmBuffer = null;
+        this.refreshWasmStagingViews();
     }
 
     private writeCameraUniforms(camera: Camera): void {
         const viewProj = camera.viewProjectionMatrix;
         const pos = camera.position;
-        const data = new Float32Array(20);
+        this.refreshWasmStagingViews();
+        const data = this.cameraUniformStagingView;
         data.set(viewProj, 0);
         data.set(pos, 16);
         this.queue.writeBuffer(this.cameraUniformBuffer, 0, data);
@@ -178,12 +201,13 @@ export class Renderer {
 
     private writeLightingUniforms(scene: Scene): void {
         const { ambient, lights } = scene.getLightingData();
-        const data = new Float32Array(104);
+        this.refreshWasmStagingViews();
+        const data = this.lightingUniformStagingView;
         data[0] = ambient[0];
         data[1] = ambient[1];
         data[2] = ambient[2];
         data[3] = 1;
-        const countView = new Uint32Array(data.buffer, 16, 1);
+        const countView = new Uint32Array(data.buffer, data.byteOffset + 16, 1);
         countView[0] = lights.length;
         let offset = 8;
         for (let i = 0; i < lights.length && i < Scene.MAX_LIGHTS; i++) {
@@ -242,7 +266,8 @@ export class Renderer {
         const modelBuffer = this.modelUniformBuffers[this.modelBufferIndex++];
         const model = mesh.worldMatrix;
         const normalMatrix = this.computeNormalMatrix(model);
-        const data = new Float32Array(32);
+        this.refreshWasmStagingViews();
+        const data = this.modelUniformStagingView;
         data.set(model, 0);
         data.set(normalMatrix, 16);
         this.queue.writeBuffer(modelBuffer, 0, data);
