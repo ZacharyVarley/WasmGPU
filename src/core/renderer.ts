@@ -1,3 +1,4 @@
+import { Transform } from "./transform";
 import { Scene } from "../world/scene";
 import { Light, DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
@@ -108,6 +109,7 @@ export class Renderer {
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
         const colorTexture = this.context.getCurrentTexture();
         const colorView = colorTexture.createView();
+        Transform.updateAll();
         this.writeCameraUniforms(camera);
         this.writeLightingUniforms(scene);
         const encoder = this.device.createCommandEncoder();

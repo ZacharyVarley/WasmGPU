@@ -15,6 +15,11 @@ unsafe fn f32_slice_mut(ptr: u32, len: usize) -> &'static mut [f32] {
 }
 
 #[inline(always)]
+unsafe fn u32_slice(ptr: u32, len: usize) -> &'static [u32] {
+    core::slice::from_raw_parts(ptr as *const u32, len)
+}
+
+#[inline(always)]
 fn align_up(x: usize, align: usize) -> usize {
     (x + (align - 1)) & !(align - 1)
 }
@@ -1698,4 +1703,126 @@ pub extern "C" fn vec3_sub(out: u32, v1: u32, v2: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn vec3_print(_v: u32) {
     // Printing is handled in JavaScript.
+}
+
+#[no_mangle]
+pub extern "C" fn transform_compose_local_many(out_local: u32, pos: u32, rot: u32, scl: u32, count: u32) -> u32 {
+    unsafe {
+        let n = count as usize;
+        let p = f32_slice(pos, n * 3);
+        let r = f32_slice(rot, n * 4);
+        let s = f32_slice(scl, n * 3);
+        let o = f32_slice_mut(out_local, n * 16);
+
+        for i in 0..n {
+            let pi = i * 3;
+            let ri = i * 4;
+            let si = i * 3;
+            let mi = i * 16;
+
+            let px = p[pi + 0];
+            let py = p[pi + 1];
+            let pz = p[pi + 2];
+
+            let x = r[ri + 0];
+            let y = r[ri + 1];
+            let z = r[ri + 2];
+            let w = r[ri + 3];
+
+            let sx = s[si + 0];
+            let sy = s[si + 1];
+            let sz = s[si + 2];
+
+            let xx = x * x;
+            let yy = y * y;
+            let zz = z * z;
+            let xy = x * y;
+            let xz = x * z;
+            let yz = y * z;
+            let wx = w * x;
+            let wy = w * y;
+            let wz = w * z;
+
+            o[mi + 0] = (1.0 - 2.0 * (yy + zz)) * sx;
+            o[mi + 1] = (2.0 * (xy + wz)) * sx;
+            o[mi + 2] = (2.0 * (xz - wy)) * sx;
+            o[mi + 3] = 0.0;
+
+            o[mi + 4] = (2.0 * (xy - wz)) * sy;
+            o[mi + 5] = (1.0 - 2.0 * (xx + zz)) * sy;
+            o[mi + 6] = (2.0 * (yz + wx)) * sy;
+            o[mi + 7] = 0.0;
+
+            o[mi + 8] = (2.0 * (xz + wy)) * sz;
+            o[mi + 9] = (2.0 * (yz - wx)) * sz;
+            o[mi + 10] = (1.0 - 2.0 * (xx + yy)) * sz;
+            o[mi + 11] = 0.0;
+
+            o[mi + 12] = px;
+            o[mi + 13] = py;
+            o[mi + 14] = pz;
+            o[mi + 15] = 1.0;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn transform_update_world_ordered(out_world: u32, local: u32, parent_u32: u32, order_u32: u32, count: u32) -> u32 {
+    unsafe {
+        let n = count as usize;
+        let l = f32_slice(local, n * 16);
+        let w = f32_slice_mut(out_world, n * 16);
+        let parents = u32_slice(parent_u32, n);
+        let order = u32_slice(order_u32, n);
+
+        for k in 0..n {
+            let idx = order[k] as usize;
+            if idx >= n {
+                continue;
+            }
+
+            let p = parents[idx];
+            let dst = idx * 16;
+            let src = idx * 16;
+
+            if p == u32::MAX || (p as usize) >= n {
+                for j in 0..16 {
+                    w[dst + j] = l[src + j];
+                }
+                continue;
+            }
+
+            let parent_idx = p as usize;
+            let a = parent_idx * 16;
+            let b = src;
+
+            let mut t = [0.0f32; 16];
+
+            t[0]  = w[a + 0]  * l[b + 0]  + w[a + 4]  * l[b + 1]  + w[a + 8]  * l[b + 2]  + w[a + 12] * l[b + 3];
+            t[1]  = w[a + 1]  * l[b + 0]  + w[a + 5]  * l[b + 1]  + w[a + 9]  * l[b + 2]  + w[a + 13] * l[b + 3];
+            t[2]  = w[a + 2]  * l[b + 0]  + w[a + 6]  * l[b + 1]  + w[a + 10] * l[b + 2]  + w[a + 14] * l[b + 3];
+            t[3]  = w[a + 3]  * l[b + 0]  + w[a + 7]  * l[b + 1]  + w[a + 11] * l[b + 2]  + w[a + 15] * l[b + 3];
+
+            t[4]  = w[a + 0]  * l[b + 4]  + w[a + 4]  * l[b + 5]  + w[a + 8]  * l[b + 6]  + w[a + 12] * l[b + 7];
+            t[5]  = w[a + 1]  * l[b + 4]  + w[a + 5]  * l[b + 5]  + w[a + 9]  * l[b + 6]  + w[a + 13] * l[b + 7];
+            t[6]  = w[a + 2]  * l[b + 4]  + w[a + 6]  * l[b + 5]  + w[a + 10] * l[b + 6]  + w[a + 14] * l[b + 7];
+            t[7]  = w[a + 3]  * l[b + 4]  + w[a + 7]  * l[b + 5]  + w[a + 11] * l[b + 6]  + w[a + 15] * l[b + 7];
+
+            t[8]  = w[a + 0]  * l[b + 8]  + w[a + 4]  * l[b + 9]  + w[a + 8]  * l[b + 10] + w[a + 12] * l[b + 11];
+            t[9]  = w[a + 1]  * l[b + 8]  + w[a + 5]  * l[b + 9]  + w[a + 9]  * l[b + 10] + w[a + 13] * l[b + 11];
+            t[10] = w[a + 2]  * l[b + 8]  + w[a + 6]  * l[b + 9]  + w[a + 10] * l[b + 10] + w[a + 14] * l[b + 11];
+            t[11] = w[a + 3]  * l[b + 8]  + w[a + 7]  * l[b + 9]  + w[a + 11] * l[b + 10] + w[a + 15] * l[b + 11];
+
+            t[12] = w[a + 0]  * l[b + 12] + w[a + 4]  * l[b + 13] + w[a + 8]  * l[b + 14] + w[a + 12] * l[b + 15];
+            t[13] = w[a + 1]  * l[b + 12] + w[a + 5]  * l[b + 13] + w[a + 9]  * l[b + 14] + w[a + 13] * l[b + 15];
+            t[14] = w[a + 2]  * l[b + 12] + w[a + 6]  * l[b + 13] + w[a + 10] * l[b + 14] + w[a + 14] * l[b + 15];
+            t[15] = w[a + 3]  * l[b + 12] + w[a + 7]  * l[b + 13] + w[a + 11] * l[b + 14] + w[a + 15] * l[b + 15];
+
+            for j in 0..16 {
+                w[dst + j] = t[j];
+            }
+        }
+    }
+    0
 }

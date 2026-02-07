@@ -279,6 +279,9 @@ export const wasmgpu_seed = wasm.wasmgpu_seed;
 export const f32view = (ptr, len) => new Float32Array(memory.buffer, ptr, len);
 export const u32view = (ptr, len) => new Uint32Array(memory.buffer, ptr, len);
 
+export const transform_compose_local_many = wasm.transform_compose_local_many;
+export const transform_update_world_ordered = wasm.transform_update_world_ordered;
+
 export const mat4_abs = wasm.mat4_abs;
 export const mat4_add = wasm.mat4_add;
 export const mat4_copy = wasm.mat4_copy;
@@ -519,6 +522,9 @@ export function wasmgpu_seed(seed: number): void;
 
 export function f32view(ptr: number, len: number): Float32Array;
 export function u32view(ptr: number, len: number): Uint32Array;
+
+export function transform_compose_local_many(outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, count: number): number;
+export function transform_update_world_ordered(outWorldPtr: number, localPtr: number, parentPtr: number, orderPtr: number, count: number): number;
 
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;

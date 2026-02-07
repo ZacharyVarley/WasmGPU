@@ -138,6 +138,15 @@ export const quatf = {
     },
 };
 
+export const transformf = {
+    composeLocalMany: (outLocalPtr: WasmPtr, posPtr: WasmPtr, rotPtr: WasmPtr, sclPtr: WasmPtr, count: number): void => {
+        ensure().transform_compose_local_many(outLocalPtr >>> 0, posPtr >>> 0, rotPtr >>> 0, sclPtr >>> 0, count >>> 0);
+    },
+    updateWorldOrdered: (outWorldPtr: WasmPtr, localPtr: WasmPtr, parentPtr: WasmPtr, orderPtr: WasmPtr, count: number): void => {
+        ensure().transform_update_world_ordered(outWorldPtr >>> 0, localPtr >>> 0, parentPtr >>> 0, orderPtr >>> 0, count >>> 0);
+    },
+};
+
 export const vec3f = {
     alloc: (): WasmPtr => wasm.allocF32(4),
     view3: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 3),
