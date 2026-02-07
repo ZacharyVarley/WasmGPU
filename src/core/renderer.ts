@@ -5,7 +5,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode } from "../graphics/material";
-import { mat4f, wasm, WasmPtr } from "../math";
+import { frameArena, mat4f, wasm, WasmPtr } from "../math";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -106,6 +106,10 @@ export class Renderer {
     render(scene: Scene, camera: Camera): void {
         this.resize();
         this.modelBufferIndex = 0;
+        this.cameraUniformStagingPtr = frameArena.allocF32(20);
+        this.lightingUniformStagingPtr = frameArena.allocF32(104);
+        this.modelUniformStagingPtr = frameArena.allocF32(32);
+        this._wasmBuffer = null;
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
         const colorTexture = this.context.getCurrentTexture();
         const colorView = colorTexture.createView();
@@ -183,12 +187,10 @@ export class Renderer {
             size: 416,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
-        this.cameraUniformStagingPtr = wasm.allocF32(20);
-        this.lightingUniformStagingPtr = wasm.allocF32(104);
-        this.modelUniformStagingPtr = wasm.allocF32(32);
-        if (!this.cameraUniformStagingPtr || !this.lightingUniformStagingPtr || !this.modelUniformStagingPtr) throw new Error("Failed to allocate WASM staging buffers.");
+        this.cameraUniformStagingPtr = 0;
+        this.lightingUniformStagingPtr = 0;
+        this.modelUniformStagingPtr = 0;
         this._wasmBuffer = null;
-        this.refreshWasmStagingViews();
     }
 
     private writeCameraUniforms(camera: Camera): void {

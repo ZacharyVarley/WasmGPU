@@ -1,4 +1,4 @@
-import { initMath } from "../math";
+import { frameArena, initMath } from "../math";
 import { Renderer, RendererDescriptor } from "./renderer";
 import { Scene } from "../world/scene";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
@@ -37,6 +37,7 @@ export class WasmGPU {
         this._lastTime = performance.now();
         const loop = (now: number) => {
             if (!this._isRunning) return;
+            frameArena.reset();
             const dt = (now - this._lastTime) / 1000;
             this._lastTime = now;
             this._frameCallback?.(dt, now / 1000, this);
@@ -58,6 +59,7 @@ export class WasmGPU {
     }
 
     render(scene: Scene, camera: Camera): void {
+        if (!this._isRunning) frameArena.reset();
         this.renderer.render(scene, camera);
     }
 

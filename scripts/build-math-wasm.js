@@ -276,6 +276,13 @@ export const wasmgpu_alloc_f32 = wasm.wasmgpu_alloc_f32;
 export const wasmgpu_free_f32 = wasm.wasmgpu_free_f32;
 export const wasmgpu_seed = wasm.wasmgpu_seed;
 
+export const wasmgpu_frame_arena_init = wasm.wasmgpu_frame_arena_init;
+export const wasmgpu_frame_arena_reset = wasm.wasmgpu_frame_arena_reset;
+export const wasmgpu_frame_alloc = wasm.wasmgpu_frame_alloc;
+export const wasmgpu_frame_alloc_f32 = wasm.wasmgpu_frame_alloc_f32;
+export const wasmgpu_frame_arena_used = wasm.wasmgpu_frame_arena_used;
+export const wasmgpu_frame_arena_cap = wasm.wasmgpu_frame_arena_cap;
+
 export const f32view = (ptr, len) => new Float32Array(memory.buffer, ptr, len);
 export const u32view = (ptr, len) => new Uint32Array(memory.buffer, ptr, len);
 
@@ -519,6 +526,13 @@ export function wasmgpu_free(ptr: number, bytes: number): void;
 export function wasmgpu_alloc_f32(len: number): number;
 export function wasmgpu_free_f32(ptr: number, len: number): void;
 export function wasmgpu_seed(seed: number): void;
+
+export function wasmgpu_frame_arena_init(capBytes: number): number;
+export function wasmgpu_frame_arena_reset(): void;
+export function wasmgpu_frame_alloc(bytes: number, align: number): number;
+export function wasmgpu_frame_alloc_f32(len: number): number;
+export function wasmgpu_frame_arena_used(): number;
+export function wasmgpu_frame_arena_cap(): number;
 
 export function f32view(ptr: number, len: number): Float32Array;
 export function u32view(ptr: number, len: number): Uint32Array;

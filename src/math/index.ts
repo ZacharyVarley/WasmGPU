@@ -7,6 +7,8 @@ export type WasmPtr = number;
 let modPromise: Promise<MathModule> | null = null;
 let mod: MathModule | null = null;
 
+const DEFAULT_FRAME_ARENA_BYTES = 8 * 1024 * 1024;
+
 const IIFE_SCRIPT_URL: string | null = (() => {
     if (typeof document === "undefined") return null;
     const cs = document.currentScript as HTMLScriptElement | null;
@@ -15,9 +17,7 @@ const IIFE_SCRIPT_URL: string | null = (() => {
 })();
 
 const defaultBaseURL = (): string => {
-    if (__WASMGPU_BASE_URL__ !== "__CURRENT_SCRIPT__") {
-        return new URL(".", __WASMGPU_BASE_URL__).toString();
-    }
+    if (__WASMGPU_BASE_URL__ !== "__CURRENT_SCRIPT__") return new URL(".", __WASMGPU_BASE_URL__).toString();
     const base = IIFE_SCRIPT_URL ?? location.href;
     return new URL(".", base).toString();
 };
@@ -28,6 +28,7 @@ export const initMath = async (baseURL?: string): Promise<void> => {
     const mathURL = new URL("math.js", base).toString();
     modPromise ??= import(mathURL) as Promise<MathModule>;
     mod = await modPromise;
+    mod.wasmgpu_frame_arena_init(DEFAULT_FRAME_ARENA_BYTES);
 };
 
 const ensure = (): MathModule => {
@@ -51,6 +52,37 @@ export const wasm = {
         for (let i = n; i < (len >>> 0); i++) v[i] = 0;
     },
     readF32Array: (ptr: WasmPtr, len: number): number[] => Array.from(ensure().f32view(ptr >>> 0, len >>> 0)),
+};
+
+export const frameArena = {
+    init: (capBytes: number = DEFAULT_FRAME_ARENA_BYTES): WasmPtr => {
+        const base = ensure().wasmgpu_frame_arena_init(capBytes >>> 0) >>> 0;
+        if (!base) throw new Error(`wasmgpu_frame_arena_init(${capBytes}) failed`);
+        return base;
+    },
+    reset: (): void => {
+        ensure().wasmgpu_frame_arena_reset();
+    },
+    alloc: (bytes: number, align: number = 16): WasmPtr => {
+        const ptr = ensure().wasmgpu_frame_alloc(bytes >>> 0, align >>> 0) >>> 0;
+        if (!ptr) {
+            const used = ensure().wasmgpu_frame_arena_used() >>> 0;
+            const cap = ensure().wasmgpu_frame_arena_cap() >>> 0;
+            throw new Error(`Frame arena OOM: alloc ${bytes} bytes (align ${align}). used=${used} cap=${cap}`);
+        }
+        return ptr;
+    },
+    allocF32: (len: number): WasmPtr => {
+        const ptr = ensure().wasmgpu_frame_alloc_f32(len >>> 0) >>> 0;
+        if (!ptr) {
+            const used = ensure().wasmgpu_frame_arena_used() >>> 0;
+            const cap = ensure().wasmgpu_frame_arena_cap() >>> 0;
+            throw new Error(`Frame arena OOM: allocF32 len=${len} (${len * 4} bytes). used=${used} cap=${cap}`);
+        }
+        return ptr;
+    },
+    usedBytes: (): number => ensure().wasmgpu_frame_arena_used() >>> 0,
+    capBytes: (): number => ensure().wasmgpu_frame_arena_cap() >>> 0,
 };
 
 export const mat4f = {
