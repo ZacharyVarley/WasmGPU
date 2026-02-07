@@ -24,6 +24,7 @@ export class Renderer {
     private width = 0;
     private height = 0;
     private globalBindGroupLayout!: GPUBindGroupLayout;
+    private globalBindGroups: GPUBindGroup[] = [];
     private cameraUniformBuffer!: GPUBuffer;
     private modelUniformBuffers: GPUBuffer[] = [];
     private modelBufferIndex: number = 0;
@@ -146,6 +147,7 @@ export class Renderer {
         for (const buffer of this.modelUniformBuffers) buffer.destroy();
         this.modelUniformBuffers = [];
         this.lightingUniformBuffer?.destroy();
+        this.globalBindGroups = [];
         this.pipelineCache.clear();
         this.shaderCache.clear();
     }
@@ -187,6 +189,17 @@ export class Renderer {
             size: 416,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
+        this.globalBindGroups = new Array(this.MODEL_BUFFER_POOL_SIZE);
+        for (let i = 0; i < this.MODEL_BUFFER_POOL_SIZE; i++) {
+            this.globalBindGroups[i] = this.device.createBindGroup({
+                layout: this.globalBindGroupLayout,
+                entries: [
+                    { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
+                    { binding: 1, resource: { buffer: this.modelUniformBuffers[i] } },
+                    { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
+                ]
+            });
+        }
         this.cameraUniformStagingPtr = 0;
         this.lightingUniformStagingPtr = 0;
         this.modelUniformStagingPtr = 0;
@@ -248,7 +261,9 @@ export class Renderer {
             console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
             return;
         }
-        const modelBuffer = this.modelUniformBuffers[this.modelBufferIndex++];
+        const modelSlot = this.modelBufferIndex++;
+        const modelBuffer = this.modelUniformBuffers[modelSlot];
+        const globalBindGroup = this.globalBindGroups[modelSlot];
         const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
         const invPtr = this.modelUniformStagingPtr;
         const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
@@ -257,14 +272,6 @@ export class Renderer {
         const mem = wasm.memory().buffer as ArrayBuffer;
         this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
         this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
-        const globalBindGroup = this.device.createBindGroup({
-            layout: this.globalBindGroupLayout,
-            entries: [
-                { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-                { binding: 1, resource: { buffer: modelBuffer } },
-                { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
-            ]
-        });
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, globalBindGroup);
         pass.setBindGroup(1, material.bindGroup!);
