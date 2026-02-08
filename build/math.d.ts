@@ -8,8 +8,19 @@ export function wasmgpu_alloc_f32(len: number): number;
 export function wasmgpu_free_f32(ptr: number, len: number): void;
 export function wasmgpu_seed(seed: number): void;
 
+export function wasmgpu_frame_arena_init(capBytes: number): number;
+export function wasmgpu_frame_arena_reset(): void;
+export function wasmgpu_frame_alloc(bytes: number, align: number): number;
+export function wasmgpu_frame_alloc_f32(len: number): number;
+export function wasmgpu_frame_arena_used(): number;
+export function wasmgpu_frame_arena_cap(): number;
+
 export function f32view(ptr: number, len: number): Float32Array;
 export function u32view(ptr: number, len: number): Uint32Array;
+
+export function transform_compose_local_many(outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, count: number): number;
+export function transform_update_world_ordered(outWorldPtr: number, localPtr: number, parentPtr: number, orderPtr: number, count: number): number;
+export function transform_pack_model_normal_mat4_from_ptrs(outPtr: number, matPtrsPtr: number, count: number): number;
 
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;

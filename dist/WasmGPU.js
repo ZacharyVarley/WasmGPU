@@ -1,6 +1,7 @@
-// src/math/index.ts
+// src/wasm/index.ts
 var modPromise = null;
 var mod = null;
+var DEFAULT_FRAME_ARENA_BYTES = 8 * 1024 * 1024;
 var IIFE_SCRIPT_URL = (() => {
   if (typeof document === "undefined") return null;
   const cs = document.currentScript;
@@ -8,9 +9,7 @@ var IIFE_SCRIPT_URL = (() => {
   return src && src.length > 0 ? src : null;
 })();
 var defaultBaseURL = () => {
-  if (import.meta.url !== "__CURRENT_SCRIPT__") {
-    return new URL(".", import.meta.url).toString();
-  }
+  if (import.meta.url !== "__CURRENT_SCRIPT__") return new URL(".", import.meta.url).toString();
   const base = IIFE_SCRIPT_URL ?? location.href;
   return new URL(".", base).toString();
 };
@@ -20,10 +19,303 @@ var initMath = async (baseURL) => {
   const mathURL = new URL("math.js", base).toString();
   modPromise ??= import(mathURL);
   mod = await modPromise;
+  mod.wasmgpu_frame_arena_init(DEFAULT_FRAME_ARENA_BYTES);
 };
 var ensure = () => {
   if (!mod) throw new Error("Math module not initialized. Call await initMath() first.");
   return mod;
+};
+var bool = (x) => !!x;
+var wasm = {
+  memory: () => ensure().memory,
+  seed: (seed) => {
+    ensure().wasmgpu_seed(seed >>> 0);
+  },
+  allocF32: (len) => ensure().wasmgpu_alloc_f32(len >>> 0) >>> 0,
+  freeF32: (ptr, len) => ensure().wasmgpu_free_f32(ptr >>> 0, len >>> 0),
+  f32view: (ptr, len) => ensure().f32view(ptr >>> 0, len >>> 0),
+  u32view: (ptr, len) => ensure().u32view(ptr >>> 0, len >>> 0),
+  writeF32: (ptr, len, src) => {
+    const v = ensure().f32view(ptr >>> 0, len >>> 0);
+    const n = Math.min(len >>> 0, src ? src.length >>> 0 : 0);
+    for (let i = 0; i < n; i++) v[i] = src[i];
+    for (let i = n; i < len >>> 0; i++) v[i] = 0;
+  },
+  readF32Array: (ptr, len) => Array.from(ensure().f32view(ptr >>> 0, len >>> 0))
+};
+var frameArena = {
+  init: (capBytes = DEFAULT_FRAME_ARENA_BYTES) => {
+    const base = ensure().wasmgpu_frame_arena_init(capBytes >>> 0) >>> 0;
+    if (!base) throw new Error(`wasmgpu_frame_arena_init(${capBytes}) failed`);
+    return base;
+  },
+  reset: () => {
+    ensure().wasmgpu_frame_arena_reset();
+  },
+  alloc: (bytes, align = 16) => {
+    const ptr = ensure().wasmgpu_frame_alloc(bytes >>> 0, align >>> 0) >>> 0;
+    if (!ptr) {
+      const used = ensure().wasmgpu_frame_arena_used() >>> 0;
+      const cap = ensure().wasmgpu_frame_arena_cap() >>> 0;
+      throw new Error(`Frame arena OOM: alloc ${bytes} bytes (align ${align}). used=${used} cap=${cap}`);
+    }
+    return ptr;
+  },
+  allocF32: (len) => {
+    const ptr = ensure().wasmgpu_frame_alloc_f32(len >>> 0) >>> 0;
+    if (!ptr) {
+      const used = ensure().wasmgpu_frame_arena_used() >>> 0;
+      const cap = ensure().wasmgpu_frame_arena_cap() >>> 0;
+      throw new Error(`Frame arena OOM: allocF32 len=${len} (${len * 4} bytes). used=${used} cap=${cap}`);
+    }
+    return ptr;
+  },
+  usedBytes: () => ensure().wasmgpu_frame_arena_used() >>> 0,
+  capBytes: () => ensure().wasmgpu_frame_arena_cap() >>> 0
+};
+var mat4f = {
+  alloc: () => wasm.allocF32(16),
+  view: (ptr) => wasm.f32view(ptr, 16),
+  set: (ptr, src) => wasm.writeF32(ptr, 16, src),
+  abs: (out, m) => {
+    ensure().mat4_abs(out >>> 0, m >>> 0);
+  },
+  add: (out, a, b) => {
+    ensure().mat4_add(out >>> 0, a >>> 0, b >>> 0);
+  },
+  copy: (out, m) => {
+    ensure().mat4_copy(out >>> 0, m >>> 0);
+  },
+  det: (m) => ensure().mat4_det(m >>> 0),
+  identity: (out) => {
+    ensure().mat4_identity(out >>> 0);
+  },
+  init: (out, m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15) => {
+    ensure().mat4_init(out >>> 0, m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15);
+  },
+  invert: (out, m) => {
+    ensure().mat4_invert(out >>> 0, m >>> 0);
+  },
+  isEqual: (a, b) => bool(ensure().mat4_isEqual(a >>> 0, b >>> 0)),
+  isIdentity: (m) => bool(ensure().mat4_isIdentity(m >>> 0)),
+  isInverse: (a, b) => bool(ensure().mat4_isInverse(a >>> 0, b >>> 0)),
+  isZero: (m) => bool(ensure().mat4_isZero(m >>> 0)),
+  lookAt: (out, eye3, center3, up3) => {
+    ensure().mat4_lookAt(out >>> 0, eye3 >>> 0, center3 >>> 0, up3 >>> 0);
+  },
+  mul: (out, a, b) => {
+    ensure().mat4_mul(out >>> 0, a >>> 0, b >>> 0);
+  },
+  mulVec4: (outVec4, m, v4) => {
+    ensure().mat4_mul_vec4(outVec4 >>> 0, m >>> 0, v4 >>> 0);
+  },
+  neg: (out, m) => {
+    ensure().mat4_neg(out >>> 0, m >>> 0);
+  },
+  norm: (m) => ensure().mat4_norm(m >>> 0),
+  normalize: (out, m) => {
+    ensure().mat4_normalize(out >>> 0, m >>> 0);
+  },
+  normsq: (m) => ensure().mat4_normsq(m >>> 0),
+  perspective: (out, fovY, aspect, near, far) => {
+    ensure().mat4_perspective(out >>> 0, fovY, aspect, near, far);
+  },
+  random: (out) => {
+    ensure().mat4_random(out >>> 0);
+  },
+  randomRange: (out, min, max) => {
+    ensure().mat4_random_range(out >>> 0, min, max);
+  },
+  rotateX: (out, m, angle) => {
+    ensure().mat4_rotateX(out >>> 0, m >>> 0, angle);
+  },
+  rotateY: (out, m, angle) => {
+    ensure().mat4_rotateY(out >>> 0, m >>> 0, angle);
+  },
+  rotateZ: (out, m, angle) => {
+    ensure().mat4_rotateZ(out >>> 0, m >>> 0, angle);
+  },
+  round: (out, m) => {
+    ensure().mat4_round(out >>> 0, m >>> 0);
+  },
+  scl: (out, m, scalar) => {
+    ensure().mat4_scl(out >>> 0, m >>> 0, scalar);
+  },
+  sub: (out, a, b) => {
+    ensure().mat4_sub(out >>> 0, a >>> 0, b >>> 0);
+  },
+  trace: (m) => ensure().mat4_trace(m >>> 0),
+  translate: (out, m, v3) => {
+    ensure().mat4_translate(out >>> 0, m >>> 0, v3 >>> 0);
+  },
+  transpose: (out, m) => {
+    ensure().mat4_transpose(out >>> 0, m >>> 0);
+  },
+  print: (m) => {
+    const a = wasm.f32view(m, 16);
+    console.log(
+      `[ ${a[0]} ${a[1]} ${a[2]} ${a[3]} ]
+[ ${a[4]} ${a[5]} ${a[6]} ${a[7]} ]
+[ ${a[8]} ${a[9]} ${a[10]} ${a[11]} ]
+[ ${a[12]} ${a[13]} ${a[14]} ${a[15]} ]`
+    );
+  }
+};
+var quatf = {
+  alloc: () => wasm.allocF32(4),
+  view: (ptr) => wasm.f32view(ptr, 4),
+  set: (ptr, src) => wasm.writeF32(ptr, 4, src),
+  abs: (out, q) => {
+    ensure().quat_abs(out >>> 0, q >>> 0);
+  },
+  add: (out, a, b) => {
+    ensure().quat_add(out >>> 0, a >>> 0, b >>> 0);
+  },
+  copy: (out, q) => {
+    ensure().quat_copy(out >>> 0, q >>> 0);
+  },
+  dist: (a, b) => ensure().quat_dist(a >>> 0, b >>> 0),
+  distsq: (a, b) => ensure().quat_distsq(a >>> 0, b >>> 0),
+  fromAxisAngle: (out, axis3, angle) => {
+    ensure().quat_fromAxisAngle(out >>> 0, axis3 >>> 0, angle);
+  },
+  init: (out, x, y, z, w) => {
+    ensure().quat_init(out >>> 0, x, y, z, w);
+  },
+  invert: (out, q) => {
+    ensure().quat_invert(out >>> 0, q >>> 0);
+  },
+  isEqual: (a, b) => bool(ensure().quat_isEqual(a >>> 0, b >>> 0)),
+  isNormalized: (q) => bool(ensure().quat_isNormalized(q >>> 0)),
+  isZero: (q) => bool(ensure().quat_isZero(q >>> 0)),
+  mul: (out, a, b) => {
+    ensure().quat_mul(out >>> 0, a >>> 0, b >>> 0);
+  },
+  neg: (out, q) => {
+    ensure().quat_neg(out >>> 0, q >>> 0);
+  },
+  norm: (q) => ensure().quat_norm(q >>> 0),
+  normalize: (out, q) => {
+    ensure().quat_normalize(out >>> 0, q >>> 0);
+  },
+  normscl: (out, q, scalar) => {
+    ensure().quat_normscl(out >>> 0, q >>> 0, scalar);
+  },
+  normsq: (q) => ensure().quat_normsq(q >>> 0),
+  random: (out) => {
+    ensure().quat_random(out >>> 0);
+  },
+  randomRange: (out, min, max) => {
+    ensure().quat_random_range(out >>> 0, min, max);
+  },
+  round: (out, q) => {
+    ensure().quat_round(out >>> 0, q >>> 0);
+  },
+  scl: (out, q, scalar) => {
+    ensure().quat_scl(out >>> 0, q >>> 0, scalar);
+  },
+  slerp: (out, a, b, t) => {
+    ensure().quat_slerp(out >>> 0, a >>> 0, b >>> 0, t);
+  },
+  sub: (out, a, b) => {
+    ensure().quat_sub(out >>> 0, a >>> 0, b >>> 0);
+  },
+  toRotation: (outVec3, q, v3) => {
+    ensure().quat_toRotation(outVec3 >>> 0, q >>> 0, v3 >>> 0);
+  },
+  print: (q) => {
+    const a = wasm.f32view(q, 4);
+    console.log(`[ ${a[0]} ${a[1]} ${a[2]} ${a[3]} ]`);
+  }
+};
+var transformf = {
+  composeLocalMany: (outLocalPtr, posPtr, rotPtr, sclPtr, count) => {
+    ensure().transform_compose_local_many(outLocalPtr >>> 0, posPtr >>> 0, rotPtr >>> 0, sclPtr >>> 0, count >>> 0);
+  },
+  updateWorldOrdered: (outWorldPtr, localPtr, parentPtr, orderPtr, count) => {
+    ensure().transform_update_world_ordered(outWorldPtr >>> 0, localPtr >>> 0, parentPtr >>> 0, orderPtr >>> 0, count >>> 0);
+  },
+  packModelNormalMat4FromPtrs: (outPtr, matPtrsPtr, count) => {
+    ensure().transform_pack_model_normal_mat4_from_ptrs(outPtr >>> 0, matPtrsPtr >>> 0, count >>> 0);
+  }
+};
+var vec3f = {
+  alloc: () => wasm.allocF32(4),
+  view3: (ptr) => wasm.f32view(ptr, 3),
+  view4: (ptr) => wasm.f32view(ptr, 4),
+  set3: (ptr, src) => wasm.writeF32(ptr, 3, src),
+  abs: (out, v) => {
+    ensure().vec3_abs(out >>> 0, v >>> 0);
+  },
+  add: (out, a, b) => {
+    ensure().vec3_add(out >>> 0, a >>> 0, b >>> 0);
+  },
+  ang: (out, v) => {
+    ensure().vec3_ang(out >>> 0, v >>> 0);
+  },
+  angBetween: (a, b) => ensure().vec3_angBetween(a >>> 0, b >>> 0),
+  copy: (out, v) => {
+    ensure().vec3_copy(out >>> 0, v >>> 0);
+  },
+  cross: (out, a, b) => {
+    ensure().vec3_cross(out >>> 0, a >>> 0, b >>> 0);
+  },
+  dist: (a, b) => ensure().vec3_dist(a >>> 0, b >>> 0),
+  distsq: (a, b) => ensure().vec3_distsq(a >>> 0, b >>> 0),
+  dot: (a, b) => ensure().vec3_dot(a >>> 0, b >>> 0),
+  init: (out, x, y, z) => {
+    ensure().vec3_init(out >>> 0, x, y, z);
+  },
+  interp: (out, v, a, b, c) => {
+    ensure().vec3_interp(out >>> 0, v >>> 0, a, b, c);
+  },
+  isEqual: (a, b) => bool(ensure().vec3_isEqual(a >>> 0, b >>> 0)),
+  isNormalized: (v) => bool(ensure().vec3_isNormalized(v >>> 0)),
+  isOrthogonal: (a, b) => bool(ensure().vec3_isOrthogonal(a >>> 0, b >>> 0)),
+  isParallel: (a, b) => bool(ensure().vec3_isParallel(a >>> 0, b >>> 0)),
+  isZero: (v) => bool(ensure().vec3_isZero(v >>> 0)),
+  neg: (out, v) => {
+    ensure().vec3_neg(out >>> 0, v >>> 0);
+  },
+  norm: (v) => ensure().vec3_norm(v >>> 0),
+  normalize: (out, v) => {
+    ensure().vec3_normalize(out >>> 0, v >>> 0);
+  },
+  normscl: (out, v, scalar) => {
+    ensure().vec3_normscl(out >>> 0, v >>> 0, scalar);
+  },
+  normsq: (v) => ensure().vec3_normsq(v >>> 0),
+  oproj: (out, a, b) => {
+    ensure().vec3_oproj(out >>> 0, a >>> 0, b >>> 0);
+  },
+  proj: (out, a, b) => {
+    ensure().vec3_proj(out >>> 0, a >>> 0, b >>> 0);
+  },
+  random: (out) => {
+    ensure().vec3_random(out >>> 0);
+  },
+  randomRange: (out, min, max) => {
+    ensure().vec3_random_range(out >>> 0, min, max);
+  },
+  reflect: (out, a, b) => {
+    ensure().vec3_reflect(out >>> 0, a >>> 0, b >>> 0);
+  },
+  refract: (out, a, b, refractiveIndex) => {
+    ensure().vec3_refract(out >>> 0, a >>> 0, b >>> 0, refractiveIndex);
+  },
+  round: (out, v) => {
+    ensure().vec3_round(out >>> 0, v >>> 0);
+  },
+  scl: (out, v, scalar) => {
+    ensure().vec3_scl(out >>> 0, v >>> 0, scalar);
+  },
+  sub: (out, a, b) => {
+    ensure().vec3_sub(out >>> 0, a >>> 0, b >>> 0);
+  },
+  print: (v) => {
+    const a = wasm.f32view(v, 3);
+    console.log(`[ ${a[0]} ${a[1]} ${a[2]} ]`);
+  }
 };
 var mat4 = {
   abs: (matr) => ensure().mat4abs(matr),
@@ -57,62 +349,665 @@ var mat4 = {
   transpose: (matr) => ensure().mat4transpose(matr)
 };
 var quat = {
-  abs: (quat2) => ensure().quatabs(quat2),
-  add: (quat1, quat2) => ensure().quatadd(quat1, quat2),
-  copy: (quat2) => ensure().quatcopy(quat2),
-  dist: (quat1, quat2) => ensure().quatdist(quat1, quat2),
-  distsq: (quat1, quat2) => ensure().quatdistsq(quat1, quat2),
+  abs: (q) => ensure().quatabs(q),
+  add: (q1, q2) => ensure().quatadd(q1, q2),
+  copy: (q) => ensure().quatcopy(q),
+  dist: (q1, q2) => ensure().quatdist(q1, q2),
+  distsq: (q1, q2) => ensure().quatdistsq(q1, q2),
   fromAxisAngle: (axis, angle) => ensure().quatfromAxisAngle(axis, angle),
   init: (a, b, c, d) => ensure().quatinit(a, b, c, d),
-  invert: (quat2) => ensure().quatinvert(quat2),
-  isEqual: (quat1, quat2) => ensure().quatisEqual(quat1, quat2),
-  isNormalized: (quat2) => ensure().quatisNormalized(quat2),
-  isZero: (quat2) => ensure().quatisZero(quat2),
-  mul: (quat1, quat2) => ensure().quatmul(quat1, quat2),
-  neg: (quat2) => ensure().quatneg(quat2),
-  norm: (quat2) => ensure().quatnorm(quat2),
-  normalize: (quat2) => ensure().quatnormalize(quat2),
-  normscl: (quat2, scalar) => ensure().quatnormscl(quat2, scalar),
-  normsq: (quat2) => ensure().quatnormsq(quat2),
-  print: (quat2) => ensure().quatprint(quat2),
+  invert: (q) => ensure().quatinvert(q),
+  isEqual: (q1, q2) => ensure().quatisEqual(q1, q2),
+  isNormalized: (q) => ensure().quatisNormalized(q),
+  isZero: (q) => ensure().quatisZero(q),
+  mul: (q1, q2) => ensure().quatmul(q1, q2),
+  neg: (q) => ensure().quatneg(q),
+  norm: (q) => ensure().quatnorm(q),
+  normalize: (q) => ensure().quatnormalize(q),
+  normscl: (q, scalar) => ensure().quatnormscl(q, scalar),
+  normsq: (q) => ensure().quatnormsq(q),
+  print: (q) => ensure().quatprint(q),
   random: (min, max) => ensure().quatrandom(min, max),
-  round: (quat2) => ensure().quatround(quat2),
-  scl: (quat2, scalar) => ensure().quatscl(quat2, scalar),
-  slerp: (quat1, quat2, t) => ensure().quatslerp(quat1, quat2, t),
-  sub: (quat1, quat2) => ensure().quatsub(quat1, quat2),
-  toRotation: (quat2, vect) => ensure().quattoRotation(quat2, vect)
+  round: (q) => ensure().quatround(q),
+  scl: (q, scalar) => ensure().quatscl(q, scalar),
+  slerp: (q1, q2, t) => ensure().quatslerp(q1, q2, t),
+  sub: (q1, q2) => ensure().quatsub(q1, q2),
+  toRotation: (q, v) => ensure().quattoRotation(q, v)
 };
 var vec3 = {
-  abs: (vect) => ensure().vec3abs(vect),
-  add: (vect1, vect2) => ensure().vec3add(vect1, vect2),
-  ang: (vect) => ensure().vec3ang(vect),
-  angBetween: (vect1, vect2) => ensure().vec3angBetween(vect1, vect2),
-  copy: (vect) => ensure().vec3copy(vect),
-  cross: (vect1, vect2) => ensure().vec3cross(vect1, vect2),
-  dist: (vect1, vect2) => ensure().vec3dist(vect1, vect2),
-  distsq: (vect1, vect2) => ensure().vec3distsq(vect1, vect2),
-  dot: (vect1, vect2) => ensure().vec3dot(vect1, vect2),
+  abs: (v) => ensure().vec3abs(v),
+  add: (v1, v2) => ensure().vec3add(v1, v2),
+  ang: (v) => ensure().vec3ang(v),
+  angBetween: (v1, v2) => ensure().vec3angBetween(v1, v2),
+  copy: (v) => ensure().vec3copy(v),
+  cross: (v1, v2) => ensure().vec3cross(v1, v2),
+  dist: (v1, v2) => ensure().vec3dist(v1, v2),
+  distsq: (v1, v2) => ensure().vec3distsq(v1, v2),
+  dot: (v1, v2) => ensure().vec3dot(v1, v2),
   init: (x, y, z) => ensure().vec3init(x, y, z),
-  interp: (vect, a, b, c) => ensure().vec3interp(vect, a, b, c),
-  isEqual: (vect1, vect2) => ensure().vec3isEqual(vect1, vect2),
-  isNormalized: (vect) => ensure().vec3isNormalized(vect),
-  isOrthogonal: (vect1, vect2) => ensure().vec3isOrthogonal(vect1, vect2),
-  isParallel: (vect1, vect2) => ensure().vec3isParallel(vect1, vect2),
-  isZero: (vect) => ensure().vec3isZero(vect),
-  neg: (vect) => ensure().vec3neg(vect),
-  norm: (vect) => ensure().vec3norm(vect),
-  normalize: (vect) => ensure().vec3normalize(vect),
-  normscl: (vect, scalar) => ensure().vec3normscl(vect, scalar),
-  normsq: (vect) => ensure().vec3normsq(vect),
-  oproj: (vect1, vect2) => ensure().vec3oproj(vect1, vect2),
-  print: (vect) => ensure().vec3print(vect),
-  proj: (vect1, vect2) => ensure().vec3proj(vect1, vect2),
+  interp: (v, a, b, c) => ensure().vec3interp(v, a, b, c),
+  isEqual: (v1, v2) => ensure().vec3isEqual(v1, v2),
+  isNormalized: (v) => ensure().vec3isNormalized(v),
+  isOrthogonal: (v1, v2) => ensure().vec3isOrthogonal(v1, v2),
+  isParallel: (v1, v2) => ensure().vec3isParallel(v1, v2),
+  isZero: (v) => ensure().vec3isZero(v),
+  neg: (v) => ensure().vec3neg(v),
+  norm: (v) => ensure().vec3norm(v),
+  normalize: (v) => ensure().vec3normalize(v),
+  normscl: (v, scalar) => ensure().vec3normscl(v, scalar),
+  normsq: (v) => ensure().vec3normsq(v),
+  oproj: (v1, v2) => ensure().vec3oproj(v1, v2),
+  print: (v) => ensure().vec3print(v),
+  proj: (v1, v2) => ensure().vec3proj(v1, v2),
   random: (min, max) => ensure().vec3random(min, max),
-  reflect: (vect1, vect2) => ensure().vec3reflect(vect1, vect2),
-  refract: (vect1, vect2, refractiveIndex) => ensure().vec3refract(vect1, vect2, refractiveIndex),
-  round: (vect) => ensure().vec3round(vect),
-  scl: (vect, scalar) => ensure().vec3scl(vect, scalar),
-  sub: (vect1, vect2) => ensure().vec3sub(vect1, vect2)
+  reflect: (v1, v2) => ensure().vec3reflect(v1, v2),
+  refract: (v1, v2, refractiveIndex) => ensure().vec3refract(v1, v2, refractiveIndex),
+  round: (v) => ensure().vec3round(v),
+  scl: (v, scalar) => ensure().vec3scl(v, scalar),
+  sub: (v1, v2) => ensure().vec3sub(v1, v2)
+};
+
+// src/core/transform.ts
+var NO_PARENT = 4294967295;
+var TransformStore = class _TransformStore {
+  constructor(initialCap) {
+    this.count = 0;
+    this.posPtr = 0;
+    this.rotPtr = 0;
+    this.sclPtr = 0;
+    this.localPtr = 0;
+    this.worldPtr = 0;
+    this.parentPtr = 0;
+    this.orderPtr = 0;
+    this.tmpAxisPtr = 0;
+    this.tmpQuatPtr = 0;
+    this._buf = null;
+    this._f32 = null;
+    this._u32 = null;
+    this._dirty = true;
+    this._orderDirty = true;
+    this._nodes = [];
+    this._freeList = [];
+    this._visited = new Uint8Array(0);
+    this._stack = [];
+    this.cap = Math.max(1, initialCap | 0);
+    this.allocateArrays(this.cap);
+  }
+  static {
+    this._global = null;
+  }
+  static global() {
+    if (!_TransformStore._global) _TransformStore._global = new _TransformStore(16384);
+    return _TransformStore._global;
+  }
+  allocateArrays(cap) {
+    this.posPtr = wasm.allocF32(cap * 3);
+    this.rotPtr = wasm.allocF32(cap * 4);
+    this.sclPtr = wasm.allocF32(cap * 3);
+    this.localPtr = wasm.allocF32(cap * 16);
+    this.worldPtr = wasm.allocF32(cap * 16);
+    this.parentPtr = wasm.allocF32(cap);
+    this.orderPtr = wasm.allocF32(cap);
+    this.tmpAxisPtr = wasm.allocF32(4);
+    this.tmpQuatPtr = wasm.allocF32(4);
+    this.ensureViews();
+    const u32 = this.u32();
+    const parentBase = this.parentPtr >>> 2;
+    for (let i = 0; i < cap; i++) u32[parentBase + i] = NO_PARENT;
+  }
+  ensureViews() {
+    const buf = wasm.memory().buffer;
+    if (this._buf !== buf) {
+      this._buf = buf;
+      this._f32 = new Float32Array(buf);
+      this._u32 = new Uint32Array(buf);
+    }
+  }
+  f32() {
+    this.ensureViews();
+    return this._f32;
+  }
+  u32() {
+    this.ensureViews();
+    return this._u32;
+  }
+  markDirty() {
+    this._dirty = true;
+  }
+  markOrderDirty() {
+    this._orderDirty = true;
+    this._dirty = true;
+  }
+  alloc(node) {
+    let index;
+    if (this._freeList.length > 0) {
+      index = this._freeList.pop();
+      if (index < 0) throw new Error("TransformStore.alloc: corrupted free list (negative index).");
+      if (index >= this.count) this.count = index + 1;
+      if (this._nodes[index] !== null && this._nodes[index] !== void 0) throw new Error(`TransformStore.alloc: free list returned an in-use slot ${index}.`);
+    } else {
+      if (this.count >= this.cap) this.growTo(this.cap * 2);
+      index = this.count++;
+    }
+    this._nodes[index] = node;
+    this.initDefaults(index);
+    this._orderDirty = true;
+    this._dirty = true;
+    return index;
+  }
+  initDefaults(index) {
+    this.ensureViews();
+    const f32 = this.f32();
+    const u32 = this.u32();
+    let p = (this.posPtr >>> 2) + index * 3;
+    f32[p + 0] = 0;
+    f32[p + 1] = 0;
+    f32[p + 2] = 0;
+    let r = (this.rotPtr >>> 2) + index * 4;
+    f32[r + 0] = 0;
+    f32[r + 1] = 0;
+    f32[r + 2] = 0;
+    f32[r + 3] = 1;
+    let s = (this.sclPtr >>> 2) + index * 3;
+    f32[s + 0] = 1;
+    f32[s + 1] = 1;
+    f32[s + 2] = 1;
+    u32[(this.parentPtr >>> 2) + index] = NO_PARENT;
+  }
+  setParent(childIndex, parentIndex) {
+    this.ensureViews();
+    const u32 = this.u32();
+    u32[(this.parentPtr >>> 2) + childIndex] = parentIndex === null ? NO_PARENT : parentIndex >>> 0;
+    this._orderDirty = true;
+    this._dirty = true;
+  }
+  free(index) {
+    if (index < 0 || index >= this.count) throw new Error(`TransformStore.free: index out of range: ${index} (count=${this.count})`);
+    const node = this._nodes[index];
+    if (!node) throw new Error(`TransformStore.free: double free or invalid slot: ${index}`);
+    this._nodes[index] = null;
+    this.ensureViews();
+    const f32 = this.f32();
+    const u32 = this.u32();
+    let p = (this.posPtr >>> 2) + index * 3;
+    f32[p + 0] = 0;
+    f32[p + 1] = 0;
+    f32[p + 2] = 0;
+    let r = (this.rotPtr >>> 2) + index * 4;
+    f32[r + 0] = 0;
+    f32[r + 1] = 0;
+    f32[r + 2] = 0;
+    f32[r + 3] = 1;
+    let s = (this.sclPtr >>> 2) + index * 3;
+    f32[s + 0] = 1;
+    f32[s + 1] = 1;
+    f32[s + 2] = 1;
+    u32[(this.parentPtr >>> 2) + index] = NO_PARENT;
+    const localBase = (this.localPtr >>> 2) + index * 16;
+    const worldBase = (this.worldPtr >>> 2) + index * 16;
+    for (let i = 0; i < 16; i++) {
+      f32[localBase + i] = 0;
+      f32[worldBase + i] = 0;
+    }
+    f32[localBase + 0] = 1;
+    f32[localBase + 5] = 1;
+    f32[localBase + 10] = 1;
+    f32[localBase + 15] = 1;
+    f32[worldBase + 0] = 1;
+    f32[worldBase + 5] = 1;
+    f32[worldBase + 10] = 1;
+    f32[worldBase + 15] = 1;
+    this._freeList.push(index);
+    this._orderDirty = true;
+    this._dirty = true;
+    while (this.count > 0) {
+      const last = this.count - 1;
+      if (this._nodes[last]) break;
+      this.count--;
+    }
+  }
+  updateIfNeeded() {
+    if (!this._dirty) return;
+    this.update();
+  }
+  update() {
+    if (this.count === 0) {
+      this._dirty = false;
+      return;
+    }
+    if (this._orderDirty) this.buildOrder();
+    transformf.composeLocalMany(this.localPtr, this.posPtr, this.rotPtr, this.sclPtr, this.count);
+    transformf.updateWorldOrdered(this.worldPtr, this.localPtr, this.parentPtr, this.orderPtr, this.count);
+    this._dirty = false;
+  }
+  buildOrder() {
+    const count = this.count;
+    if (this._visited.length < count) this._visited = new Uint8Array(count);
+    this._visited.fill(0, 0, count);
+    const u32 = this.u32();
+    const parentBase = this.parentPtr >>> 2;
+    const orderBase = this.orderPtr >>> 2;
+    let out = 0;
+    const stack = this._stack;
+    stack.length = 0;
+    for (let i = 0; i < count; i++) {
+      if (this._visited[i]) continue;
+      if (u32[parentBase + i] !== NO_PARENT) continue;
+      stack.push(i);
+      while (stack.length) {
+        const idx = stack.pop();
+        if (this._visited[idx]) continue;
+        this._visited[idx] = 1;
+        u32[orderBase + out++] = idx >>> 0;
+        const node = this._nodes[idx];
+        const children = node?.children ?? [];
+        for (let c = children.length - 1; c >= 0; c--) stack.push(children[c].index);
+      }
+    }
+    for (let i = 0; i < count; i++) {
+      if (this._visited[i]) continue;
+      this._visited[i] = 1;
+      u32[orderBase + out++] = i >>> 0;
+    }
+    this._orderDirty = false;
+  }
+  growTo(minCap) {
+    let newCap = this.cap;
+    while (newCap < minCap) newCap *= 2;
+    const oldCount = this.count;
+    const oldPosPtr = this.posPtr;
+    const oldRotPtr = this.rotPtr;
+    const oldSclPtr = this.sclPtr;
+    const oldLocalPtr = this.localPtr;
+    const oldWorldPtr = this.worldPtr;
+    const oldParentPtr = this.parentPtr;
+    const oldOrderPtr = this.orderPtr;
+    this.cap = newCap;
+    this.allocateArrays(newCap);
+    this.ensureViews();
+    const f32 = this.f32();
+    const u32 = this.u32();
+    f32.set(f32.subarray(oldPosPtr >>> 2, (oldPosPtr >>> 2) + oldCount * 3), this.posPtr >>> 2);
+    f32.set(f32.subarray(oldRotPtr >>> 2, (oldRotPtr >>> 2) + oldCount * 4), this.rotPtr >>> 2);
+    f32.set(f32.subarray(oldSclPtr >>> 2, (oldSclPtr >>> 2) + oldCount * 3), this.sclPtr >>> 2);
+    f32.set(f32.subarray(oldLocalPtr >>> 2, (oldLocalPtr >>> 2) + oldCount * 16), this.localPtr >>> 2);
+    f32.set(f32.subarray(oldWorldPtr >>> 2, (oldWorldPtr >>> 2) + oldCount * 16), this.worldPtr >>> 2);
+    u32.set(u32.subarray(oldParentPtr >>> 2, (oldParentPtr >>> 2) + oldCount), this.parentPtr >>> 2);
+    u32.set(u32.subarray(oldOrderPtr >>> 2, (oldOrderPtr >>> 2) + oldCount), this.orderPtr >>> 2);
+    this._orderDirty = true;
+    this._dirty = true;
+  }
+};
+var Transform = class _Transform {
+  constructor() {
+    this._parent = null;
+    this._children = [];
+    this._position = [0, 0, 0];
+    this._rotation = [0, 0, 0, 1];
+    this._scale = [1, 1, 1];
+    this._localMatrix = [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+    ];
+    this._worldMatrix = [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+    ];
+    this._disposed = false;
+    const store = TransformStore.global();
+    this.index = store.alloc(this);
+  }
+  static updateAll() {
+    TransformStore.global().updateIfNeeded();
+  }
+  assertAlive() {
+    if (this._disposed) throw new Error("Transform is disposed (use-after-dispose).");
+  }
+  get disposed() {
+    return this._disposed;
+  }
+  get parent() {
+    return this._parent;
+  }
+  get children() {
+    return this._children;
+  }
+  get root() {
+    let t = this;
+    while (t._parent) t = t._parent;
+    return t;
+  }
+  traverse(callback) {
+    callback(this);
+    for (const child of this._children) child.traverse(callback);
+  }
+  readVec3FromStore(ptrBaseF32, out) {
+    const store = TransformStore.global();
+    const f32 = store.f32();
+    out[0] = f32[ptrBaseF32 + 0];
+    out[1] = f32[ptrBaseF32 + 1];
+    out[2] = f32[ptrBaseF32 + 2];
+  }
+  readQuatFromStore(ptrBaseF32, out) {
+    const store = TransformStore.global();
+    const f32 = store.f32();
+    out[0] = f32[ptrBaseF32 + 0];
+    out[1] = f32[ptrBaseF32 + 1];
+    out[2] = f32[ptrBaseF32 + 2];
+    out[3] = f32[ptrBaseF32 + 3];
+  }
+  readMat4FromStore(ptrBaseF32, out) {
+    const store = TransformStore.global();
+    const f32 = store.f32();
+    for (let i = 0; i < 16; i++) out[i] = f32[ptrBaseF32 + i];
+  }
+  get positionPtr() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    return T.posPtr + this.index * 3 * 4 >>> 0;
+  }
+  get rotationPtr() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    return T.rotPtr + this.index * 4 * 4 >>> 0;
+  }
+  get scalePtr() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    return T.sclPtr + this.index * 3 * 4 >>> 0;
+  }
+  get localMatrixPtr() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    return T.localPtr + this.index * 16 * 4 >>> 0;
+  }
+  get worldMatrixPtr() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    return T.worldPtr + this.index * 16 * 4 >>> 0;
+  }
+  get position() {
+    return this._position;
+  }
+  setPosition(x, y, z) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const base = (T.posPtr >>> 2) + this.index * 3;
+    f32[base + 0] = x;
+    f32[base + 1] = y;
+    f32[base + 2] = z;
+    this._position[0] = x;
+    this._position[1] = y;
+    this._position[2] = z;
+    T.markDirty();
+    return this;
+  }
+  translate(x, y, z) {
+    this.assertAlive();
+    return this.setPosition(this._position[0] + x, this._position[1] + y, this._position[2] + z);
+  }
+  get rotation() {
+    return this._rotation;
+  }
+  setRotation(x, y, z, w) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const rotPtr = this.rotationPtr;
+    quatf.init(rotPtr, x, y, z, w);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  setRotationFromAxisAngle(axis, angle) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const a = T.tmpAxisPtr >>> 2;
+    f32[a + 0] = axis[0];
+    f32[a + 1] = axis[1];
+    f32[a + 2] = axis[2];
+    vec3f.normalize(T.tmpAxisPtr, T.tmpAxisPtr);
+    const rotPtr = this.rotationPtr;
+    quatf.fromAxisAngle(rotPtr, T.tmpAxisPtr, angle);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  setRotationFromEuler(x, y, z) {
+    this.assertAlive();
+    const hx = x * 0.5;
+    const hy = y * 0.5;
+    const hz = z * 0.5;
+    const sx = Math.sin(hx);
+    const cx = Math.cos(hx);
+    const sy = Math.sin(hy);
+    const cy = Math.cos(hy);
+    const sz = Math.sin(hz);
+    const cz = Math.cos(hz);
+    const qx = sx * cy * cz + cx * sy * sz;
+    const qy = cx * sy * cz - sx * cy * sz;
+    const qz = cx * cy * sz + sx * sy * cz;
+    const qw = cx * cy * cz - sx * sy * sz;
+    return this.setRotation(qx, qy, qz, qw);
+  }
+  rotateOnAxis(axis, angle) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const a = T.tmpAxisPtr >>> 2;
+    f32[a + 0] = axis[0];
+    f32[a + 1] = axis[1];
+    f32[a + 2] = axis[2];
+    vec3f.normalize(T.tmpAxisPtr, T.tmpAxisPtr);
+    quatf.fromAxisAngle(T.tmpQuatPtr, T.tmpAxisPtr, angle);
+    const rotPtr = this.rotationPtr;
+    quatf.mul(rotPtr, rotPtr, T.tmpQuatPtr);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  rotateX(angle) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const a = T.tmpAxisPtr >>> 2;
+    f32[a + 0] = 1;
+    f32[a + 1] = 0;
+    f32[a + 2] = 0;
+    vec3f.normalize(T.tmpAxisPtr, T.tmpAxisPtr);
+    quatf.fromAxisAngle(T.tmpQuatPtr, T.tmpAxisPtr, angle);
+    const rotPtr = this.rotationPtr;
+    quatf.mul(rotPtr, rotPtr, T.tmpQuatPtr);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  rotateY(angle) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const a = T.tmpAxisPtr >>> 2;
+    f32[a + 0] = 0;
+    f32[a + 1] = 1;
+    f32[a + 2] = 0;
+    vec3f.normalize(T.tmpAxisPtr, T.tmpAxisPtr);
+    quatf.fromAxisAngle(T.tmpQuatPtr, T.tmpAxisPtr, angle);
+    const rotPtr = this.rotationPtr;
+    quatf.mul(rotPtr, rotPtr, T.tmpQuatPtr);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  rotateZ(angle) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const a = T.tmpAxisPtr >>> 2;
+    f32[a + 0] = 0;
+    f32[a + 1] = 0;
+    f32[a + 2] = 1;
+    vec3f.normalize(T.tmpAxisPtr, T.tmpAxisPtr);
+    quatf.fromAxisAngle(T.tmpQuatPtr, T.tmpAxisPtr, angle);
+    const rotPtr = this.rotationPtr;
+    quatf.mul(rotPtr, rotPtr, T.tmpQuatPtr);
+    quatf.normalize(rotPtr, rotPtr);
+    const base = (T.rotPtr >>> 2) + this.index * 4;
+    this.readQuatFromStore(base, this._rotation);
+    T.markDirty();
+    return this;
+  }
+  get scale() {
+    return this._scale;
+  }
+  setScale(x, y, z) {
+    this.assertAlive();
+    const T = TransformStore.global();
+    const f32 = T.f32();
+    const base = (T.sclPtr >>> 2) + this.index * 3;
+    f32[base + 0] = x;
+    f32[base + 1] = y;
+    f32[base + 2] = z;
+    this._scale[0] = x;
+    this._scale[1] = y;
+    this._scale[2] = z;
+    T.markDirty();
+    return this;
+  }
+  setUniformScale(scalar) {
+    this.assertAlive();
+    return this.setScale(scalar, scalar, scalar);
+  }
+  get localMatrix() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    T.updateIfNeeded();
+    const base = (T.localPtr >>> 2) + this.index * 16;
+    this.readMat4FromStore(base, this._localMatrix);
+    return this._localMatrix;
+  }
+  get worldMatrix() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    T.updateIfNeeded();
+    const base = (T.worldPtr >>> 2) + this.index * 16;
+    this.readMat4FromStore(base, this._worldMatrix);
+    return this._worldMatrix;
+  }
+  get worldPosition() {
+    this.assertAlive();
+    const T = TransformStore.global();
+    T.updateIfNeeded();
+    const base = (T.worldPtr >>> 2) + this.index * 16;
+    const f32 = T.f32();
+    return [f32[base + 12], f32[base + 13], f32[base + 14]];
+  }
+  setParent(parent) {
+    this.assertAlive();
+    if (parent === this._parent) return this;
+    if (parent === this) throw new Error("Transform cannot be parented to itself.");
+    for (let p = parent; p; p = p._parent) if (p === this) throw new Error("Transform parenting would create a cycle.");
+    this.removeFromParent();
+    this._parent = parent;
+    if (parent) {
+      parent._children.push(this);
+      TransformStore.global().setParent(this.index, parent.index);
+    } else {
+      TransformStore.global().setParent(this.index, null);
+    }
+    return this;
+  }
+  addChild(child) {
+    this.assertAlive();
+    child.setParent(this);
+    return this;
+  }
+  removeChild(child) {
+    this.assertAlive();
+    if (child._parent !== this) return this;
+    child.setParent(null);
+    return this;
+  }
+  removeFromParent() {
+    this.assertAlive();
+    if (!this._parent) return this;
+    const p = this._parent;
+    const i = p._children.indexOf(this);
+    if (i >= 0) p._children.splice(i, 1);
+    this._parent = null;
+    TransformStore.global().setParent(this.index, null);
+    return this;
+  }
+  reset() {
+    this.assertAlive();
+    this._parent = null;
+    this._children.length = 0;
+    TransformStore.global().setParent(this.index, null);
+    this.setPosition(0, 0, 0);
+    this.setRotation(0, 0, 0, 1);
+    this.setScale(1, 1, 1);
+    return this;
+  }
+  copyFrom(other) {
+    this.assertAlive();
+    this.setPosition(other._position[0], other._position[1], other._position[2]);
+    this.setRotation(other._rotation[0], other._rotation[1], other._rotation[2], other._rotation[3]);
+    this.setScale(other._scale[0], other._scale[1], other._scale[2]);
+    return this;
+  }
+  clone() {
+    this.assertAlive();
+    const T = new _Transform();
+    T.copyFrom(this);
+    return T;
+  }
+  dispose() {
+    if (this._disposed) return;
+    const children = this._children.slice();
+    for (const child of children) child.setParent(null);
+    this._children.length = 0;
+    this.removeFromParent();
+    TransformStore.global().free(this.index);
+    this._disposed = true;
+  }
 };
 
 // src/world/scene.ts
@@ -280,6 +1175,21 @@ var PointLight = class extends Light {
   }
 };
 
+// src/shaders/unlit.wgsl
+var unlit_default = "struct MaterialUniforms {\r\n    color: vec4f\r\n};\r\n\r\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;\r\n\r\nstruct VertexInput {\r\n    @location(0) position: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct VertexOutput {\r\n    @builtin(position) position: vec4f,\r\n    @location(0) normal: vec3f,\r\n    @location(1) uv: vec2f\r\n};\r\n\r\nstruct CameraUniforms {\r\n    viewProjection: mat4x4f,\r\n    position: vec3f\r\n};\r\n\r\nstruct ModelUniforms {\r\n    model: mat4x4f,\r\n    normalMatrix: mat4x4f\r\n};\r\n\r\n@group(0) @binding(0) var<uniform> camera: CameraUniforms;\r\n@group(0) @binding(1) var<uniform> model: ModelUniforms;\r\n\r\n@vertex\r\nfn vs_main(in: VertexInput) -> VertexOutput {\r\n    var out: VertexOutput;\r\n    out.position = camera.viewProjection * model.model * vec4f(in.position, 1.0);\r\n    out.normal = (model.normalMatrix * vec4f(in.normal, 0.0)).xyz;\r\n    out.uv = in.uv;\r\n    return out;\r\n}\r\n\r\n@fragment\r\nfn fs_main(in: VertexOutput) -> @location(0) vec4f {\r\n    return material.color;\r\n}\r\n";
+
+// src/shaders/unlit-instanced.wgsl
+var unlit_instanced_default = "struct MaterialUniforms {\r\n    color: vec4f\r\n};\r\n\r\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;\r\n\r\nstruct VertexInput {\r\n    @location(0) position: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f,\r\n    @location(3) m0: vec4f,\r\n    @location(4) m1: vec4f,\r\n    @location(5) m2: vec4f,\r\n    @location(6) m3: vec4f,\r\n    @location(7) n0: vec4f,\r\n    @location(8) n1: vec4f,\r\n    @location(9) n2: vec4f,\r\n    @location(10) n3: vec4f\r\n};\r\n\r\nstruct VertexOutput {\r\n    @builtin(position) position: vec4f,\r\n    @location(0) normal: vec3f,\r\n    @location(1) uv: vec2f\r\n};\r\n\r\nstruct CameraUniforms {\r\n    viewProjection: mat4x4f,\r\n    position: vec3f\r\n};\r\n\r\n@group(0) @binding(0) var<uniform> camera: CameraUniforms;\r\n\r\n@vertex\r\nfn vs_main(in: VertexInput) -> VertexOutput {\r\n    var out: VertexOutput;\r\n    let modelM = mat4x4f(in.m0, in.m1, in.m2, in.m3);\r\n    let normalM = mat4x4f(in.n0, in.n1, in.n2, in.n3);\r\n    out.position = camera.viewProjection * modelM * vec4f(in.position, 1.0);\r\n    out.normal = (normalM * vec4f(in.normal, 0.0)).xyz;\r\n    out.uv = in.uv;\r\n    return out;\r\n}\r\n\r\n@fragment\r\nfn fs_main(in: VertexOutput) -> @location(0) vec4f {\r\n    return material.color;\r\n}\r\n";
+
+// src/shaders/standard.wgsl
+var standard_default = "struct MaterialUniforms {\r\n    color: vec4f,\r\n    emissive: vec4f,\r\n    params: vec4f\r\n};\r\n\r\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;\r\n\r\nstruct VertexInput {\r\n    @location(0) position: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct VertexOutput {\r\n    @builtin(position) position: vec4f,\r\n    @location(0) worldPos: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct CameraUniforms {\r\n    viewProjection: mat4x4f,\r\n    position: vec3f\r\n};\r\n\r\nstruct ModelUniforms {\r\n    model: mat4x4f,\r\n    normalMatrix: mat4x4f\r\n};\r\n\r\nstruct Light {\r\n    position: vec4f,\r\n    color: vec4f,\r\n    params: vec4f\r\n};\r\n\r\nstruct LightingUniforms {\r\n    ambient: vec4f,\r\n    lightCount: u32,\r\n    _pad0: u32,\r\n    _pad1: u32,\r\n    _pad2: u32,\r\n    lights: array<Light, 8>\r\n};\r\n\r\n@group(0) @binding(0) var<uniform> camera: CameraUniforms;\r\n@group(0) @binding(1) var<uniform> model: ModelUniforms;\r\n@group(0) @binding(2) var<uniform> lighting: LightingUniforms;\r\n\r\nconst PI: f32 = 3.14159265359;\r\n\r\n@vertex\r\nfn vs_main(in: VertexInput) -> VertexOutput {\r\n    var out: VertexOutput;\r\n    let worldPos = model.model * vec4f(in.position, 1.0);\r\n    out.position = camera.viewProjection * worldPos;\r\n    out.worldPos = worldPos.xyz;\r\n    out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);\r\n    out.uv = in.uv;\r\n    return out;\r\n}\r\n\r\nfn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {\r\n    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);\r\n}\r\n\r\nfn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {\r\n    let a = roughness * roughness;\r\n    let a2 = a * a;\r\n    let NdotH = max(dot(N, H), 0.0);\r\n    let NdotH2 = NdotH * NdotH;\r\n    let denom = NdotH2 * (a2 - 1.0) + 1.0;\r\n    return a2 / (PI * denom * denom);\r\n}\r\n\r\nfn geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {\r\n    let r = roughness + 1.0;\r\n    let k = (r * r) / 8.0;\r\n    return NdotV / (NdotV * (1.0 - k) + k);\r\n}\r\n\r\nfn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {\r\n    let NdotV = max(dot(N, V), 0.0);\r\n    let NdotL = max(dot(N, L), 0.0);\r\n    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);\r\n}\r\n\r\n@fragment\r\nfn fs_main(in: VertexOutput) -> @location(0) vec4f {\r\n    let albedo = material.color.rgb;\r\n    let metallic = material.params.x;\r\n    let roughness = material.params.y;\r\n    let emissiveIntensity = material.params.z;\r\n    let N = normalize(in.normal);\r\n    let V = normalize(camera.position - in.worldPos);\r\n    let F0 = mix(vec3f(0.04), albedo, metallic);\r\n    var Lo = lighting.ambient.rgb * albedo;\r\n    for (var i = 0u; i < lighting.lightCount; i++) {\r\n        let light = lighting.lights[i];\r\n        var L: vec3f;\r\n        var attenuation: f32 = 1.0;\r\n        if (light.position.w == 0.0) {\r\n            L = normalize(-light.position.xyz);\r\n        } else {\r\n            let lightDir = light.position.xyz - in.worldPos;\r\n            let distance = length(lightDir);\r\n            L = normalize(lightDir);\r\n            attenuation = 1.0 / (distance * distance);\r\n        }\r\n        let H = normalize(V + L);\r\n        let radiance = light.color.rgb * light.color.a * attenuation;\r\n        let NDF = distributionGGX(N, H, roughness);\r\n        let G = geometrySmith(N, V, L, roughness);\r\n        let F = fresnelSchlick(max(dot(H, V), 0.0), F0);\r\n        let numerator = NDF * G * F;\r\n        let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;\r\n        let specular = numerator / denominator;\r\n        let kS = F;\r\n        let kD = (1.0 - kS) * (1.0 - metallic);\r\n        let NdotL = max(dot(N, L), 0.0);\r\n        Lo += (kD * albedo / PI + specular) * radiance * NdotL;\r\n    }\r\n    Lo += material.emissive.rgb * emissiveIntensity;\r\n    Lo = Lo / (Lo + vec3f(1.0));\r\n    Lo = pow(Lo, vec3f(1.0 / 2.2));\r\n    return vec4f(Lo, material.color.a);\r\n}\r\n";
+
+// src/shaders/standard-instanced.wgsl
+var standard_instanced_default = "struct MaterialUniforms {\r\n    color: vec4f,\r\n    emissive: vec4f,\r\n    params: vec4f\r\n};\r\n\r\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;\r\n\r\nstruct VertexInput {\r\n    @location(0) position: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f,\r\n    @location(3) m0: vec4f,\r\n    @location(4) m1: vec4f,\r\n    @location(5) m2: vec4f,\r\n    @location(6) m3: vec4f,\r\n    @location(7) n0: vec4f,\r\n    @location(8) n1: vec4f,\r\n    @location(9) n2: vec4f,\r\n    @location(10) n3: vec4f\r\n};\r\n\r\nstruct VertexOutput {\r\n    @builtin(position) position: vec4f,\r\n    @location(0) worldPos: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct CameraUniforms {\r\n    viewProjection: mat4x4f,\r\n    position: vec3f\r\n};\r\n\r\nstruct Light {\r\n    position: vec4f,\r\n    color: vec4f,\r\n    params: vec4f\r\n};\r\n\r\nstruct LightingUniforms {\r\n    ambient: vec4f,\r\n    lightCount: u32,\r\n    _pad0: u32,\r\n    _pad1: u32,\r\n    _pad2: u32,\r\n    lights: array<Light, 8>\r\n};\r\n\r\n@group(0) @binding(0) var<uniform> camera: CameraUniforms;\r\n@group(0) @binding(2) var<uniform> lighting: LightingUniforms;\r\n\r\nconst PI: f32 = 3.14159265359;\r\n\r\n@vertex\r\nfn vs_main(in: VertexInput) -> VertexOutput {\r\n    var out: VertexOutput;\r\n    let modelM = mat4x4f(in.m0, in.m1, in.m2, in.m3);\r\n    let normalM = mat4x4f(in.n0, in.n1, in.n2, in.n3);\r\n    let worldPos = modelM * vec4f(in.position, 1.0);\r\n    out.position = camera.viewProjection * worldPos;\r\n    out.worldPos = worldPos.xyz;\r\n    out.normal = normalize((normalM * vec4f(in.normal, 0.0)).xyz);\r\n    out.uv = in.uv;\r\n    return out;\r\n}\r\n\r\nfn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {\r\n    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);\r\n}\r\n\r\nfn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {\r\n    let a = roughness * roughness;\r\n    let a2 = a * a;\r\n    let NdotH = max(dot(N, H), 0.0);\r\n    let NdotH2 = NdotH * NdotH;\r\n    let denom = NdotH2 * (a2 - 1.0) + 1.0;\r\n    return a2 / (PI * denom * denom);\r\n}\r\n\r\nfn geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {\r\n    let r = roughness + 1.0;\r\n    let k = (r * r) / 8.0;\r\n    return NdotV / (NdotV * (1.0 - k) + k);\r\n}\r\n\r\nfn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {\r\n    let NdotV = max(dot(N, V), 0.0);\r\n    let NdotL = max(dot(N, L), 0.0);\r\n    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);\r\n}\r\n\r\n@fragment\r\nfn fs_main(in: VertexOutput) -> @location(0) vec4f {\r\n    let albedo = material.color.rgb;\r\n    let metallic = material.params.x;\r\n    let roughness = material.params.y;\r\n    let emissiveIntensity = material.params.z;\r\n    let N = normalize(in.normal);\r\n    let V = normalize(camera.position - in.worldPos);\r\n    let F0 = mix(vec3f(0.04), albedo, metallic);\r\n    var Lo = lighting.ambient.rgb * albedo;\r\n    for (var i = 0u; i < lighting.lightCount; i++) {\r\n        let light = lighting.lights[i];\r\n        var L: vec3f;\r\n        var attenuation: f32 = 1.0;\r\n        if (light.position.w == 0.0) {\r\n            L = normalize(-light.position.xyz);\r\n        } else {\r\n            let lightDir = light.position.xyz - in.worldPos;\r\n            let distance = length(lightDir);\r\n            L = normalize(lightDir);\r\n            attenuation = 1.0 / (distance * distance);\r\n        }\r\n        let H = normalize(V + L);\r\n        let radiance = light.color.rgb * light.color.a * attenuation;\r\n        let NDF = distributionGGX(N, H, roughness);\r\n        let G = geometrySmith(N, V, L, roughness);\r\n        let F = fresnelSchlick(max(dot(H, V), 0.0), F0);\r\n        let numerator = NDF * G * F;\r\n        let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;\r\n        let specular = numerator / denominator;\r\n        let kS = F;\r\n        let kD = (1.0 - kS) * (1.0 - metallic);\r\n        let NdotL = max(dot(N, L), 0.0);\r\n        Lo += (kD * albedo / PI + specular) * radiance * NdotL;\r\n    }\r\n    Lo += material.emissive.rgb * emissiveIntensity;\r\n    Lo = Lo / (Lo + vec3f(1.0));\r\n    Lo = pow(Lo, vec3f(1.0 / 2.2));\r\n    return vec4f(Lo, material.color.a);\r\n}\r\n";
+
+// src/shaders/custom-default-vertex.wgsl
+var custom_default_vertex_default = "struct VertexInput {\r\n    @location(0) position: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct VertexOutput {\r\n    @builtin(position) position: vec4f,\r\n    @location(0) worldPos: vec3f,\r\n    @location(1) normal: vec3f,\r\n    @location(2) uv: vec2f\r\n};\r\n\r\nstruct CameraUniforms {\r\n    viewProjection: mat4x4f,\r\n    position: vec3f\r\n};\r\n\r\nstruct ModelUniforms {\r\n    model: mat4x4f,\r\n    normalMatrix: mat4x4f\r\n};\r\n\r\n@group(0) @binding(0) var<uniform> camera: CameraUniforms;\r\n@group(0) @binding(1) var<uniform> model: ModelUniforms;\r\n\r\n@vertex\r\nfn vs_main(in: VertexInput) -> VertexOutput {\r\n    var out: VertexOutput;\r\n    let worldPos = model.model * vec4f(in.position, 1.0);\r\n    out.position = camera.viewProjection * worldPos;\r\n    out.worldPos = worldPos.xyz;\r\n    out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);\r\n    out.uv = in.uv;\r\n    return out;\r\n}\r\n";
+
 // src/graphics/material.ts
 var BlendMode = /* @__PURE__ */ ((BlendMode2) => {
   BlendMode2["Opaque"] = "opaque";
@@ -366,48 +1276,9 @@ var UnlitMaterial = class extends Material {
       ]
     });
   }
-  getShaderCode() {
-    return (
-      /* wgsl */
-      `
-            struct MaterialUniforms {
-                color: vec4f
-            };
-            @group(1) @binding(0) var<uniform> material: MaterialUniforms;
-            struct VertexInput {
-                @location(0) position: vec3f,
-                @location(1) normal: vec3f,
-                @location(2) uv: vec2f
-            };
-            struct VertexOutput {
-                @builtin(position) position: vec4f,
-                @location(0) normal: vec3f,
-                @location(1) uv: vec2f
-            };
-            struct CameraUniforms {
-                viewProjection: mat4x4f,
-                position: vec3f
-            };
-            struct ModelUniforms {
-                model: mat4x4f,
-                normalMatrix: mat4x4f
-            };
-            @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-            @group(0) @binding(1) var<uniform> model: ModelUniforms;
-            @vertex
-            fn vs_main(in: VertexInput) -> VertexOutput {
-                var out: VertexOutput;
-                out.position = camera.viewProjection * model.model * vec4f(in.position, 1.0);
-                out.normal = (model.normalMatrix * vec4f(in.normal, 0.0)).xyz;
-                out.uv = in.uv;
-                return out;
-            }
-            @fragment
-            fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-                return material.color;
-            }
-        `
-    );
+  getShaderCode(instanced = false) {
+    if (!instanced) return unlit_default;
+    return unlit_instanced_default;
   }
 };
 var StandardMaterial = class extends Material {
@@ -495,125 +1366,9 @@ var StandardMaterial = class extends Material {
       ]
     });
   }
-  getShaderCode() {
-    return (
-      /* wgsl */
-      `
-            struct MaterialUniforms {
-                color: vec4f,
-                emissive: vec4f,
-                params: vec4f  // x: metallic, y: roughness, z: emissiveIntensity
-            };
-            @group(1) @binding(0) var<uniform> material: MaterialUniforms;
-            struct VertexInput {
-                @location(0) position: vec3f,
-                @location(1) normal: vec3f,
-                @location(2) uv: vec2f
-            };
-            struct VertexOutput {
-                @builtin(position) position: vec4f,
-                @location(0) worldPos: vec3f,
-                @location(1) normal: vec3f,
-                @location(2) uv: vec2f
-            };
-            struct CameraUniforms {
-                viewProjection: mat4x4f,
-                position: vec3f
-            };
-            struct ModelUniforms {
-                model: mat4x4f,
-                normalMatrix: mat4x4f
-            };
-            struct Light {
-                position: vec4f,
-                color: vec4f,
-                params: vec4f
-            };
-            struct LightingUniforms {
-                ambient: vec4f,
-                lightCount: u32,
-                _pad0: u32,
-                _pad1: u32,
-                _pad2: u32,
-                lights: array<Light, 8>
-            };
-            @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-            @group(0) @binding(1) var<uniform> model: ModelUniforms;
-            @group(0) @binding(2) var<uniform> lighting: LightingUniforms;
-            const PI: f32 = 3.14159265359;
-            @vertex
-            fn vs_main(in: VertexInput) -> VertexOutput {
-                var out: VertexOutput;
-                let worldPos = model.model * vec4f(in.position, 1.0);
-                out.position = camera.viewProjection * worldPos;
-                out.worldPos = worldPos.xyz;
-                out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);
-                out.uv = in.uv;
-                return out;
-            }
-            fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
-                return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-            }
-            fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
-                let a = roughness * roughness;
-                let a2 = a * a;
-                let NdotH = max(dot(N, H), 0.0);
-                let NdotH2 = NdotH * NdotH;
-                let denom = NdotH2 * (a2 - 1.0) + 1.0;
-                return a2 / (PI * denom * denom);
-            }
-            fn geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
-                let r = roughness + 1.0;
-                let k = (r * r) / 8.0;
-                return NdotV / (NdotV * (1.0 - k) + k);
-            }
-            fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
-                let NdotV = max(dot(N, V), 0.0);
-                let NdotL = max(dot(N, L), 0.0);
-                return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
-            }
-            @fragment
-            fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-                let albedo = material.color.rgb;
-                let metallic = material.params.x;
-                let roughness = material.params.y;
-                let emissiveIntensity = material.params.z;
-                let N = normalize(in.normal);
-                let V = normalize(camera.position - in.worldPos);
-                let F0 = mix(vec3f(0.04), albedo, metallic);
-                var Lo = lighting.ambient.rgb * albedo;
-                for (var i = 0u; i < lighting.lightCount; i++) {
-                    let light = lighting.lights[i];
-                    var L: vec3f;
-                    var attenuation: f32 = 1.0;
-                    if (light.position.w == 0.0) {
-                        L = normalize(-light.position.xyz);
-                    } else {
-                        let lightDir = light.position.xyz - in.worldPos;
-                        let distance = length(lightDir);
-                        L = normalize(lightDir);
-                        attenuation = 1.0 / (distance * distance);
-                    }
-                    let H = normalize(V + L);
-                    let radiance = light.color.rgb * light.color.a * attenuation;
-                    let NDF = distributionGGX(N, H, roughness);
-                    let G = geometrySmith(N, V, L, roughness);
-                    let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-                    let numerator = NDF * G * F;
-                    let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-                    let specular = numerator / denominator;
-                    let kS = F;
-                    let kD = (1.0 - kS) * (1.0 - metallic);
-                    let NdotL = max(dot(N, L), 0.0);
-                    Lo += (kD * albedo / PI + specular) * radiance * NdotL;
-                }
-                Lo += material.emissive.rgb * emissiveIntensity;
-                Lo = Lo / (Lo + vec3f(1.0));
-                Lo = pow(Lo, vec3f(1.0 / 2.2));
-                return vec4f(Lo, material.color.a);
-            }
-        `
-    );
+  getShaderCode(instanced = false) {
+    if (!instanced) return standard_default;
+    return standard_instanced_default;
   }
 };
 var CustomMaterial = class extends Material {
@@ -673,44 +1428,9 @@ var CustomMaterial = class extends Material {
     });
   }
   defaultVertexShader() {
-    return (
-      /* wgsl */
-      `
-            struct VertexInput {
-                @location(0) position: vec3f,
-                @location(1) normal: vec3f,
-                @location(2) uv: vec2f
-            };
-            struct VertexOutput {
-                @builtin(position) position: vec4f,
-                @location(0) worldPos: vec3f,
-                @location(1) normal: vec3f,
-                @location(2) uv: vec2f
-            };
-            struct CameraUniforms {
-                viewProjection: mat4x4f,
-                position: vec3f
-            };
-            struct ModelUniforms {
-                model: mat4x4f,
-                normalMatrix: mat4x4f
-            };
-            @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-            @group(0) @binding(1) var<uniform> model: ModelUniforms;
-            @vertex
-            fn vs_main(in: VertexInput) -> VertexOutput {
-                var out: VertexOutput;
-                let worldPos = model.model * vec4f(in.position, 1.0);
-                out.position = camera.viewProjection * worldPos;
-                out.worldPos = worldPos.xyz;
-                out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);
-                out.uv = in.uv;
-                return out;
-            }
-        `
-    );
+    return custom_default_vertex_default;
   }
-  getShaderCode() {
+  getShaderCode(_instanced = false) {
     let uniformStruct = "struct CustomUniforms {\n";
     for (const [name, def] of Object.entries(this._uniforms)) uniformStruct += `    ${name}: ${def.type},
 `;
@@ -742,11 +1462,22 @@ var Renderer = class _Renderer {
   constructor(canvas) {
     this.width = 0;
     this.height = 0;
+    this.globalBindGroups = [];
     this.modelUniformBuffers = [];
     this.modelBufferIndex = 0;
     this.MODEL_BUFFER_POOL_SIZE = 64;
+    this.instanceBuffer = null;
+    this.instanceBufferCapacityBytes = 0;
+    this.INSTANCE_STRIDE_BYTES = 128;
     this.pipelineCache = /* @__PURE__ */ new Map();
     this.shaderCache = /* @__PURE__ */ new Map();
+    this.drawItemPool = [];
+    this.drawItemPoolUsed = 0;
+    this.opaqueDrawList = [];
+    this.transparentDrawList = [];
+    this.objectIds = /* @__PURE__ */ new WeakMap();
+    this.nextObjectId = 1;
+    this._wasmBuffer = null;
     this.canvas = canvas;
   }
   static async create(canvas, descriptor = {}) {
@@ -795,12 +1526,49 @@ var Renderer = class _Renderer {
   get aspectRatio() {
     return this.width / this.height;
   }
+  refreshWasmStagingViews() {
+    const buf = wasm.memory().buffer;
+    if (this._wasmBuffer === buf) return;
+    this._wasmBuffer = buf;
+    this.cameraUniformStagingView = wasm.f32view(this.cameraUniformStagingPtr, 20);
+    this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 104);
+    this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
+  }
+  getObjectId(obj) {
+    let id = this.objectIds.get(obj);
+    if (id !== void 0) return id;
+    id = this.nextObjectId++;
+    this.objectIds.set(obj, id);
+    return id;
+  }
+  acquireDrawItem() {
+    const i = this.drawItemPoolUsed++;
+    let item = this.drawItemPool[i];
+    if (!item) {
+      item = {
+        mesh: null,
+        geometry: null,
+        material: null,
+        pipeline: null,
+        pipelineId: 0,
+        materialId: 0,
+        geometryId: 0
+      };
+      this.drawItemPool[i] = item;
+    }
+    return item;
+  }
   render(scene, camera) {
     this.resize();
     this.modelBufferIndex = 0;
+    this.cameraUniformStagingPtr = frameArena.allocF32(20);
+    this.lightingUniformStagingPtr = frameArena.allocF32(104);
+    this.modelUniformStagingPtr = frameArena.allocF32(32);
+    this._wasmBuffer = null;
     if ("aspect" in camera) camera.aspect = this.aspectRatio;
     const colorTexture = this.context.getCurrentTexture();
     const colorView = colorTexture.createView();
+    Transform.updateAll();
     this.writeCameraUniforms(camera);
     this.writeLightingUniforms(scene);
     const encoder = this.device.createCommandEncoder();
@@ -820,9 +1588,9 @@ var Renderer = class _Renderer {
         depthStoreOp: "store"
       }
     });
-    for (const mesh of scene.visibleMeshes) {
-      this.renderMesh(pass, mesh, camera);
-    }
+    this.buildDrawLists(scene);
+    this.executeDrawList(pass, this.opaqueDrawList);
+    this.executeDrawList(pass, this.transparentDrawList);
     pass.end();
     this.queue.submit([encoder.finish()]);
   }
@@ -832,6 +1600,10 @@ var Renderer = class _Renderer {
     for (const buffer of this.modelUniformBuffers) buffer.destroy();
     this.modelUniformBuffers = [];
     this.lightingUniformBuffer?.destroy();
+    this.instanceBuffer?.destroy();
+    this.instanceBuffer = null;
+    this.instanceBufferCapacityBytes = 0;
+    this.globalBindGroups = [];
     this.pipelineCache.clear();
     this.shaderCache.clear();
   }
@@ -871,23 +1643,40 @@ var Renderer = class _Renderer {
       size: 416,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
+    this.globalBindGroups = new Array(this.MODEL_BUFFER_POOL_SIZE);
+    for (let i = 0; i < this.MODEL_BUFFER_POOL_SIZE; i++) {
+      this.globalBindGroups[i] = this.device.createBindGroup({
+        layout: this.globalBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
+          { binding: 1, resource: { buffer: this.modelUniformBuffers[i] } },
+          { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
+        ]
+      });
+    }
+    this.cameraUniformStagingPtr = 0;
+    this.lightingUniformStagingPtr = 0;
+    this.modelUniformStagingPtr = 0;
+    this._wasmBuffer = null;
   }
   writeCameraUniforms(camera) {
     const viewProj = camera.viewProjectionMatrix;
     const pos = camera.position;
-    const data = new Float32Array(20);
+    this.refreshWasmStagingViews();
+    const data = this.cameraUniformStagingView;
     data.set(viewProj, 0);
     data.set(pos, 16);
     this.queue.writeBuffer(this.cameraUniformBuffer, 0, data);
   }
   writeLightingUniforms(scene) {
     const { ambient, lights } = scene.getLightingData();
-    const data = new Float32Array(104);
+    this.refreshWasmStagingViews();
+    const data = this.lightingUniformStagingView;
     data[0] = ambient[0];
     data[1] = ambient[1];
     data[2] = ambient[2];
     data[3] = 1;
-    const countView = new Uint32Array(data.buffer, 16, 1);
+    const countView = new Uint32Array(data.buffer, data.byteOffset + 16, 1);
     countView[0] = lights.length;
     let offset = 8;
     for (let i = 0; i < lights.length && i < Scene.MAX_LIGHTS; i++) {
@@ -914,66 +1703,117 @@ var Renderer = class _Renderer {
     }
     this.queue.writeBuffer(this.lightingUniformBuffer, 0, data);
   }
-  computeNormalMatrix(model) {
-    const m00 = model[0], m01 = model[4], m02 = model[8];
-    const m10 = model[1], m11 = model[5], m12 = model[9];
-    const m20 = model[2], m21 = model[6], m22 = model[10];
-    const det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20);
-    if (Math.abs(det) < 1e-6) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-    const invDet = 1 / det;
-    const i00 = (m11 * m22 - m12 * m21) * invDet;
-    const i01 = (m02 * m21 - m01 * m22) * invDet;
-    const i02 = (m01 * m12 - m02 * m11) * invDet;
-    const i10 = (m12 * m20 - m10 * m22) * invDet;
-    const i11 = (m00 * m22 - m02 * m20) * invDet;
-    const i12 = (m02 * m10 - m00 * m12) * invDet;
-    const i20 = (m10 * m21 - m11 * m20) * invDet;
-    const i21 = (m01 * m20 - m00 * m21) * invDet;
-    const i22 = (m00 * m11 - m01 * m10) * invDet;
-    return [i00, i01, i02, 0, i10, i11, i12, 0, i20, i21, i22, 0, 0, 0, 0, 1];
-  }
-  renderMesh(pass, mesh, camera) {
-    const { geometry, material } = mesh;
-    geometry.upload(this.device);
-    const pipeline = this.getOrCreatePipeline(material);
-    this.ensureMaterialBindGroup(material);
-    if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
-      console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
-      return;
+  buildDrawLists(scene) {
+    this.drawItemPoolUsed = 0;
+    this.opaqueDrawList.length = 0;
+    this.transparentDrawList.length = 0;
+    for (const mesh of scene.meshes) {
+      if (!mesh.visible) continue;
+      const geometry = mesh.geometry;
+      const material = mesh.material;
+      const pipeline = this.getOrCreatePipeline(material);
+      const item = this.acquireDrawItem();
+      item.mesh = mesh;
+      item.geometry = geometry;
+      item.material = material;
+      item.pipeline = pipeline;
+      item.pipelineId = this.getObjectId(pipeline);
+      item.materialId = this.getObjectId(material);
+      item.geometryId = this.getObjectId(geometry);
+      if (material.blendMode === "opaque" /* Opaque */) this.opaqueDrawList.push(item);
+      else this.transparentDrawList.push(item);
     }
-    const modelBuffer = this.modelUniformBuffers[this.modelBufferIndex++];
-    const model = mesh.worldMatrix;
-    const normalMatrix = this.computeNormalMatrix(model);
-    const data = new Float32Array(32);
-    data.set(model, 0);
-    data.set(normalMatrix, 16);
-    this.queue.writeBuffer(modelBuffer, 0, data);
-    const globalBindGroup = this.device.createBindGroup({
-      layout: this.globalBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-        { binding: 1, resource: { buffer: modelBuffer } },
-        { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
-      ]
-    });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, globalBindGroup);
-    pass.setBindGroup(1, material.bindGroup);
-    pass.setVertexBuffer(0, geometry.positionBuffer);
-    pass.setVertexBuffer(1, geometry.normalBuffer);
-    pass.setVertexBuffer(2, geometry.uvBuffer);
-    if (geometry.isIndexed) {
-      pass.setIndexBuffer(geometry.indexBuffer, "uint32");
-      pass.drawIndexed(geometry.indexCount);
-    } else {
-      pass.draw(geometry.vertexCount);
+    this.opaqueDrawList.sort((a, b) => a.pipelineId - b.pipelineId || a.materialId - b.materialId || a.geometryId - b.geometryId);
+  }
+  executeDrawList(pass, items) {
+    let lastPipeline = null;
+    let lastMaterial = null;
+    let lastGeometry = null;
+    for (let i = 0; i < items.length; ) {
+      const first = items[i];
+      const pipeline = first.pipeline;
+      const material = first.material;
+      const geometry = first.geometry;
+      let j = i + 1;
+      while (j < items.length) {
+        const it = items[j];
+        if (it.pipeline !== pipeline) break;
+        if (it.material !== material) break;
+        if (it.geometry !== geometry) break;
+        j++;
+      }
+      const runCount = j - i;
+      if (geometry !== lastGeometry) geometry.upload(this.device);
+      if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
+      if (pipeline !== lastPipeline) {
+        pass.setPipeline(pipeline);
+        lastPipeline = pipeline;
+      }
+      if (material !== lastMaterial) {
+        pass.setBindGroup(1, material.bindGroup);
+        lastMaterial = material;
+      }
+      if (geometry !== lastGeometry) {
+        pass.setVertexBuffer(0, geometry.positionBuffer);
+        pass.setVertexBuffer(1, geometry.normalBuffer);
+        pass.setVertexBuffer(2, geometry.uvBuffer);
+        if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer, "uint32");
+        lastGeometry = geometry;
+      }
+      const canInstance = runCount > 1 && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
+      if (canInstance) {
+        const instancedPipeline = this.getOrCreatePipeline(material, true);
+        if (instancedPipeline !== lastPipeline) {
+          pass.setPipeline(instancedPipeline);
+          lastPipeline = instancedPipeline;
+        }
+        this.drawInstancedRun(pass, geometry, material, items, i, runCount);
+      } else {
+        for (let k = i; k < j; k++) {
+          if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
+            console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
+            return;
+          }
+          const modelSlot = this.modelBufferIndex++;
+          const modelBuffer = this.modelUniformBuffers[modelSlot];
+          const globalBindGroup = this.globalBindGroups[modelSlot];
+          const mesh = items[k].mesh;
+          const modelPtr = mesh.transform.worldMatrixPtr;
+          const invPtr = this.modelUniformStagingPtr;
+          const normalPtr = this.modelUniformStagingPtr + 16 * 4;
+          mat4f.invert(invPtr, modelPtr);
+          mat4f.transpose(normalPtr, invPtr);
+          const mem = wasm.memory().buffer;
+          this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
+          this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
+          pass.setBindGroup(0, globalBindGroup);
+          if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
+          else pass.draw(geometry.vertexCount);
+        }
+      }
+      i = j;
     }
   }
-  getOrCreatePipeline(material) {
-    const key = this.getPipelineCacheKey(material);
+  drawInstancedRun(pass, geometry, material, items, start, count) {
+    const ptrsPtr = frameArena.allocF32(count);
+    const ptrs = wasm.u32view(ptrsPtr, count);
+    for (let i = 0; i < count; i++) ptrs[i] = items[start + i].mesh.transform.worldMatrixPtr >>> 0;
+    const outPtr = frameArena.allocF32(count * 32);
+    transformf.packModelNormalMat4FromPtrs(outPtr, ptrsPtr, count);
+    const outBytes = count * this.INSTANCE_STRIDE_BYTES;
+    this.ensureInstanceBuffer(outBytes);
+    const mem = wasm.memory().buffer;
+    this.queue.writeBuffer(this.instanceBuffer, 0, mem, outPtr, outBytes);
+    pass.setBindGroup(0, this.globalBindGroups[0]);
+    pass.setVertexBuffer(3, this.instanceBuffer);
+    if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);
+    else pass.draw(geometry.vertexCount, count);
+  }
+  getOrCreatePipeline(material, instanced = false) {
+    const key = this.getPipelineCacheKey(material, instanced);
     let pipeline = this.pipelineCache.get(key);
     if (pipeline) return pipeline;
-    const shaderCode = material.getShaderCode();
+    const shaderCode = material.getShaderCode(instanced);
     let shaderModule = this.shaderCache.get(shaderCode);
     if (!shaderModule) {
       shaderModule = this.device.createShaderModule({ code: shaderCode });
@@ -986,19 +1826,28 @@ var Renderer = class _Renderer {
       vertex: {
         module: shaderModule,
         entryPoint: "vs_main",
-        buffers: [
+        buffers: instanced ? [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+          { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+          { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
           {
-            arrayStride: 12,
-            attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }]
-          },
-          {
-            arrayStride: 12,
-            attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }]
-          },
-          {
-            arrayStride: 8,
-            attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }]
+            arrayStride: this.INSTANCE_STRIDE_BYTES,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 3, offset: 0, format: "float32x4" },
+              { shaderLocation: 4, offset: 16, format: "float32x4" },
+              { shaderLocation: 5, offset: 32, format: "float32x4" },
+              { shaderLocation: 6, offset: 48, format: "float32x4" },
+              { shaderLocation: 7, offset: 64, format: "float32x4" },
+              { shaderLocation: 8, offset: 80, format: "float32x4" },
+              { shaderLocation: 9, offset: 96, format: "float32x4" },
+              { shaderLocation: 10, offset: 112, format: "float32x4" }
+            ]
           }
+        ] : [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+          { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+          { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] }
         ]
       },
       fragment: {
@@ -1025,8 +1874,8 @@ var Renderer = class _Renderer {
     this.pipelineCache.set(key, pipeline);
     return pipeline;
   }
-  getPipelineCacheKey(material) {
-    return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}`;
+  getPipelineCacheKey(material, instanced) {
+    return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}`;
   }
   getBlendState(mode) {
     switch (mode) {
@@ -1084,220 +1933,19 @@ var Renderer = class _Renderer {
       material.bindGroup = this.device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: material.uniformBuffer } }] });
     }
   }
-};
-
-// src/core/transform.ts
-var Transform = class _Transform {
-  constructor() {
-    this._position = [0, 0, 0];
-    this._rotation = [0, 0, 0, 1];
-    this._scale = [1, 1, 1];
-    this._localMatrix = null;
-    this._worldMatrix = null;
-    this._localDirty = true;
-    this._worldDirty = true;
-    this._parent = null;
-    this._children = [];
+  materialSupportsInstancing(material) {
+    return material instanceof UnlitMaterial || material instanceof StandardMaterial;
   }
-  get parent() {
-    return this._parent;
-  }
-  get children() {
-    return this._children;
-  }
-  setParent(parent) {
-    if (this._parent === parent) return this;
-    if (this._parent) {
-      const idx = this._parent._children.indexOf(this);
-      if (idx !== -1) {
-        this._parent._children.splice(idx, 1);
-      }
-    }
-    this._parent = parent;
-    if (parent) {
-      parent._children.push(this);
-    }
-    this.markWorldDirty();
-    return this;
-  }
-  addChild(child) {
-    child.setParent(this);
-    return this;
-  }
-  removeChild(child) {
-    if (child._parent === this) {
-      child.setParent(null);
-    }
-    return this;
-  }
-  removeFromParent() {
-    this.setParent(null);
-    return this;
-  }
-  traverse(callback) {
-    callback(this);
-    for (const child of this._children) {
-      child.traverse(callback);
-    }
-  }
-  get root() {
-    let current = this;
-    while (current._parent) {
-      current = current._parent;
-    }
-    return current;
-  }
-  get position() {
-    return this._position;
-  }
-  setPosition(x, y, z) {
-    this._position = [x, y, z];
-    this.markLocalDirty();
-    return this;
-  }
-  translate(x, y, z) {
-    this._position = vec3.add(this._position, [x, y, z]);
-    this.markLocalDirty();
-    return this;
-  }
-  get worldPosition() {
-    const m = this.worldMatrix;
-    return [m[12], m[13], m[14]];
-  }
-  get rotation() {
-    return this._rotation;
-  }
-  setRotation(qx, qy, qz, qw) {
-    this._rotation = quat.normalize([qx, qy, qz, qw]);
-    this.markLocalDirty();
-    return this;
-  }
-  setRotationFromAxisAngle(axis, angle) {
-    this._rotation = quat.fromAxisAngle(vec3.normalize(axis), angle);
-    this.markLocalDirty();
-    return this;
-  }
-  setRotationFromEuler(x, y, z) {
-    const qx = quat.fromAxisAngle([1, 0, 0], x);
-    const qy = quat.fromAxisAngle([0, 1, 0], y);
-    const qz = quat.fromAxisAngle([0, 0, 1], z);
-    this._rotation = quat.mul(quat.mul(qz, qy), qx);
-    this.markLocalDirty();
-    return this;
-  }
-  rotateX(angle) {
-    const q = quat.fromAxisAngle([1, 0, 0], angle);
-    this._rotation = quat.normalize(quat.mul(this._rotation, q));
-    this.markLocalDirty();
-    return this;
-  }
-  rotateY(angle) {
-    const q = quat.fromAxisAngle([0, 1, 0], angle);
-    this._rotation = quat.normalize(quat.mul(this._rotation, q));
-    this.markLocalDirty();
-    return this;
-  }
-  rotateZ(angle) {
-    const q = quat.fromAxisAngle([0, 0, 1], angle);
-    this._rotation = quat.normalize(quat.mul(this._rotation, q));
-    this.markLocalDirty();
-    return this;
-  }
-  rotateOnAxis(axis, angle) {
-    const q = quat.fromAxisAngle(vec3.normalize(axis), angle);
-    this._rotation = quat.normalize(quat.mul(this._rotation, q));
-    this.markLocalDirty();
-    return this;
-  }
-  get scale() {
-    return this._scale;
-  }
-  setScale(x, y, z) {
-    this._scale = [x, y, z];
-    this.markLocalDirty();
-    return this;
-  }
-  setUniformScale(s) {
-    this._scale = [s, s, s];
-    this.markLocalDirty();
-    return this;
-  }
-  get localMatrix() {
-    if (this._localDirty || !this._localMatrix) {
-      this._localMatrix = this.computeLocalMatrix();
-      this._localDirty = false;
-    }
-    return this._localMatrix;
-  }
-  get worldMatrix() {
-    if (this._worldDirty || !this._worldMatrix) {
-      this._worldMatrix = this.computeWorldMatrix();
-      this._worldDirty = false;
-    }
-    return this._worldMatrix;
-  }
-  computeLocalMatrix() {
-    const [px, py, pz] = this._position;
-    const [qx, qy, qz, qw] = this._rotation;
-    const [sx, sy, sz] = this._scale;
-    const xx = qx * qx, yy = qy * qy, zz = qz * qz;
-    const xy = qx * qy, xz = qx * qz, yz = qy * qz;
-    const wx = qw * qx, wy = qw * qy, wz = qw * qz;
-    return [
-      (1 - 2 * (yy + zz)) * sx,
-      2 * (xy + wz) * sx,
-      2 * (xz - wy) * sx,
-      0,
-      2 * (xy - wz) * sy,
-      (1 - 2 * (xx + zz)) * sy,
-      2 * (yz + wx) * sy,
-      0,
-      2 * (xz + wy) * sz,
-      2 * (yz - wx) * sz,
-      (1 - 2 * (xx + yy)) * sz,
-      0,
-      px,
-      py,
-      pz,
-      1
-    ];
-  }
-  computeWorldMatrix() {
-    const local = this.localMatrix;
-    if (this._parent) {
-      return mat4.mul(this._parent.worldMatrix, local);
-    }
-    return local;
-  }
-  markLocalDirty() {
-    this._localDirty = true;
-    this.markWorldDirty();
-  }
-  markWorldDirty() {
-    if (this._worldDirty) return;
-    this._worldDirty = true;
-    for (const child of this._children) {
-      child.markWorldDirty();
-    }
-  }
-  reset() {
-    this._position = [0, 0, 0];
-    this._rotation = [0, 0, 0, 1];
-    this._scale = [1, 1, 1];
-    this.markLocalDirty();
-    return this;
-  }
-  copyFrom(other) {
-    this._position = [...other._position];
-    this._rotation = [...other._rotation];
-    this._scale = [...other._scale];
-    this.markLocalDirty();
-    return this;
-  }
-  clone() {
-    const t = new _Transform();
-    t.copyFrom(this);
-    return t;
+  ensureInstanceBuffer(byteLength) {
+    if (this.instanceBuffer && this.instanceBufferCapacityBytes >= byteLength) return;
+    this.instanceBuffer?.destroy();
+    let cap = this.instanceBufferCapacityBytes || this.INSTANCE_STRIDE_BYTES * 256;
+    while (cap < byteLength) cap *= 2;
+    this.instanceBufferCapacityBytes = cap;
+    this.instanceBuffer = this.device.createBuffer({
+      size: cap,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    });
   }
 };
 
@@ -1580,6 +2228,7 @@ var Mesh = class _Mesh {
     return this.transform.worldMatrix;
   }
   destroy() {
+    this.transform.dispose();
     this.geometry.destroy();
     this.material.destroy();
   }
@@ -2298,6 +2947,7 @@ var WasmGPU = class _WasmGPU {
     this._lastTime = performance.now();
     const loop = (now) => {
       if (!this._isRunning) return;
+      frameArena.reset();
       const dt = (now - this._lastTime) / 1e3;
       this._lastTime = now;
       this._frameCallback?.(dt, now / 1e3, this);
@@ -2316,6 +2966,7 @@ var WasmGPU = class _WasmGPU {
     return this._isRunning;
   }
   render(scene, camera) {
+    if (!this._isRunning) frameArena.reset();
     this.renderer.render(scene, camera);
   }
   createScene(background) {

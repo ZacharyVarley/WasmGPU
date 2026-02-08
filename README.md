@@ -1,18 +1,21 @@
-<p align="center"><a href="https://www.github.com/Zushah/WasmGPU"><img src="./assets/logo.png" width="50%"></a></p>
-<h3 align="center"><b>W a s m G P U &nbsp;&nbsp;=&nbsp;&nbsp;  W e b A s s e m b l y &nbsp;&nbsp;⨯&nbsp;&nbsp; W e b G P U</b></h3>
-<p align="center"><a href="https://zushah.github.io/WasmGPU">https://zushah.github.io/WasmGPU</a></p>
+<p align="center">
+    <a href="https://www.github.com/Zushah/WasmGPU">
+        <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-darkmode.png">
+            <img alt="WasmGPU logo" src="./assets/logo-lightmode.png" width="50%">
+        </picture>
+    </a>
+</p>
 
 ## Status
 
-- 🚀 Latest release: [**`v0.2.1`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.2.1).
-- ✅ WebGPU core able to render scenes, meshes, materials, lights, camera.
-- ✅ WebAssembly math module wired into TypeScript.
-- ✅ Bundles for both ESM and IIFE users.
+- 🚀 Latest release: [**`v0.3.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.3.0).
+- 💡 Documentation: [https://zushah.github.io/WasmGPU](https://zushah.github.io/WasmGPU)
+- ⚙️ WebGPU engine renders scenes with meshes, materials, lights, and camera, with opaque draw batching and instanced rendering to minimize CPU overhead.
+- 🦀 WebAssembly driver with a Rust runtime backend, where transforms live in SoA memory, updates are batched, uniform uploads are zero-copy from WASM memory, and per-frame scratch allocations use a bounded frame arena.
 - 🛠️ API still evolving so expect breaking changes often!
 
 ## Getting Started
-
-Check out the docs [here](https://zushah.github.io/WasmGPU).
 
 Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/examples/esm.html) and [`./examples/iife.html`](https://zushah.github.io/WasmGPU/examples/iife.html).
 
@@ -20,7 +23,7 @@ Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/example
 <canvas></canvas>
 <script type="module">
     // Setup
-    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.2.1/dist/WasmGPU.min.js";
+    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.3.0/dist/WasmGPU.min.js";
     const canvas = document.querySelector("canvas");
     const wgpu = await WasmGPU.create(canvas);
 
@@ -63,7 +66,7 @@ Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/example
 
 Using the IIFE bundle instead of the ESM bundle is exactly the same as above, except you must use a `script` tag instead of an `import` statement:
 ```html
-<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.2.1/dist/WasmGPU.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.3.0/dist/WasmGPU.iife.min.js"></script>
 ```
 
 ## Development
@@ -84,7 +87,6 @@ The `./build/` folder generates:
 - `math.js` — Bridge to load WebAssembly
 - `math.d.ts` — AssemblyScript type declarations
 - `math.wasm` — WebAssembly math module
-- `math.wasm.map` — WebAssembly source map
 - `math.wat` — WebAssembly text format
 
 ## License

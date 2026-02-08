@@ -2,26 +2,14 @@
     <defs>
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500&display=swap');
-            .cls-1, .cls-2, .cls-3, .cls-4, .cls-5 {
-                fill-rule: evenodd;
-                stroke-linejoin: round;
-            }
+            .cls-1, .cls-2, .cls-3, .cls-4, .cls-5 { fill-rule: evenodd; stroke-linejoin: round; }
             .cls-1 { fill: #005a9c; stroke: #005a9c; }
             .cls-2 { fill: #3355c6; stroke: #3355c6; }
             .cls-3 { fill: #654ff0; stroke: #654ff0; }
             .cls-4 { fill: #8472f3; stroke: #8472f3; }
             .cls-5 { fill: #9b8df5; stroke: #9b8df5; }
-            .mark-text {
-                font-family: "Montserrat", sans-serif;
-                font-size: 130px;
-                letter-spacing: 0px;
-                fill: #000000;
-            }
-            @media (prefers-color-scheme: dark) {
-                .mark-text {
-                fill: #ffffff;
-                }
-            }
+            .mark-text { font-family: "Montserrat", sans-serif; font-size: 130px; letter-spacing: 0px; fill: #000000; }
+            @media (prefers-color-scheme: dark) { .mark-text { fill: #ffffff; } }
         </style>
     </defs>
     <rect width="100%" height="100%" fill="transparent"/>

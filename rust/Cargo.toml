@@ -1,8 +1,8 @@
 [package]
-name = "wasmgpu_math"
-version = "0.2.1"
+name = "wasmgpu"
+version = "0.3.0"
 edition = "2021"
-license = "MIT"
+license = "MPL-2.0"
 publish = false
 
 [lib]
