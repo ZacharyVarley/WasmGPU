@@ -6,37 +6,38 @@ const common = {
   target: ["es2023"],
   external: ["node:*"],
   loader: {
-	  ".wasm": "file"
+    ".wasm": "file",
+    ".wgsl": "text"
   },
   assetNames: "[name]",
   logLevel: "info"
 };
 try {
   await esbuild.build({
-	  ...common,
+    ...common,
     entryPoints: ["./src/index.ts"],
     define: {
-	    __WASMGPU_BASE_URL__: "import.meta.url"
+      __WASMGPU_BASE_URL__: "import.meta.url"
     },
     format: "esm",
-	  minify: false,
-	  outfile: "./dist/WasmGPU.js"
+    minify: false,
+    outfile: "./dist/WasmGPU.js"
   });
   await esbuild.build({
-	  ...common,
+    ...common,
     entryPoints: ["./src/index.ts"],
     define: {
-	    __WASMGPU_BASE_URL__: "import.meta.url"
+      __WASMGPU_BASE_URL__: "import.meta.url"
     },
     format: "esm",
-	  minify: true,
-	  outfile: "./dist/WasmGPU.min.js"
+    minify: true,
+    outfile: "./dist/WasmGPU.min.js"
   });
   await esbuild.build({
     ...common,
     entryPoints: ["./src/index.iife.ts"],
     define: {
-	    __WASMGPU_BASE_URL__: "\"__CURRENT_SCRIPT__\""
+      __WASMGPU_BASE_URL__: "\"__CURRENT_SCRIPT__\""
     },
     format: "iife",
     globalName: "WasmGPU",
