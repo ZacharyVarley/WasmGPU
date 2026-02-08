@@ -4,8 +4,8 @@ import { Light, DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
-import { Material, BlendMode, CullMode } from "../graphics/material";
-import { frameArena, mat4f, wasm, WasmPtr } from "../wasm";
+import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
+import { frameArena, mat4f, transformf, wasm, WasmPtr } from "../wasm";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -40,6 +40,9 @@ export class Renderer {
     private modelBufferIndex: number = 0;
     private readonly MODEL_BUFFER_POOL_SIZE = 64;
     private lightingUniformBuffer!: GPUBuffer;
+    private instanceBuffer: GPUBuffer | null = null;
+    private instanceBufferCapacityBytes: number = 0;
+    private readonly INSTANCE_STRIDE_BYTES = 128;
     private pipelineCache: Map<string, GPURenderPipeline> = new Map();
     private shaderCache: Map<string, GPUShaderModule> = new Map();
     private drawItemPool: DrawItem[] = [];
@@ -189,6 +192,9 @@ export class Renderer {
         for (const buffer of this.modelUniformBuffers) buffer.destroy();
         this.modelUniformBuffers = [];
         this.lightingUniformBuffer?.destroy();
+        this.instanceBuffer?.destroy();
+        this.instanceBuffer = null;
+        this.instanceBufferCapacityBytes = 0;
         this.globalBindGroups = [];
         this.pipelineCache.clear();
         this.shaderCache.clear();
@@ -321,30 +327,26 @@ export class Renderer {
         let lastPipeline: GPURenderPipeline | null = null;
         let lastMaterial: Material | null = null;
         let lastGeometry: Geometry | null = null;
-        for (let i = 0; i < items.length; i++) {
-            if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
-                console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
-                return;
+        for (let i = 0; i < items.length; ) {
+            const first = items[i];
+            const pipeline = first.pipeline;
+            const material = first.material;
+            const geometry = first.geometry;
+            let j = i + 1;
+            while (j < items.length) {
+                const it = items[j];
+                if (it.pipeline !== pipeline) break;
+                if (it.material !== material) break;
+                if (it.geometry !== geometry) break;
+                j++;
             }
-            const { mesh, geometry, material, pipeline } = items[i];
+            const runCount = j - i;
             if (geometry !== lastGeometry) geometry.upload(this.device);
             if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
-            const modelSlot = this.modelBufferIndex++;
-            const modelBuffer = this.modelUniformBuffers[modelSlot];
-            const globalBindGroup = this.globalBindGroups[modelSlot];
-            const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
-            const invPtr = this.modelUniformStagingPtr;
-            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
-            mat4f.invert(invPtr, modelPtr);
-            mat4f.transpose(normalPtr, invPtr);
-            const mem = wasm.memory().buffer as ArrayBuffer;
-            this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
-            this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
             if (pipeline !== lastPipeline) {
                 pass.setPipeline(pipeline);
                 lastPipeline = pipeline;
             }
-            pass.setBindGroup(0, globalBindGroup);
             if (material !== lastMaterial) {
                 pass.setBindGroup(1, material.bindGroup!);
                 lastMaterial = material;
@@ -356,16 +358,62 @@ export class Renderer {
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                 lastGeometry = geometry;
             }
-            if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
-            else pass.draw(geometry.vertexCount);
+            const canInstance = runCount > 1 && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
+            if (canInstance) {
+                const instancedPipeline = this.getOrCreatePipeline(material, true);
+                if (instancedPipeline !== lastPipeline) {
+                    pass.setPipeline(instancedPipeline);
+                    lastPipeline = instancedPipeline;
+                }
+                this.drawInstancedRun(pass, geometry, material, items, i, runCount);
+            } else {
+                for (let k = i; k < j; k++) {
+                    if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
+                        console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
+                        return;
+                    }
+                    const modelSlot = this.modelBufferIndex++;
+                    const modelBuffer = this.modelUniformBuffers[modelSlot];
+                    const globalBindGroup = this.globalBindGroups[modelSlot];
+                    const mesh = items[k].mesh;
+                    const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
+                    const invPtr = this.modelUniformStagingPtr;
+                    const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+                    mat4f.invert(invPtr, modelPtr);
+                    mat4f.transpose(normalPtr, invPtr);
+                    const mem = wasm.memory().buffer as ArrayBuffer;
+                    this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
+                    this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
+                    pass.setBindGroup(0, globalBindGroup);
+                    if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
+                    else pass.draw(geometry.vertexCount);
+                }
+            }
+            i = j;
         }
     }
 
-    private getOrCreatePipeline(material: Material): GPURenderPipeline {
-        const key = this.getPipelineCacheKey(material);
+    private drawInstancedRun(pass: GPURenderPassEncoder, geometry: Geometry, material: Material, items: DrawItem[], start: number, count: number): void {
+        const ptrsPtr = frameArena.allocF32(count) as WasmPtr;
+        const ptrs = wasm.u32view(ptrsPtr, count);
+        for (let i = 0; i < count; i++) ptrs[i] = items[start + i].mesh.transform.worldMatrixPtr >>> 0;
+        const outPtr = frameArena.allocF32(count * 32) as WasmPtr;
+        transformf.packModelNormalMat4FromPtrs(outPtr, ptrsPtr, count);
+        const outBytes = count * this.INSTANCE_STRIDE_BYTES;
+        this.ensureInstanceBuffer(outBytes);
+        const mem = wasm.memory().buffer as ArrayBuffer;
+        this.queue.writeBuffer(this.instanceBuffer!, 0, mem, outPtr, outBytes);
+        pass.setBindGroup(0, this.globalBindGroups[0]);
+        pass.setVertexBuffer(3, this.instanceBuffer!);
+        if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);
+        else pass.draw(geometry.vertexCount, count);
+    }
+
+    private getOrCreatePipeline(material: Material, instanced: boolean = false): GPURenderPipeline {
+        const key = this.getPipelineCacheKey(material, instanced);
         let pipeline = this.pipelineCache.get(key);
         if (pipeline) return pipeline;
-        const shaderCode = material.getShaderCode();
+        const shaderCode = material.getShaderCode(instanced);
         let shaderModule = this.shaderCache.get(shaderCode);
         if (!shaderModule) {
             shaderModule = this.device.createShaderModule({ code: shaderCode });
@@ -378,19 +426,30 @@ export class Renderer {
             vertex: {
                 module: shaderModule,
                 entryPoint: "vs_main",
-                buffers: [
+                buffers: instanced
+                ? [
+                    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                    { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
                     {
-                        arrayStride: 12,
-                        attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }]
-                    },
-                    {
-                        arrayStride: 12,
-                        attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }]
-                    },
-                    {
-                        arrayStride: 8,
-                        attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }]
+                        arrayStride: this.INSTANCE_STRIDE_BYTES,
+                        stepMode: "instance",
+                        attributes: [
+                            { shaderLocation: 3,  offset: 0,   format: "float32x4" },
+                            { shaderLocation: 4,  offset: 16,  format: "float32x4" },
+                            { shaderLocation: 5,  offset: 32,  format: "float32x4" },
+                            { shaderLocation: 6,  offset: 48,  format: "float32x4" },
+                            { shaderLocation: 7,  offset: 64,  format: "float32x4" },
+                            { shaderLocation: 8,  offset: 80,  format: "float32x4" },
+                            { shaderLocation: 9,  offset: 96,  format: "float32x4" },
+                            { shaderLocation: 10, offset: 112, format: "float32x4" }
+                        ]
                     }
+                ]
+                : [
+                    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                    { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] }
                 ]
             },
             fragment: {
@@ -418,8 +477,8 @@ export class Renderer {
         return pipeline;
     }
 
-    private getPipelineCacheKey(material: Material): string {
-        return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}`;
+    private getPipelineCacheKey(material: Material, instanced: boolean): string {
+        return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}`;
     }
 
     private getBlendState(mode: BlendMode): GPUBlendState | undefined {
@@ -476,5 +535,21 @@ export class Renderer {
             const layout = material.createBindGroupLayout(this.device);
             material.bindGroup = this.device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: material.uniformBuffer } }] });
         }
+    }
+
+    private materialSupportsInstancing(material: Material): boolean {
+        return material instanceof UnlitMaterial || material instanceof StandardMaterial;
+    }
+
+    private ensureInstanceBuffer(byteLength: number): void {
+        if (this.instanceBuffer && this.instanceBufferCapacityBytes >= byteLength) return;
+        this.instanceBuffer?.destroy();
+        let cap = this.instanceBufferCapacityBytes || (this.INSTANCE_STRIDE_BYTES * 256);
+        while (cap < byteLength) cap *= 2;
+        this.instanceBufferCapacityBytes = cap;
+        this.instanceBuffer = this.device.createBuffer({
+            size: cap,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
     }
 }

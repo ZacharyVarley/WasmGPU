@@ -177,6 +177,9 @@ export const transformf = {
     updateWorldOrdered: (outWorldPtr: WasmPtr, localPtr: WasmPtr, parentPtr: WasmPtr, orderPtr: WasmPtr, count: number): void => {
         ensure().transform_update_world_ordered(outWorldPtr >>> 0, localPtr >>> 0, parentPtr >>> 0, orderPtr >>> 0, count >>> 0);
     },
+    packModelNormalMat4FromPtrs: (outPtr: WasmPtr, matPtrsPtr: WasmPtr, count: number): void => {
+        ensure().transform_pack_model_normal_mat4_from_ptrs(outPtr >>> 0, matPtrsPtr >>> 0, count >>> 0);
+    }
 };
 
 export const vec3f = {

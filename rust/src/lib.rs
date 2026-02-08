@@ -1910,3 +1910,50 @@ pub extern "C" fn transform_update_world_ordered(out_world: u32, local: u32, par
     }
     0
 }
+
+#[no_mangle]
+pub extern "C" fn transform_pack_model_normal_mat4_from_ptrs(out: u32, mat_ptrs_u32: u32, count: u32) -> u32 {
+    unsafe {
+        let n = count as usize;
+        let ptrs = u32_slice(mat_ptrs_u32, n);
+        let out_f32 = f32_slice_mut(out, n * 32);
+
+        for i in 0..n {
+            let src_ptr = ptrs[i];
+            let src = f32_slice(src_ptr, 16);
+
+            let base = i * 32;
+            for j in 0..16 {
+                out_f32[base + j] = src[j];
+            }
+
+            let mut m = [0.0f32; 16];
+            m.copy_from_slice(src);
+
+            let inv = mat4_invert_from(&m);
+
+            let mut normal = [0.0f32; 16];
+            normal[0]  = inv[0];
+            normal[1]  = inv[4];
+            normal[2]  = inv[8];
+            normal[3]  = inv[12];
+            normal[4]  = inv[1];
+            normal[5]  = inv[5];
+            normal[6]  = inv[9];
+            normal[7]  = inv[13];
+            normal[8]  = inv[2];
+            normal[9]  = inv[6];
+            normal[10] = inv[10];
+            normal[11] = inv[14];
+            normal[12] = inv[3];
+            normal[13] = inv[7];
+            normal[14] = inv[11];
+            normal[15] = inv[15];
+
+            for j in 0..16 {
+                out_f32[base + 16 + j] = normal[j];
+            }
+        }
+    }
+    0
+}
