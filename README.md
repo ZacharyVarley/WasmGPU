@@ -15,6 +15,21 @@
 - 🦀 WebAssembly driver with a Rust runtime backend, where transforms live in SoA memory, updates are batched, uniform uploads are zero-copy from WASM memory, and per-frame scratch allocations use a bounded frame arena.
 - 🛠️ API still evolving so expect breaking changes often!
 
+## Architecture Comparison Table
+
+|  | **WebGL / WebGPU** | **Three.js / Babylon.js** | **WasmGPU** |
+| :--- | :--- | :--- | :--- |
+| **Origin** | 2011 / 2023 | 2010 / 2013 | 2026 |
+| **Primary Implementation Language** | JavaScript & C++ | JavaScript / TypeScript | TypeScript & Rust |
+| **Graphics Engine** | WebGL / WebGPU | WebGL-native & WebGPU-adoptive | WebGPU-native |
+| **Scene Graph Memory** | Not available | Object-oriented (AoS) | Data-oriented (SoA) |
+| **Math Execution** | JavaScript | JavaScript | WebAssembly |
+| **Transform Updates** | Not available | Recursive traversal | Linear iteration |
+| **Uniform Uploads** | Manual packing | Extraction & packing | Zero-copy views & no packing |
+| **Garbage Collection** | Manual & low/high pressure via JavaScript engine | Automatic & high pressure via JavaScript engine | Automatic & low pressure via WebAssembly driver |
+| **Instancing** | Manual | Manual | Automatic |
+| **Render Loop** | Run by JavaScript | Run by JavaScript | Run by JavaScript & WebAssembly |
+
 ## Getting Started
 
 Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/examples/esm.html) and [`./examples/iife.html`](https://zushah.github.io/WasmGPU/examples/iife.html).
