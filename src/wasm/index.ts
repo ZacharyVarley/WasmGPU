@@ -182,6 +182,43 @@ export const transformf = {
     }
 };
 
+export const cullf = {
+    spheresFrustum: (outIndicesPtr: WasmPtr, centersPtr: WasmPtr, radiiPtr: WasmPtr, count: number, frustumPlanesPtr: WasmPtr): number => {
+        return ensure().cull_spheres_frustum(outIndicesPtr >>> 0, centersPtr >>> 0, radiiPtr >>> 0, count >>> 0, frustumPlanesPtr >>> 0) >>> 0;
+    }
+};
+
+export const frustumf = {
+    writePlanesFromViewProjection: (outPlanesPtr: WasmPtr, viewProjMat4: ArrayLike<number>): void => {
+        const out = wasm.f32view(outPlanesPtr, 24);
+        const m = viewProjMat4;
+        const r0x = m[0],  r0y = m[4],  r0z = m[8],  r0w = m[12];
+        const r1x = m[1],  r1y = m[5],  r1z = m[9],  r1w = m[13];
+        const r2x = m[2],  r2y = m[6],  r2z = m[10], r2w = m[14];
+        const r3x = m[3],  r3y = m[7],  r3z = m[11], r3w = m[15];
+        out[0] = r3x + r0x; out[1] = r3y + r0y; out[2] = r3z + r0z; out[3] = r3w + r0w;
+        out[4] = r3x - r0x; out[5] = r3y - r0y; out[6] = r3z - r0z; out[7] = r3w - r0w;
+        out[8] = r3x + r1x; out[9] = r3y + r1y; out[10] = r3z + r1z; out[11] = r3w + r1w;
+        out[12] = r3x - r1x; out[13] = r3y - r1y; out[14] = r3z - r1z; out[15] = r3w - r1w;
+        out[16] = r2x; out[17] = r2y; out[18] = r2z; out[19] = r2w;
+        out[20] = r3x - r2x; out[21] = r3y - r2y; out[22] = r3z - r2z; out[23] = r3w - r2w;
+        for (let p = 0; p < 6; p++) {
+            const i = p * 4;
+            const nx = out[i + 0];
+            const ny = out[i + 1];
+            const nz = out[i + 2];
+            const len = Math.hypot(nx, ny, nz);
+            if (len > 0) {
+                const inv = 1.0 / len;
+                out[i + 0] = nx * inv;
+                out[i + 1] = ny * inv;
+                out[i + 2] = nz * inv;
+                out[i + 3] = out[i + 3] * inv;
+            }
+        }
+    }
+};
+
 export const vec3f = {
     alloc: (): WasmPtr => wasm.allocF32(4),
     view3: (ptr: WasmPtr): Float32Array => wasm.f32view(ptr, 3),

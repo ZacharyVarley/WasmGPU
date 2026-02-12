@@ -1,8 +1,8 @@
-import unlitWGSL from "../shaders/unlit.wgsl";
-import unlitInstancedWGSL from "../shaders/unlit-instanced.wgsl";
-import standardWGSL from "../shaders/standard.wgsl";
-import standardInstancedWGSL from "../shaders/standard-instanced.wgsl";
-import customDefaultVertexWGSL from "../shaders/custom-default-vertex.wgsl";
+import unlitWGSL from "../wgsl/unlit.wgsl";
+import unlitInstancedWGSL from "../wgsl/unlit-instanced.wgsl";
+import standardWGSL from "../wgsl/standard.wgsl";
+import standardInstancedWGSL from "../wgsl/standard-instanced.wgsl";
+import customDefaultVertexWGSL from "../wgsl/custom-default-vertex.wgsl";
 
 export type Color = [number, number, number];
 export type Color4 = [number, number, number, number];

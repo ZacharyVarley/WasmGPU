@@ -58,6 +58,10 @@ export class WasmGPU {
         return this._isRunning;
     }
 
+    get cullingStats(): { tested: number; visible: number } {
+        return this.renderer.cullingStats;
+    }
+
     render(scene: Scene, camera: Camera): void {
         if (!this._isRunning) frameArena.reset();
         this.renderer.render(scene, camera);

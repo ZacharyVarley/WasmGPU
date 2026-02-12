@@ -13,5 +13,5 @@ export type { GeometryDescriptor, GeometryAttribute } from "./graphics/geometry"
 export { Material, UnlitMaterial, StandardMaterial, CustomMaterial, BlendMode, CullMode } from "./graphics/material";
 export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
 export { Transform } from "./core/transform";
-export { initMath, mat4, quat, vec3 } from "./wasm";
+export { initMath, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
 export { WasmGPU as default } from "./core/engine";

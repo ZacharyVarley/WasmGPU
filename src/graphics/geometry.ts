@@ -19,6 +19,8 @@ export class Geometry {
     readonly indices: Uint32Array | null;
     readonly vertexCount: number;
     readonly indexCount: number;
+    private _boundsCenter: [number, number, number];
+    private _boundsRadius: number;
     private _positionBuffer: GPUBuffer | null = null;
     private _normalBuffer: GPUBuffer | null = null;
     private _uvBuffer: GPUBuffer | null = null;
@@ -33,6 +35,37 @@ export class Geometry {
         this.uvs = descriptor.uvs ?? new Float32Array(this.vertexCount * 2);
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
+        if (this.vertexCount > 0) {
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+            for (let i = 0; i < this.positions.length; i += 3) {
+                const x = this.positions[i + 0];
+                const y = this.positions[i + 1];
+                const z = this.positions[i + 2];
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (z < minZ) minZ = z;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+                if (z > maxZ) maxZ = z;
+            }
+            const cx = (minX + maxX) * 0.5;
+            const cy = (minY + maxY) * 0.5;
+            const cz = (minZ + maxZ) * 0.5;
+            let maxR2 = 0;
+            for (let i = 0; i < this.positions.length; i += 3) {
+                const dx = this.positions[i + 0] - cx;
+                const dy = this.positions[i + 1] - cy;
+                const dz = this.positions[i + 2] - cz;
+                const r2 = dx * dx + dy * dy + dz * dz;
+                if (r2 > maxR2) maxR2 = r2;
+            }
+            this._boundsCenter = [cx, cy, cz];
+            this._boundsRadius = Math.sqrt(maxR2);
+        } else {
+            this._boundsCenter = [0, 0, 0];
+            this._boundsRadius = 0;
+        }
     }
 
     upload(device: GPUDevice): void {
@@ -65,6 +98,14 @@ export class Geometry {
 
     get isIndexed(): boolean {
         return this._indexBuffer !== null;
+    }
+
+    get boundsCenter(): readonly [number, number, number] {
+        return this._boundsCenter;
+    }
+
+    get boundsRadius(): number {
+        return this._boundsRadius;
     }
 
     destroy(): void {

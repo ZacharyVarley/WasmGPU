@@ -5,12 +5,14 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
-import { frameArena, mat4f, transformf, wasm, WasmPtr } from "../wasm";
+import { cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
     antialias?: boolean;
     powerPreference?: "high-performance" | "low-power";
+    frustumCulling?: boolean;
+    frustumCullingStats?: boolean;
 };
 
 type DrawItem = {
@@ -58,6 +60,13 @@ export class Renderer {
     private lightingUniformStagingView!: Float32Array<ArrayBuffer>;
     private modelUniformStagingView!: Float32Array<ArrayBuffer>;
     private _wasmBuffer: ArrayBuffer | null = null;
+    private frustumCullingEnabled: boolean = true;
+    private frustumCullingStatsEnabled: boolean = false;
+    readonly cullingStats: { tested: number; visible: number } = { tested: 0, visible: 0 };
+    private cullCentersPtr: WasmPtr = 0;
+    private cullRadiiPtr: WasmPtr = 0;
+    private cullCapacity: number = 0;
+    private cullMeshScratch: Mesh[] = [];
 
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -81,6 +90,8 @@ export class Renderer {
         this.createGlobalBindGroupLayout();
         this.createUniformBuffers();
         this.resize();
+        this.frustumCullingEnabled = descriptor.frustumCulling ?? true;
+        this.frustumCullingStatsEnabled = descriptor.frustumCullingStats ?? false;
     }
 
     get gpu(): { device: GPUDevice; queue: GPUQueue; format: GPUTextureFormat } {
@@ -149,6 +160,15 @@ export class Renderer {
         return item;
     }
 
+    private ensureCullingCapacity(count: number): void {
+        if (count <= this.cullCapacity) return;
+        let cap = Math.max(1, this.cullCapacity);
+        while (cap < count) cap *= 2;
+        this.cullCentersPtr = wasm.allocF32(cap * 3) as WasmPtr;
+        this.cullRadiiPtr = wasm.allocF32(cap) as WasmPtr;
+        this.cullCapacity = cap;
+    }
+
     render(scene: Scene, camera: Camera): void {
         this.resize();
         this.modelBufferIndex = 0;
@@ -179,7 +199,7 @@ export class Renderer {
                 depthStoreOp: "store"
             }
         });
-        this.buildDrawLists(scene);
+        this.buildDrawLists(scene, camera);
         this.executeDrawList(pass, this.opaqueDrawList);
         this.executeDrawList(pass, this.transparentDrawList);
         pass.end();
@@ -300,25 +320,95 @@ export class Renderer {
         this.queue.writeBuffer(this.lightingUniformBuffer, 0, data);
     }
 
-    private buildDrawLists(scene: Scene): void {
+    private buildDrawLists(scene: Scene, camera: Camera): void {
         this.drawItemPoolUsed = 0;
         this.opaqueDrawList.length = 0;
         this.transparentDrawList.length = 0;
+        const candidates = this.cullMeshScratch;
+        candidates.length = 0;
         for (const mesh of scene.meshes) {
             if (!mesh.visible) continue;
-            const geometry = mesh.geometry;
-            const material = mesh.material;
-            const pipeline = this.getOrCreatePipeline(material);
-            const item = this.acquireDrawItem();
-            item.mesh = mesh;
-            item.geometry = geometry;
-            item.material = material;
-            item.pipeline = pipeline;
-            item.pipelineId = this.getObjectId(pipeline);
-            item.materialId = this.getObjectId(material);
-            item.geometryId = this.getObjectId(geometry);
-            if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
-            else this.transparentDrawList.push(item);
+            candidates.push(mesh);
+        }
+        const count = candidates.length;
+        if (count === 0) {
+            if (this.frustumCullingStatsEnabled) {
+                this.cullingStats.tested = 0;
+                this.cullingStats.visible = 0;
+            }
+            return;
+        }
+        let visibleIndices: Uint32Array<ArrayBuffer> | null = null;
+        let visibleCount = count;
+        if (this.frustumCullingEnabled) {
+            this.ensureCullingCapacity(count);
+            const centers = wasm.f32view(this.cullCentersPtr, count * 3);
+            const radii = wasm.f32view(this.cullRadiiPtr, count);
+            for (let i = 0; i < count; i++) {
+                const mesh = candidates[i];
+                const geom = mesh.geometry;
+                const lc = geom.boundsCenter;
+                const lr = geom.boundsRadius;
+                const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
+                const cx = w[0] * lc[0] + w[4] * lc[1] + w[8] * lc[2] + w[12];
+                const cy = w[1] * lc[0] + w[5] * lc[1] + w[9] * lc[2] + w[13];
+                const cz = w[2] * lc[0] + w[6] * lc[1] + w[10] * lc[2] + w[14];
+                const base = i * 3;
+                centers[base + 0] = cx;
+                centers[base + 1] = cy;
+                centers[base + 2] = cz;
+                const sx = Math.hypot(w[0], w[1], w[2]);
+                const sy = Math.hypot(w[4], w[5], w[6]);
+                const sz = Math.hypot(w[8], w[9], w[10]);
+                const smax = Math.max(sx, sy, sz);
+                radii[i] = lr * smax;
+            }
+            const frustumPtr = frameArena.allocF32(24) as WasmPtr;
+            frustumf.writePlanesFromViewProjection(frustumPtr, camera.viewProjectionMatrix);
+            const outPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
+            visibleCount = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, count, frustumPtr);
+            visibleIndices = wasm.u32view(outPtr, visibleCount);
+        }
+        if (this.frustumCullingStatsEnabled) {
+            this.cullingStats.tested = count;
+            this.cullingStats.visible = visibleCount;
+        }
+        if (!this.frustumCullingEnabled) {
+            for (let i = 0; i < count; i++) {
+                const mesh = candidates[i];
+                const geometry = mesh.geometry;
+                const material = mesh.material;
+                const pipeline = this.getOrCreatePipeline(material);
+                const item = this.acquireDrawItem();
+                item.mesh = mesh;
+                item.geometry = geometry;
+                item.material = material;
+                item.pipeline = pipeline;
+                item.pipelineId = this.getObjectId(pipeline);
+                item.materialId = this.getObjectId(material);
+                item.geometryId = this.getObjectId(geometry);
+                if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
+                else this.transparentDrawList.push(item);
+            }
+        } else {
+            const vis = visibleIndices!;
+            for (let k = 0; k < visibleCount; k++) {
+                const i = vis[k];
+                const mesh = candidates[i];
+                const geometry = mesh.geometry;
+                const material = mesh.material;
+                const pipeline = this.getOrCreatePipeline(material);
+                const item = this.acquireDrawItem();
+                item.mesh = mesh;
+                item.geometry = geometry;
+                item.material = material;
+                item.pipeline = pipeline;
+                item.pipelineId = this.getObjectId(pipeline);
+                item.materialId = this.getObjectId(material);
+                item.geometryId = this.getObjectId(geometry);
+                if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
+                else this.transparentDrawList.push(item);
+            }
         }
         this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
     }

@@ -21,12 +21,14 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "build:rs": "node ./scripts/build-math-wasm.js",
+    "build:rs": "node ./scripts/build-rust-wasm.js",
     "build:ts": "tsc --noEmit --project ./tsconfig.json",
     "build:es": "node ./esbuild.config.js",
     "build": "npm run build:rs && npm run build:ts && npm run build:es",
     "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
     "test:math": "node ./test/math.test.js",
+    "test:cull": "node ./test/cull.test.js",
+    "test": "npm run test:math && npm run test:cull",
     "start": "npx serve ."
   },
   "repository": {
