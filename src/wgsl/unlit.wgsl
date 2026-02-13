@@ -1,8 +1,11 @@
 struct MaterialUniforms {
-    color: vec4f
+    color: vec4f,
+    params: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(1) @binding(1) var baseSampler: sampler;
+@group(1) @binding(2) var baseTex: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3f,
@@ -29,6 +32,10 @@ struct ModelUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var<uniform> model: ModelUniforms;
 
+fn linearToSrgb(c: vec3f) -> vec3f {
+    return pow(c, vec3f(1.0 / 2.2));
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -40,5 +47,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return material.color;
+    let texColor = textureSample(baseTex, baseSampler, in.uv);
+    var outColor = material.color * texColor;
+    let alphaCutoff = material.params.x;
+    if (alphaCutoff > 0.0 && outColor.a < alphaCutoff) {
+        discard;
+    }
+    outColor.rgb = linearToSrgb(outColor.rgb);
+    return outColor;
 }

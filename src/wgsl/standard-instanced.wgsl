@@ -1,10 +1,21 @@
 struct MaterialUniforms {
     color: vec4f,
     emissive: vec4f,
-    params: vec4f
+    params: vec4f,
+    params2: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(1) @binding(1) var baseColorSampler: sampler;
+@group(1) @binding(2) var baseColorTex: texture_2d<f32>;
+@group(1) @binding(3) var metallicRoughnessSampler: sampler;
+@group(1) @binding(4) var metallicRoughnessTex: texture_2d<f32>;
+@group(1) @binding(5) var normalSampler: sampler;
+@group(1) @binding(6) var normalTex: texture_2d<f32>;
+@group(1) @binding(7) var occlusionSampler: sampler;
+@group(1) @binding(8) var occlusionTex: texture_2d<f32>;
+@group(1) @binding(9) var emissiveSampler: sampler;
+@group(1) @binding(10) var emissiveTex: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3f,
@@ -57,9 +68,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     let modelM = mat4x4f(in.m0, in.m1, in.m2, in.m3);
     let normalM = mat4x4f(in.n0, in.n1, in.n2, in.n3);
-    let worldPos = modelM * vec4f(in.position, 1.0);
-    out.position = camera.viewProjection * worldPos;
-    out.worldPos = worldPos.xyz;
+    let worldPos4 = modelM * vec4f(in.position, 1.0);
+    out.position = camera.viewProjection * worldPos4;
+    out.worldPos = worldPos4.xyz;
     out.normal = normalize((normalM * vec4f(in.normal, 0.0)).xyz);
     out.uv = in.uv;
     return out;
@@ -90,16 +101,47 @@ fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
     return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
 }
 
+fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+    let n = normalize(N);
+    let dp1 = dpdx(worldPos);
+    let dp2 = dpdy(worldPos);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let det = duv1.x * duv2.y - duv1.y * duv2.x;
+    if (abs(det) < 1e-6) {
+        return n;
+    }
+    let r = 1.0 / det;
+    var T = (dp1 * duv2.y - dp2 * duv1.y) * r;
+    T = normalize(T - n * dot(n, T));
+    let B = normalize(cross(n, T));
+    let tbn = mat3x3f(T, B, n);
+    var ns = normalSample * 2.0 - vec3f(1.0);
+    ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
+    return normalize(tbn * ns);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let albedo = material.color.rgb;
-    let metallic = material.params.x;
-    let roughness = material.params.y;
-    let emissiveIntensity = material.params.z;
-    let N = normalize(in.normal);
+    let baseSample = textureSample(baseColorTex, baseColorSampler, in.uv);
+    let baseColor = material.color * baseSample;
+    let alphaCutoff = material.params2.x;
+    if (alphaCutoff > 0.0 && baseColor.a < alphaCutoff) {
+        discard;
+    }
+    let mrSample = textureSample(metallicRoughnessTex, metallicRoughnessSampler, in.uv);
+    let metallic = clamp(material.params.x * mrSample.b, 0.0, 1.0);
+    let roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
+    let normalSample = textureSample(normalTex, normalSampler, in.uv).xyz;
+    let N = applyNormalMap(in.normal, in.worldPos, in.uv, normalSample, material.params.z);
+    let occlSample = textureSample(occlusionTex, occlusionSampler, in.uv).r;
+    let ao = 1.0 + material.params.w * (occlSample - 1.0);
+    let emissiveSample = textureSample(emissiveTex, emissiveSampler, in.uv).rgb;
+    let emissive = emissiveSample * material.emissive.rgb * material.emissive.a;
+    let albedo = baseColor.rgb;
     let V = normalize(camera.position - in.worldPos);
     let F0 = mix(vec3f(0.04), albedo, metallic);
-    var Lo = lighting.ambient.rgb * albedo;
+    var Lo = lighting.ambient.rgb * albedo * ao;
     for (var i = 0u; i < lighting.lightCount; i++) {
         let light = lighting.lights[i];
         var L: vec3f;
@@ -125,8 +167,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let NdotL = max(dot(N, L), 0.0);
         Lo += (kD * albedo / PI + specular) * radiance * NdotL;
     }
-    Lo += material.emissive.rgb * emissiveIntensity;
+    Lo += emissive;
     Lo = Lo / (Lo + vec3f(1.0));
     Lo = pow(Lo, vec3f(1.0 / 2.2));
-    return vec4f(Lo, material.color.a);
+    return vec4f(Lo, baseColor.a);
 }

@@ -1,3 +1,4 @@
+import { Texture2D } from "./texture";
 import unlitWGSL from "../wgsl/unlit.wgsl";
 import unlitInstancedWGSL from "../wgsl/unlit-instanced.wgsl";
 import standardWGSL from "../wgsl/standard.wgsl";
@@ -33,6 +34,7 @@ export abstract class Material {
     readonly depthTest: boolean;
     pipeline: GPURenderPipeline | null = null;
     bindGroup: GPUBindGroup | null = null;
+    bindGroupKey: string | null = null;
     uniformBuffer: GPUBuffer | null = null;
     protected _dirty: boolean = true;
 
@@ -60,6 +62,7 @@ export abstract class Material {
         this.uniformBuffer?.destroy();
         this.uniformBuffer = null;
         this.bindGroup = null;
+        this.bindGroupKey = null;
         this.pipeline = null;
     }
 }
@@ -67,21 +70,25 @@ export abstract class Material {
 export type UnlitMaterialDescriptor = MaterialDescriptor & {
     color?: Color;
     opacity?: number;
+    baseColorTexture?: Texture2D | null;
+    alphaCutoff?: number;
 };
 
 export class UnlitMaterial extends Material {
     private _color: Color;
     private _opacity: number;
+    private _baseColorTexture: Texture2D | null;
+    private _alphaCutoff: number;
 
     constructor(descriptor: UnlitMaterialDescriptor = {}) {
         super({
             ...descriptor,
-            blendMode: descriptor.opacity !== undefined && descriptor.opacity < 1 
-                ? BlendMode.Transparent 
-                : descriptor.blendMode
+            blendMode: descriptor.blendMode ?? ((descriptor.opacity ?? 1) < 1 ? BlendMode.Transparent : BlendMode.Opaque)
         });
         this._color = descriptor.color ?? [1, 1, 1];
         this._opacity = descriptor.opacity ?? 1;
+        this._baseColorTexture = descriptor.baseColorTexture ?? null;
+        this._alphaCutoff = descriptor.alphaCutoff ?? 0;
     }
 
     get color(): Color {
@@ -102,6 +109,24 @@ export class UnlitMaterial extends Material {
         this._dirty = true;
     }
 
+    get baseColorTexture(): Texture2D | null {
+        return this._baseColorTexture;
+    }
+
+    set baseColorTexture(value: Texture2D | null) {
+        this._baseColorTexture = value;
+        this._dirty = true;
+    }
+
+    get alphaCutoff(): number {
+        return this._alphaCutoff;
+    }
+
+    set alphaCutoff(value: number) {
+        this._alphaCutoff = value;
+        this._dirty = true;
+    }
+
     getUniformBufferSize(): number {
         return 32;
     }
@@ -109,18 +134,16 @@ export class UnlitMaterial extends Material {
     getUniformData(): Float32Array {
         return new Float32Array([
             this._color[0], this._color[1], this._color[2], this._opacity,
-            0, 0, 0, 0
+            this._alphaCutoff, 0, 0, 0
         ]);
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
         return device.createBindGroupLayout({
             entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform" }
-                }
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
             ]
         });
     }
@@ -138,6 +161,14 @@ export type StandardMaterialDescriptor = MaterialDescriptor & {
     roughness?: number;
     emissive?: Color;
     emissiveIntensity?: number;
+    baseColorTexture?: Texture2D | null;
+    metallicRoughnessTexture?: Texture2D | null;
+    normalTexture?: Texture2D | null;
+    occlusionTexture?: Texture2D | null;
+    emissiveTexture?: Texture2D | null;
+    normalScale?: number;
+    occlusionStrength?: number;
+    alphaCutoff?: number;
 };
 
 export class StandardMaterial extends Material {
@@ -147,20 +178,34 @@ export class StandardMaterial extends Material {
     private _roughness: number;
     private _emissive: Color;
     private _emissiveIntensity: number;
+    private _baseColorTexture: Texture2D | null;
+    private _metallicRoughnessTexture: Texture2D | null;
+    private _normalTexture: Texture2D | null;
+    private _occlusionTexture: Texture2D | null;
+    private _emissiveTexture: Texture2D | null;
+    private _normalScale: number;
+    private _occlusionStrength: number;
+    private _alphaCutoff: number;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
         super({
             ...descriptor,
-            blendMode: descriptor.opacity !== undefined && descriptor.opacity < 1
-                ? BlendMode.Transparent
-                : descriptor.blendMode
+            blendMode: descriptor.blendMode ?? ((descriptor.opacity ?? 1) < 1 ? BlendMode.Transparent : BlendMode.Opaque)
         });
         this._color = descriptor.color ?? [1, 1, 1];
         this._opacity = descriptor.opacity ?? 1;
-        this._metallic = descriptor.metallic ?? 0;
-        this._roughness = descriptor.roughness ?? 0.5;
+        this._metallic = descriptor.metallic ?? 0.0;
+        this._roughness = descriptor.roughness ?? 1.0;
         this._emissive = descriptor.emissive ?? [0, 0, 0];
-        this._emissiveIntensity = descriptor.emissiveIntensity ?? 1;
+        this._emissiveIntensity = descriptor.emissiveIntensity ?? 0;
+        this._baseColorTexture = descriptor.baseColorTexture ?? null;
+        this._metallicRoughnessTexture = descriptor.metallicRoughnessTexture ?? null;
+        this._normalTexture = descriptor.normalTexture ?? null;
+        this._occlusionTexture = descriptor.occlusionTexture ?? null;
+        this._emissiveTexture = descriptor.emissiveTexture ?? null;
+        this._normalScale = descriptor.normalScale ?? 1;
+        this._occlusionStrength = descriptor.occlusionStrength ?? 1;
+        this._alphaCutoff = descriptor.alphaCutoff ?? 0;
     }
 
     get color(): Color {
@@ -217,26 +262,100 @@ export class StandardMaterial extends Material {
         this._dirty = true;
     }
 
+    get baseColorTexture(): Texture2D | null {
+        return this._baseColorTexture;
+    }
+
+    set baseColorTexture(value: Texture2D | null) {
+        this._baseColorTexture = value;
+    }
+
+    get metallicRoughnessTexture(): Texture2D | null {
+        return this._metallicRoughnessTexture;
+    }
+
+    set metallicRoughnessTexture(value: Texture2D | null) {
+        this._metallicRoughnessTexture = value;
+    }
+
+    get normalTexture(): Texture2D | null {
+        return this._normalTexture;
+    }
+
+    set normalTexture(value: Texture2D | null) {
+        this._normalTexture = value;
+    }
+
+    get occlusionTexture(): Texture2D | null {
+        return this._occlusionTexture;
+    }
+
+    set occlusionTexture(value: Texture2D | null) {
+        this._occlusionTexture = value;
+    }
+
+    get emissiveTexture(): Texture2D | null {
+        return this._emissiveTexture;
+    }
+
+    set emissiveTexture(value: Texture2D | null) {
+        this._emissiveTexture = value;
+    }
+
+    get normalScale(): number {
+        return this._normalScale;
+    }
+
+    set normalScale(value: number) {
+        this._normalScale = value;
+        this._dirty = true;
+    }
+
+    get occlusionStrength(): number {
+        return this._occlusionStrength;
+    }
+
+    set occlusionStrength(value: number) {
+        this._occlusionStrength = value;
+        this._dirty = true;
+    }
+
+    get alphaCutoff(): number {
+        return this._alphaCutoff;
+    }
+
+    set alphaCutoff(value: number) {
+        this._alphaCutoff = value;
+        this._dirty = true;
+    }
+
     getUniformBufferSize(): number {
-        return 48;
+        return 64;
     }
 
     getUniformData(): Float32Array {
         return new Float32Array([
             this._color[0], this._color[1], this._color[2], this._opacity,
-            this._emissive[0], this._emissive[1], this._emissive[2], 0,
-            this._metallic, this._roughness, this._emissiveIntensity, 0
+            this._emissive[0], this._emissive[1], this._emissive[2], this._emissiveIntensity,
+            this._metallic, this._roughness, this._normalScale, this._occlusionStrength,
+            this._alphaCutoff, 0, 0, 0
         ]);
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
         return device.createBindGroupLayout({
             entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform" }
-                }
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 9, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
             ]
         });
     }

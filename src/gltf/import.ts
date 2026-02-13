@@ -1,12 +1,14 @@
 import { wasm, mat4f, meshf, WasmPtr } from "../wasm";
 import { Geometry } from "../graphics/geometry";
 import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color } from "../graphics/material";
+import { Texture2D } from "../graphics/texture";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
 import { Scene } from "../world/scene";
 import { Mesh } from "../world/mesh";
 import { DirectionalLight, PointLight, type Light } from "../world/light";
 import { Transform } from "../core/transform";
 import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfCamera, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
+import { decodeDataUri, isDataUri, resolveUri } from "./uri";
 
 import { readAccessorAsFloat32, readIndicesAsUint32 } from "./accessors";
 
@@ -58,6 +60,58 @@ export type ImportGltfOptions = {
 
 const warn = (opts: ImportGltfOptions | undefined, msg: string): void => {
     opts?.onWarning?.(msg);
+};
+
+const GL_NEAREST = 9728;
+const GL_LINEAR = 9729;
+const GL_NEAREST_MIPMAP_NEAREST = 9984;
+const GL_LINEAR_MIPMAP_NEAREST = 9985;
+const GL_NEAREST_MIPMAP_LINEAR = 9986;
+const GL_LINEAR_MIPMAP_LINEAR = 9987;
+const GL_CLAMP_TO_EDGE = 33071;
+const GL_MIRRORED_REPEAT = 33648;
+const GL_REPEAT = 10497;
+
+const gltfWrapToAddressMode = (wrap: number | undefined): GPUAddressMode => {
+    switch (wrap) {
+        case GL_CLAMP_TO_EDGE: return "clamp-to-edge";
+        case GL_MIRRORED_REPEAT: return "mirror-repeat";
+        case GL_REPEAT:
+        default:
+            return "repeat";
+    }
+};
+
+const gltfMagToFilterMode = (mag: number | undefined): GPUFilterMode => {
+    switch (mag) {
+        case GL_NEAREST: return "nearest";
+        case GL_LINEAR:
+        default:
+            return "linear";
+    }
+};
+
+const gltfMinToFilterModes = (min: number | undefined): { minFilter: GPUFilterMode; mipmapFilter: GPUMipmapFilterMode; useMipmaps: boolean } => {
+    switch (min) {
+        case GL_NEAREST: return { minFilter: "nearest", mipmapFilter: "nearest", useMipmaps: false };
+        case GL_LINEAR: return { minFilter: "linear", mipmapFilter: "nearest", useMipmaps: false };
+        case GL_NEAREST_MIPMAP_NEAREST: return { minFilter: "nearest", mipmapFilter: "nearest", useMipmaps: true };
+        case GL_LINEAR_MIPMAP_NEAREST: return { minFilter: "linear", mipmapFilter: "nearest", useMipmaps: true };
+        case GL_NEAREST_MIPMAP_LINEAR: return { minFilter: "nearest", mipmapFilter: "linear", useMipmaps: true };
+        case GL_LINEAR_MIPMAP_LINEAR:
+        default:
+            return { minFilter: "linear", mipmapFilter: "linear", useMipmaps: true };
+    }
+};
+
+const inferMimeTypeFromUri = (uri: string | undefined): string | undefined => {
+    if (!uri) return undefined;
+    const u = uri.toLowerCase();
+    if (u.endsWith(".png")) return "image/png";
+    if (u.endsWith(".jpg") || u.endsWith(".jpeg")) return "image/jpeg";
+    if (u.endsWith(".webp")) return "image/webp";
+    if (u.endsWith(".gif")) return "image/gif";
+    return undefined;
 };
 
 const getSceneIndex = (json: GltfRoot, opts?: ImportGltfOptions): number => {
@@ -178,59 +232,135 @@ const triangulateFan = (indices: Uint32Array): Uint32Array => {
     return new Uint32Array(tris);
 };
 
-const getOrCreateMaterial = (json: GltfRoot, materialIndex: number | undefined, cache: Map<number, Material>, opts?: ImportGltfOptions): Material => {
+const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: number | undefined, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, opts?: ImportGltfOptions): Material => {
     if (materialIndex === undefined) return new StandardMaterial({});
-    const existing = cache.get(materialIndex);
+    const existing = materialCache.get(materialIndex);
     if (existing) return existing;
     const mat = json.materials?.[materialIndex];
     if (!mat) {
-        warn(opts, `materials[${materialIndex}] missing; using default StandardMaterial`);
-        const fallback = new StandardMaterial({});
-        cache.set(materialIndex, fallback);
-        return fallback;
+        const created = new StandardMaterial({});
+        materialCache.set(materialIndex, created);
+        return created;
     }
-    const unlit = isMaterialUnlit(mat);
-    const pbr = (mat.pbrMetallicRoughness ?? {}) as Record<string, unknown>;
-    const baseColor = (pbr["baseColorFactor"] as number[] | undefined) ?? [1, 1, 1, 1];
-    const metallic = (pbr["metallicFactor"] as number | undefined) ?? 1.0;
-    const roughness = (pbr["roughnessFactor"] as number | undefined) ?? 1.0;
-    const emissiveFactor = (mat.emissiveFactor ?? [0, 0, 0]) as number[];
-    const color: Color = [baseColor[0] ?? 1, baseColor[1] ?? 1, baseColor[2] ?? 1];
-    const opacity = baseColor[3] ?? 1;
-    let blendMode = BlendMode.Opaque;
+    const getOrCreateTextureByIndex = (textureIndex: number | undefined, usage: string): Texture2D | null => {
+        if (textureIndex === undefined) return null;
+        const cached = textureCache.get(textureIndex);
+        if (cached) return cached;
+        const texDef = json.textures?.[textureIndex];
+        if (!texDef) {
+            warn(opts, `glTF texture index ${textureIndex} missing (usage=${usage}).`);
+            return null;
+        }
+        const imageIndex = texDef.source;
+        const img = imageIndex !== undefined ? json.images?.[imageIndex] : undefined;
+        if (imageIndex === undefined || !img) {
+            warn(opts, `glTF texture ${textureIndex} has no valid source image (usage=${usage}).`);
+            return null;
+        }
+        const sampler = texDef.sampler !== undefined ? json.samplers?.[texDef.sampler] : undefined;
+        const addressModeU = gltfWrapToAddressMode(sampler?.wrapS);
+        const addressModeV = gltfWrapToAddressMode(sampler?.wrapT);
+        const magFilter = gltfMagToFilterMode(sampler?.magFilter);
+        const { minFilter, mipmapFilter, useMipmaps } = gltfMinToFilterModes(sampler?.minFilter);
+        let source: { kind: "bytes"; bytes: ArrayBuffer; mimeType?: string } | { kind: "url"; url: string; mimeType?: string } | null = null;
+        const loadedBytes = doc.images?.[imageIndex];
+        const mimeType = img.mimeType ?? inferMimeTypeFromUri(img.uri);
+        if (loadedBytes) {
+            source = { kind: "bytes", bytes: loadedBytes, mimeType };
+        } else if (img.bufferView !== undefined) {
+            const bv = json.bufferViews?.[img.bufferView];
+            const buf = bv ? doc.buffers[bv.buffer] : undefined;
+            if (bv && buf) {
+                const start = (bv.byteOffset ?? 0) | 0;
+                source = { kind: "bytes", bytes: buf.slice(start, start + bv.byteLength), mimeType };
+            } else {
+                warn(opts, `glTF image bufferView ${img.bufferView} missing (texture=${textureIndex}, usage=${usage}).`);
+            }
+        } else if (img.uri) {
+            if (isDataUri(img.uri)) {
+                const decoded = decodeDataUri(img.uri);
+                source = { kind: "bytes", bytes: decoded.data, mimeType: mimeType ?? decoded.mimeType ?? undefined };
+            } else {
+                const url = resolveUri(doc.baseUrl, img.uri);
+                source = { kind: "url", url, mimeType };
+            }
+        }
+        if (!source) {
+            warn(opts, `Could not resolve image source for texture=${textureIndex} (usage=${usage}).`);
+            return null;
+        }
+        const created = Texture2D.createFrom({
+            source,
+            mipmaps: useMipmaps,
+            sampler: {
+                addressModeU,
+                addressModeV,
+                magFilter,
+                minFilter,
+                mipmapFilter
+            }
+        });
+        textureCache.set(textureIndex, created);
+        return created;
+    };
+    const getTex = (info: any | undefined, usage: string): Texture2D | null => {
+        if (!info) return null;
+        const texCoord = (info.texCoord ?? 0) | 0;
+        if (texCoord !== 0) warn(opts, `Texture texCoord=${texCoord} not supported yet (usage=${usage}); using TEXCOORD_0.`);
+        const ext = info.extensions as any;
+        if (ext?.KHR_texture_transform) warn(opts, `KHR_texture_transform not supported yet (usage=${usage}); ignoring.`);
+        return getOrCreateTextureByIndex(info.index, usage);
+    };
     const alphaMode = mat.alphaMode ?? "OPAQUE";
-    if (alphaMode === "BLEND") blendMode = BlendMode.Transparent;
-    else if (alphaMode === "MASK") {
-        warn(opts, `alphaMode=MASK not supported (no alpha cutoff); treating as OPAQUE`);
-        blendMode = BlendMode.Opaque;
-    }
+    const alphaCutoff = alphaMode === "MASK" ? (mat.alphaCutoff ?? 0.5) : 0;
+    const blendMode = alphaMode === "BLEND" ? BlendMode.Transparent : BlendMode.Opaque;
     const cullMode = mat.doubleSided ? CullMode.None : CullMode.Back;
-    if ((pbr["baseColorTexture"] as unknown) !== undefined) warn(opts, `Material ${mat.name ?? materialIndex}: baseColorTexture ignored (textures not implemented yet)`);
-    if ((pbr["metallicRoughnessTexture"] as unknown) !== undefined) warn(opts, `Material ${mat.name ?? materialIndex}: metallicRoughnessTexture ignored (textures not implemented yet)`);
-    if (mat.normalTexture) warn(opts, `Material ${mat.name ?? materialIndex}: normalTexture ignored (textures not implemented yet)`);
-    if (mat.occlusionTexture) warn(opts, `Material ${mat.name ?? materialIndex}: occlusionTexture ignored (textures not implemented yet)`);
-    if (mat.emissiveTexture) warn(opts, `Material ${mat.name ?? materialIndex}: emissiveTexture ignored (textures not implemented yet)`);
+    const pbr = mat.pbrMetallicRoughness;
+    const baseColorFactor = pbr?.baseColorFactor ?? [1, 1, 1, 1];
+    const metallicFactor = pbr?.metallicFactor ?? 1;
+    const roughnessFactor = pbr?.roughnessFactor ?? 1;
+    const baseColorTexture = getTex(pbr?.baseColorTexture as any, "baseColor");
+    const metallicRoughnessTexture = getTex(pbr?.metallicRoughnessTexture as any, "metallicRoughness");
+    const normalTexture = getTex(mat.normalTexture as any, "normal");
+    const occlusionTexture = getTex(mat.occlusionTexture as any, "occlusion");
+    const emissiveTexture = getTex(mat.emissiveTexture as any, "emissive");
+    const normalScale = mat.normalTexture?.scale ?? 1;
+    const occlusionStrength = mat.occlusionTexture?.strength ?? 1;
+    const emissiveFactor = mat.emissiveFactor ?? [0, 0, 0];
+    const emissiveStrength = (mat.extensions as any)?.KHR_materials_emissive_strength?.emissiveStrength ?? 1;
+    const emissiveIntensity = emissiveStrength;
+    const isUnlit = isMaterialUnlit(mat);
     let created: Material;
-    if (unlit) {
+    if (isUnlit) {
         created = new UnlitMaterial({
-            color,
-            opacity,
+            color: [baseColorFactor[0] ?? 1, baseColorFactor[1] ?? 1, baseColorFactor[2] ?? 1],
+            opacity: baseColorFactor[3] ?? 1,
+            baseColorTexture,
+            alphaCutoff,
             blendMode,
             cullMode,
         });
     } else {
         created = new StandardMaterial({
-            color,
-            opacity,
-            metallic,
-            roughness,
+            color: [baseColorFactor[0] ?? 1, baseColorFactor[1] ?? 1, baseColorFactor[2] ?? 1],
+            opacity: baseColorFactor[3] ?? 1,
+            metallic: metallicFactor,
+            roughness: roughnessFactor,
             emissive: [emissiveFactor[0] ?? 0, emissiveFactor[1] ?? 0, emissiveFactor[2] ?? 0],
-            emissiveIntensity: 1.0,
+            emissiveIntensity,
+            baseColorTexture,
+            metallicRoughnessTexture,
+            normalTexture,
+            occlusionTexture,
+            emissiveTexture,
+            normalScale,
+            occlusionStrength,
+            alphaCutoff,
             blendMode,
             cullMode,
         });
     }
-    cache.set(materialIndex, created);
+    materialCache.set(materialIndex, created);
     return created;
 };
 
@@ -277,7 +407,7 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     });
 };
 
-const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, geometryCache: Map<string, Geometry | null>, opts: ImportGltfOptions): Mesh[] => {
+const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, geometryCache: Map<string, Geometry | null>, opts: ImportGltfOptions): Mesh[] => {
     if (node.mesh === undefined) return [];
     const gltfMesh: GltfMesh | undefined = json.meshes?.[node.mesh];
     if (!gltfMesh) {
@@ -300,7 +430,7 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, 
             geometryCache.set(cacheKey, geom);
         }
         if (!geom) continue;
-        const mat = getOrCreateMaterial(json, prim.material, materialCache, opts);
+        const mat = getOrCreateMaterial(doc, json, prim.material, materialCache, textureCache, opts);
         const mesh = new Mesh(geom, mat);
         mesh.name = node.name ?? gltfMesh.name ?? `gltf_mesh_${node.mesh}_${primIndex}`;
         mesh.transform.setParent(nodeT);
@@ -458,6 +588,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         }
     }
     const materialCache = new Map<number, Material>();
+    const textureCache = new Map<number, Texture2D>();
     const geometryCache = new Map<string, Geometry | null>();
     const meshes: Mesh[] = [];
     const cameras: Camera[] = [];
@@ -468,7 +599,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         if (!node) return;
         const nodeT = nodeTransforms[nodeIndex]!;
         if (!nodeT) return;
-        const createdMeshes = instantiateMeshNode(doc, json, node, nodeT, materialCache, geometryCache, opts);
+        const createdMeshes = instantiateMeshNode(doc, json, node, nodeT, materialCache, textureCache, geometryCache, opts);
         for (const m of createdMeshes) {
             meshes.push(m);
             if (addToScene) scene.add(m);
@@ -516,6 +647,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
             if (addToScene) for (const m of meshes) scene.remove(m);
             for (const m of meshes) m.destroy();
             for (const g of uniqueGeometries) g.destroy();
+            for (const tex of textureCache.values()) tex.destroy();
             for (const mat of uniqueMaterials) mat.destroy();
             for (const t of nodeTransforms) t.dispose();
         },

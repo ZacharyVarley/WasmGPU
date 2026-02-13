@@ -67,6 +67,16 @@ export class Renderer {
     private cullRadiiPtr: WasmPtr = 0;
     private cullCapacity: number = 0;
     private cullMeshScratch: Mesh[] = [];
+    private fallbackSampler!: GPUSampler;
+    private fallbackWhiteTexture!: GPUTexture;
+    private fallbackWhiteViewLinear!: GPUTextureView;
+    private fallbackWhiteViewSrgb!: GPUTextureView;
+    private fallbackNormalTexture!: GPUTexture;
+    private fallbackNormalViewLinear!: GPUTextureView;
+    private fallbackMRTex!: GPUTexture;
+    private fallbackMRViewLinear!: GPUTextureView;
+    private fallbackOcclusionTex!: GPUTexture;
+    private fallbackOcclusionViewLinear!: GPUTextureView;
 
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -89,6 +99,7 @@ export class Renderer {
         this.format = navigator.gpu.getPreferredCanvasFormat();
         this.createGlobalBindGroupLayout();
         this.createUniformBuffers();
+        this.createFallbackTextures();
         this.resize();
         this.frustumCullingEnabled = descriptor.frustumCulling ?? true;
         this.frustumCullingStatsEnabled = descriptor.frustumCullingStats ?? false;
@@ -208,6 +219,10 @@ export class Renderer {
 
     destroy(): void {
         this.depthTexture?.destroy();
+        this.fallbackWhiteTexture?.destroy();
+        this.fallbackNormalTexture?.destroy();
+        this.fallbackMRTex?.destroy();
+        this.fallbackOcclusionTex?.destroy();
         this.cameraUniformBuffer?.destroy();
         for (const buffer of this.modelUniformBuffers) buffer.destroy();
         this.modelUniformBuffers = [];
@@ -272,6 +287,51 @@ export class Renderer {
         this.lightingUniformStagingPtr = 0;
         this.modelUniformStagingPtr = 0;
         this._wasmBuffer = null;
+    }
+
+    private createFallbackTextures(): void {
+        this.fallbackSampler = this.device.createSampler({
+            addressModeU: "repeat",
+            addressModeV: "repeat",
+            magFilter: "linear",
+            minFilter: "linear",
+            mipmapFilter: "linear",
+        });
+        const create1x1 = (rgba: [number, number, number, number], wantSrgbView: boolean): { tex: GPUTexture; linear: GPUTextureView; srgb: GPUTextureView } => {
+            const tex = this.device.createTexture({
+                size: { width: 1, height: 1 },
+                format: "rgba8unorm",
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                viewFormats: ["rgba8unorm-srgb"],
+            });
+            const data = new Uint8Array(256);
+            data[0] = rgba[0];
+            data[1] = rgba[1];
+            data[2] = rgba[2];
+            data[3] = rgba[3];
+            this.queue.writeTexture(
+                { texture: tex },
+                data,
+                { bytesPerRow: 256, rowsPerImage: 1 },
+                { width: 1, height: 1 }
+            );
+            const linear = tex.createView({ format: "rgba8unorm" });
+            const srgb = wantSrgbView ? tex.createView({ format: "rgba8unorm-srgb" }) : linear;
+            return { tex, linear, srgb };
+        };
+        const white = create1x1([255, 255, 255, 255], true);
+        this.fallbackWhiteTexture = white.tex;
+        this.fallbackWhiteViewLinear = white.linear;
+        this.fallbackWhiteViewSrgb = white.srgb;
+        const normal = create1x1([128, 128, 255, 255], false);
+        this.fallbackNormalTexture = normal.tex;
+        this.fallbackNormalViewLinear = normal.linear;
+        const mr = create1x1([0, 255, 255, 255], false);
+        this.fallbackMRTex = mr.tex;
+        this.fallbackMRViewLinear = mr.linear;
+        const occ = create1x1([255, 0, 0, 255], false);
+        this.fallbackOcclusionTex = occ.tex;
+        this.fallbackOcclusionViewLinear = occ.linear;
     }
 
     private writeCameraUniforms(camera: Camera): void {
@@ -612,19 +672,92 @@ export class Renderer {
         }
     }
 
+    private getMaterialBindGroupKey(material: Material): string {
+        if (material instanceof UnlitMaterial) {
+            const t = material.baseColorTexture;
+            return `unlit:${t?.id ?? 0}:${t?.revision ?? 0}`;
+        }
+        if (material instanceof StandardMaterial) {
+            const bc = material.baseColorTexture;
+            const mr = material.metallicRoughnessTexture;
+            const n = material.normalTexture;
+            const o = material.occlusionTexture;
+            const e = material.emissiveTexture;
+            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}`;
+        }
+        return "custom";
+    }
+
     private ensureMaterialBindGroup(material: Material): void {
         if (!material.uniformBuffer) {
-            material.uniformBuffer = this.device.createBuffer({ size: material.getUniformBufferSize(), usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            material.uniformBuffer = this.device.createBuffer({
+                size: material.getUniformBufferSize(),
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
         }
         if (material.dirty) {
             const data = material.getUniformData();
-            this.queue.writeBuffer(material.uniformBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
+            this.queue.writeBuffer(material.uniformBuffer!, 0, data.buffer, data.byteOffset, data.byteLength);
             material.markClean();
         }
-        if (!material.bindGroup) {
-            const layout = material.createBindGroupLayout(this.device);
-            material.bindGroup = this.device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: material.uniformBuffer } }] });
+        const key = this.getMaterialBindGroupKey(material);
+        if (material.bindGroup && material.bindGroupKey === key) return;
+        const layout = material.createBindGroupLayout(this.device);
+        if (material instanceof UnlitMaterial) {
+            const tex = material.baseColorTexture;
+            const sampler = tex ? tex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const view = tex ? tex.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb;
+            material.bindGroup = this.device.createBindGroup({
+                layout,
+                entries: [
+                    { binding: 0, resource: { buffer: material.uniformBuffer } },
+                    { binding: 1, resource: sampler },
+                    { binding: 2, resource: view }
+                ]
+            });
+            material.bindGroupKey = key;
+            return;
         }
+        if (material instanceof StandardMaterial) {
+            const bc = material.baseColorTexture;
+            const mr = material.metallicRoughnessTexture;
+            const n = material.normalTexture;
+            const o = material.occlusionTexture;
+            const e = material.emissiveTexture;
+            const bcSampler = bc ? bc.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const bcView = bc ? bc.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb;
+            const mrSampler = mr ? mr.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const mrView = mr ? mr.getView(this.device, this.queue, "linear", this.fallbackMRViewLinear) : this.fallbackMRViewLinear;
+            const nSampler = n ? n.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const nView = n ? n.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear;
+            const oSampler = o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const oView = o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear;
+            const eSampler = e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
+            const eView = e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb;
+            material.bindGroup = this.device.createBindGroup({
+                layout,
+                entries: [
+                    { binding: 0, resource: { buffer: material.uniformBuffer } },
+                    { binding: 1, resource: bcSampler },
+                    { binding: 2, resource: bcView },
+                    { binding: 3, resource: mrSampler },
+                    { binding: 4, resource: mrView },
+                    { binding: 5, resource: nSampler },
+                    { binding: 6, resource: nView },
+                    { binding: 7, resource: oSampler },
+                    { binding: 8, resource: oView },
+                    { binding: 9, resource: eSampler },
+                    { binding: 10, resource: eView }
+                ]
+            });
+            material.bindGroupKey = key;
+            return;
+        }
+        material.bindGroup = this.device.createBindGroup({
+            layout,
+            entries: [{ binding: 0, resource: { buffer: material.uniformBuffer } }]
+        });
+        material.bindGroupKey = key;
     }
 
     private materialSupportsInstancing(material: Material): boolean {
