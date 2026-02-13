@@ -16,6 +16,39 @@ fn quat_normalize_arr(q: &[f32; 4]) -> [f32; 4] {
     [q[0] * inorm, q[1] * inorm, q[2] * inorm, q[3] * inorm]
 }
 
+#[inline(always)]
+pub(crate) fn quat_from_rotation_mat3(r00: f32, r01: f32, r02: f32, r10: f32, r11: f32, r12: f32, r20: f32, r21: f32, r22: f32) -> [f32; 4] {
+    let trace = r00 + r11 + r22;
+    let (x, y, z, w): (f32, f32, f32, f32);
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        w = 0.25 * s;
+        x = (r21 - r12) / s;
+        y = (r02 - r20) / s;
+        z = (r10 - r01) / s;
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
+        w = (r21 - r12) / s;
+        x = 0.25 * s;
+        y = (r01 + r10) / s;
+        z = (r02 + r20) / s;
+    } else if r11 > r22 {
+        let s = (1.0 + r11 - r00 - r22).sqrt() * 2.0;
+        w = (r02 - r20) / s;
+        x = (r01 + r10) / s;
+        y = 0.25 * s;
+        z = (r12 + r21) / s;
+    } else {
+        let s = (1.0 + r22 - r00 - r11).sqrt() * 2.0;
+        w = (r10 - r01) / s;
+        x = (r02 + r20) / s;
+        y = (r12 + r21) / s;
+        z = 0.25 * s;
+    }
+    let inv_len = 1.0 / (x * x + y * y + z * z + w * w).sqrt().max(1.0e-20);
+    [x * inv_len, y * inv_len, z * inv_len, w * inv_len]
+}
+
 #[no_mangle]
 pub extern "C" fn quat_abs(out: u32, q: u32) -> u32 {
     unsafe {

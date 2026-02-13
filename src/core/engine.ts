@@ -6,12 +6,19 @@ import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
+import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
+import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
     // Future options: physics, audio, etc.
 };
 
 export type FrameCallback = (dt: number, time: number, wgpu: WasmGPU) => void;
+
+export type GltfOptions = {
+    load?: LoadGltfOptions;
+    import?: ImportGltfOptions;
+};
 
 export class WasmGPU {
     private renderer: Renderer;
@@ -52,6 +59,10 @@ export class WasmGPU {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;
         }
+    }
+
+    get gpu(): { device: GPUDevice; queue: GPUQueue; format: GPUTextureFormat } {
+        return this.renderer.gpu;
     }
 
     get isRunning(): boolean {
@@ -135,8 +146,9 @@ export class WasmGPU {
         }
     };
 
-    get gpu(): { device: GPUDevice; queue: GPUQueue; format: GPUTextureFormat } {
-        return this.renderer.gpu;
+    async loadGLTF(source: string | ArrayBuffer, options: GltfOptions = {}): Promise<GltfImportResult> {
+        const doc = await loadGltf(source, options.load);
+        return importGltf(doc, options.import);
     }
 
     destroy(): void {

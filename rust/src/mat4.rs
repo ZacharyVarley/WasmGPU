@@ -1,5 +1,6 @@
 use crate::shared::{f32_slice, f32_slice_mut};
 use crate::utils::{rand_f32_01, rand_range, round_js};
+use crate::quat::quat_from_rotation_mat3;
 
 #[inline(always)]
 fn mat4_det_from(m: &[f32; 16]) -> f32 {
@@ -120,6 +121,80 @@ pub extern "C" fn mat4_copy(out: u32, m: u32) -> u32 {
         for i in 0..16 {
             o[i] = a[i];
         }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mat4_decompose_trs(out_trs: u32, m: u32) -> u32 {
+    unsafe {
+        let a = f32_slice(m, 16);
+
+        let tx = a[12];
+        let ty = a[13];
+        let tz = a[14];
+
+        let mut x0 = a[0];
+        let mut x1 = a[1];
+        let mut x2 = a[2];
+
+        let y0 = a[4];
+        let y1 = a[5];
+        let y2 = a[6];
+
+        let z0 = a[8];
+        let z1 = a[9];
+        let z2 = a[10];
+
+        let sx = (x0 * x0 + x1 * x1 + x2 * x2).sqrt();
+        let sy = (y0 * y0 + y1 * y1 + y2 * y2).sqrt();
+        let sz = (z0 * z0 + z1 * z1 + z2 * z2).sqrt();
+
+        let sxn = if sx == 0.0 { 1.0 } else { sx };
+        let syn = if sy == 0.0 { 1.0 } else { sy };
+        let szn = if sz == 0.0 { 1.0 } else { sz };
+
+        let cx0 = y1 * z2 - y2 * z1;
+        let cx1 = y2 * z0 - y0 * z2;
+        let cx2 = y0 * z1 - y1 * z0;
+        let det = x0 * cx0 + x1 * cx1 + x2 * cx2;
+
+        let mut sxf = sxn;
+        let syf = syn;
+        let szf = szn;
+
+        if det < 0.0 {
+            sxf = -sxn;
+            x0 = -x0;
+            x1 = -x1;
+            x2 = -x2;
+        }
+
+        let rx0 = x0 / sxn;
+        let rx1 = x1 / sxn;
+        let rx2 = x2 / sxn;
+
+        let ry0 = y0 / syn;
+        let ry1 = y1 / syn;
+        let ry2 = y2 / syn;
+
+        let rz0 = z0 / szn;
+        let rz1 = z1 / szn;
+        let rz2 = z2 / szn;
+
+        let q = quat_from_rotation_mat3(rx0, ry0, rz0, rx1, ry1, rz1, rx2, ry2, rz2);
+
+        let out = f32_slice_mut(out_trs, 10);
+        out[0] = tx;
+        out[1] = ty;
+        out[2] = tz;
+        out[3] = q[0];
+        out[4] = q[1];
+        out[5] = q[2];
+        out[6] = q[3];
+        out[7] = sxf;
+        out[8] = syf;
+        out[9] = szf;
     }
     0
 }

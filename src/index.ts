@@ -14,4 +14,5 @@ export { Material, UnlitMaterial, StandardMaterial, CustomMaterial, BlendMode, C
 export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
 export { Transform } from "./core/transform";
 export { initMath, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
+export * from "./gltf";
 export { WasmGPU as default } from "./core/engine";

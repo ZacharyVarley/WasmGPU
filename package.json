@@ -28,7 +28,8 @@
     "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
     "test:math": "node ./test/math.test.js",
     "test:cull": "node ./test/cull.test.js",
-    "test": "npm run test:math && npm run test:cull",
+    "test:gltf": "node ./test/gltf.test.js",
+    "test": "npm run test:math && npm run test:cull && npm run test:gltf",
     "start": "npx serve ."
   },
   "repository": {

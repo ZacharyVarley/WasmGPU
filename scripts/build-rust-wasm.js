@@ -298,9 +298,12 @@ export const transform_pack_model_normal_mat4_from_ptrs = wasm.transform_pack_mo
 
 export const cull_spheres_frustum = wasm.cull_spheres_frustum;
 
+export const mesh_compute_vertex_normals = wasm.mesh_compute_vertex_normals;
+
 export const mat4_abs = wasm.mat4_abs;
 export const mat4_add = wasm.mat4_add;
 export const mat4_copy = wasm.mat4_copy;
+export const mat4_decompose_trs = wasm.mat4_decompose_trs;
 export const mat4_det = wasm.mat4_det;
 export const mat4_identity = wasm.mat4_identity;
 export const mat4_init = wasm.mat4_init;
@@ -552,9 +555,12 @@ export function transform_pack_model_normal_mat4_from_ptrs(outPtr: number, matPt
 
 export function cull_spheres_frustum(outIndicesPtr: number, centersPtr: number, radiiPtr: number, count: number, frustumPtr: number): number;
 
+export function mesh_compute_vertex_normals(outNormalsPtr: number, positionsPtr: number, vertexCount: number, indicesPtr: number, indexCount: number): number;
+
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;
 export function mat4_copy(outPtr: number, mPtr: number): number;
+export function mat4_decompose_trs(outTrsPtr: number, mPtr: number): number;
 export function mat4_det(mPtr: number): number;
 export function mat4_identity(outPtr: number): number;
 export function mat4_init(outPtr: number,
