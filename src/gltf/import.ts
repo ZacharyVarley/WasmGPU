@@ -330,6 +330,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const emissiveStrength = (mat.extensions as any)?.KHR_materials_emissive_strength?.emissiveStrength ?? 1;
     const emissiveIntensity = emissiveStrength;
     const isUnlit = isMaterialUnlit(mat);
+    const depthWrite = blendMode === BlendMode.Opaque;
     let created: Material;
     if (isUnlit) {
         created = new UnlitMaterial({
@@ -339,6 +340,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             alphaCutoff,
             blendMode,
             cullMode,
+            depthWrite
         });
     } else {
         created = new StandardMaterial({
@@ -358,6 +360,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             alphaCutoff,
             blendMode,
             cullMode,
+            depthWrite
         });
     }
     materialCache.set(materialIndex, created);

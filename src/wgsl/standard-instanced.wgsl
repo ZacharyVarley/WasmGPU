@@ -114,7 +114,7 @@ fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, nor
     let r = 1.0 / det;
     var T = (dp1 * duv2.y - dp2 * duv1.y) * r;
     T = normalize(T - n * dot(n, T));
-    let B = normalize(cross(n, T));
+    let B = normalize(cross(n, T)) * sign(det);
     let tbn = mat3x3f(T, B, n);
     var ns = normalSample * 2.0 - vec3f(1.0);
     ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);

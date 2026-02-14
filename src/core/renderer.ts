@@ -23,6 +23,7 @@ type DrawItem = {
     pipelineId: number;
     materialId: number;
     geometryId: number;
+    sortKey: number;
 };
 
 export class Renderer {
@@ -44,6 +45,7 @@ export class Renderer {
     private lightingUniformBuffer!: GPUBuffer;
     private instanceBuffer: GPUBuffer | null = null;
     private instanceBufferCapacityBytes: number = 0;
+    private instanceBufferOffset: number = 0;
     private readonly INSTANCE_STRIDE_BYTES = 128;
     private pipelineCache: Map<string, GPURenderPipeline> = new Map();
     private shaderCache: Map<string, GPUShaderModule> = new Map();
@@ -164,7 +166,8 @@ export class Renderer {
                 pipeline: null as unknown as GPURenderPipeline,
                 pipelineId: 0,
                 materialId: 0,
-                geometryId: 0
+                geometryId: 0,
+                sortKey: 0
             };
             this.drawItemPool[i] = item;
         }
@@ -183,6 +186,7 @@ export class Renderer {
     render(scene: Scene, camera: Camera): void {
         this.resize();
         this.modelBufferIndex = 0;
+        this.instanceBufferOffset = 0;
         this.cameraUniformStagingPtr = frameArena.allocF32(20);
         this.lightingUniformStagingPtr = frameArena.allocF32(104);
         this.modelUniformStagingPtr = frameArena.allocF32(32);
@@ -287,6 +291,27 @@ export class Renderer {
         this.lightingUniformStagingPtr = 0;
         this.modelUniformStagingPtr = 0;
         this._wasmBuffer = null;
+    }
+
+    private ensureModelBufferPool(requiredCount: number): void {
+        const current = this.modelUniformBuffers.length;
+        if (requiredCount <= current) return;
+        let newSize = Math.max(1, current);
+        while (newSize < requiredCount) newSize *= 2;
+        this.modelUniformBuffers.length = newSize;
+        this.globalBindGroups.length = newSize;
+        for (let i = current; i < newSize; i++) {
+            const buf = this.device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            this.modelUniformBuffers[i] = buf;
+            this.globalBindGroups[i] = this.device.createBindGroup({
+                layout: this.globalBindGroupLayout,
+                entries: [
+                    { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
+                    { binding: 1, resource: { buffer: buf } },
+                    { binding: 2, resource: { buffer: this.lightingUniformBuffer } },
+                ],
+            });
+        }
     }
 
     private createFallbackTextures(): void {
@@ -400,6 +425,10 @@ export class Renderer {
         }
         let visibleIndices: Uint32Array<ArrayBuffer> | null = null;
         let visibleCount = count;
+        const camPos = camera.position;
+        const camX = camPos[0];
+        const camY = camPos[1];
+        const camZ = camPos[2];
         if (this.frustumCullingEnabled) {
             this.ensureCullingCapacity(count);
             const centers = wasm.f32view(this.cullCentersPtr, count * 3);
@@ -447,8 +476,17 @@ export class Renderer {
                 item.pipelineId = this.getObjectId(pipeline);
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
-                if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
-                else this.transparentDrawList.push(item);
+                item.sortKey = 0;
+                if (material.blendMode === BlendMode.Opaque) {
+                    this.opaqueDrawList.push(item);
+                } else {
+                    const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
+                    const dx = w[12] - camX;
+                    const dy = w[13] - camY;
+                    const dz = w[14] - camZ;
+                    item.sortKey = dx * dx + dy * dy + dz * dz;
+                    this.transparentDrawList.push(item);
+                }
             }
         } else {
             const vis = visibleIndices!;
@@ -466,11 +504,21 @@ export class Renderer {
                 item.pipelineId = this.getObjectId(pipeline);
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
-                if (material.blendMode === BlendMode.Opaque) this.opaqueDrawList.push(item);
-                else this.transparentDrawList.push(item);
+                item.sortKey = 0;
+                if (material.blendMode === BlendMode.Opaque) {
+                    this.opaqueDrawList.push(item);
+                } else {
+                    const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
+                    const dx = w[12] - camX;
+                    const dy = w[13] - camY;
+                    const dz = w[14] - camZ;
+                    item.sortKey = dx * dx + dy * dy + dz * dz;
+                    this.transparentDrawList.push(item);
+                }
             }
         }
         this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
+        this.transparentDrawList.sort((a, b) => (b.sortKey - a.sortKey) || (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
     }
 
     private executeDrawList(pass: GPURenderPassEncoder, items: DrawItem[]): void {
@@ -518,10 +566,7 @@ export class Renderer {
                 this.drawInstancedRun(pass, geometry, material, items, i, runCount);
             } else {
                 for (let k = i; k < j; k++) {
-                    if (this.modelBufferIndex >= this.MODEL_BUFFER_POOL_SIZE) {
-                        console.warn("Model buffer pool exhausted! Increase MODEL_BUFFER_POOL_SIZE.");
-                        return;
-                    }
+                    if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
                     const modelSlot = this.modelBufferIndex++;
                     const modelBuffer = this.modelUniformBuffers[modelSlot];
                     const globalBindGroup = this.globalBindGroups[modelSlot];
@@ -550,13 +595,16 @@ export class Renderer {
         const outPtr = frameArena.allocF32(count * 32) as WasmPtr;
         transformf.packModelNormalMat4FromPtrs(outPtr, ptrsPtr, count);
         const outBytes = count * this.INSTANCE_STRIDE_BYTES;
-        this.ensureInstanceBuffer(outBytes);
+        const dstOffset = this.instanceBufferOffset;
+        const dstEnd = dstOffset + outBytes;
+        this.ensureInstanceBuffer(dstEnd);
         const mem = wasm.memory().buffer as ArrayBuffer;
-        this.queue.writeBuffer(this.instanceBuffer!, 0, mem, outPtr, outBytes);
+        this.queue.writeBuffer(this.instanceBuffer!, dstOffset, mem, outPtr, outBytes);
         pass.setBindGroup(0, this.globalBindGroups[0]);
-        pass.setVertexBuffer(3, this.instanceBuffer!);
+        pass.setVertexBuffer(3, this.instanceBuffer!, dstOffset, outBytes);
         if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);
         else pass.draw(geometry.vertexCount, count);
+        this.instanceBufferOffset = dstEnd;
     }
 
     private getOrCreatePipeline(material: Material, instanced: boolean = false): GPURenderPipeline {

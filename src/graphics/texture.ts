@@ -34,18 +34,18 @@ const mipLevelCountForSize = (w: number, h: number): number => {
 };
 
 type MipmapPipelineCache = {
-    pipeline: GPURenderPipeline;
+    pipelineLinear: GPURenderPipeline;
+    pipelineSrgb: GPURenderPipeline;
     sampler: GPUSampler;
     bindGroupLayout: GPUBindGroupLayout;
 };
 
-let __mipmapCache: WeakMap<GPUDevice, MipmapPipelineCache> | null = null;
+const mipmapCache = new WeakMap<GPUDevice, MipmapPipelineCache>();
 
 const getMipmapCache = (device: GPUDevice): MipmapPipelineCache => {
-    if (!__mipmapCache) __mipmapCache = new WeakMap();
-    const cached = __mipmapCache.get(device);
+    const cached = mipmapCache.get(device);
     if (cached) return cached;
-    const shader = device.createShaderModule({ code: mipmapWGSL });
+    const module = device.createShaderModule({ code: mipmapWGSL });
     const bindGroupLayout = device.createBindGroupLayout({
         entries: [
             { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
@@ -53,32 +53,30 @@ const getMipmapCache = (device: GPUDevice): MipmapPipelineCache => {
         ],
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
-    const pipeline = device.createRenderPipeline({
-        layout: pipelineLayout,
-        vertex: { module: shader, entryPoint: "vs_main" },
-        fragment: {
-            module: shader,
-            entryPoint: "fs_main",
-            targets: [{ format: "rgba8unorm" }],
-        },
-        primitive: { topology: "triangle-list" },
-    });
-    const sampler = device.createSampler({
-        addressModeU: "clamp-to-edge",
-        addressModeV: "clamp-to-edge",
-        magFilter: "linear",
-        minFilter: "linear",
-        mipmapFilter: "linear",
-    });
-    const out: MipmapPipelineCache = { pipeline, sampler, bindGroupLayout };
-    __mipmapCache.set(device, out);
-    return out;
+    const createPipeline = (format: GPUTextureFormat): GPURenderPipeline => {
+        return device.createRenderPipeline({
+            layout: pipelineLayout,
+            vertex: { module, entryPoint: "vs_main" },
+            fragment: { module, entryPoint: "fs_main", targets: [{ format }] },
+            primitive: { topology: "triangle-list" },
+        });
+    };
+    const sampler = device.createSampler({ minFilter: "linear", magFilter: "linear" });
+    const created: MipmapPipelineCache = {
+        pipelineLinear: createPipeline("rgba8unorm"),
+        pipelineSrgb: createPipeline("rgba8unorm-srgb"),
+        sampler,
+        bindGroupLayout,
+    };
+    mipmapCache.set(device, created);
+    return created;
 };
 
 export class Texture2D {
     readonly id: number = __texture2d_id++;
     private _source: TextureSource;
     private _mipmaps: boolean;
+    private _mipmapColorSpace: TextureColorSpace | null = null;
     readonly samplerDesc: GPUSamplerDescriptor;
     private _gpuTexture: GPUTexture | null = null;
     private _viewLinear: GPUTextureView | null = null;
@@ -141,7 +139,7 @@ export class Texture2D {
             if (colorSpace === "srgb") return this._viewSrgb ?? fallbackView;
             return this._viewLinear ?? fallbackView;
         }
-        this.ensureUploaded(device, queue);
+        this.ensureUploaded(device, queue, colorSpace);
         return fallbackView;
     }
 
@@ -154,9 +152,10 @@ export class Texture2D {
         this._revision++;
     }
 
-    ensureUploaded(device: GPUDevice, queue: GPUQueue): void {
+    ensureUploaded(device: GPUDevice, queue: GPUQueue, colorSpace: TextureColorSpace = "linear"): void {
         if (this._uploadStarted) return;
         this._uploadStarted = true;
+        this._mipmapColorSpace = colorSpace;
         this._uploadPromise = (async () => {
             const bitmap = await this.decodeBitmap();
             const w = bitmap.width | 0;
@@ -172,12 +171,12 @@ export class Texture2D {
                 viewFormats: ["rgba8unorm-srgb"],
             });
             queue.copyExternalImageToTexture({ source: bitmap }, { texture }, { width: w, height: h });
-            this._gpuTexture = texture;
+            if (this._mipmaps && mipLevelCount > 1) this.generateMipmaps(device, texture, mipLevelCount, this._mipmapColorSpace ?? "linear");
             this._viewLinear = texture.createView({ format: "rgba8unorm" });
             this._viewSrgb = texture.createView({ format: "rgba8unorm-srgb" });
             this._width = w;
             this._height = h;
-            if (this._mipmaps && mipLevelCount > 1) this.generateMipmaps(device, texture, mipLevelCount);
+            this._gpuTexture = texture;
             this._revision++;
         })();
         this._uploadPromise.catch((e) => console.warn("Texture2D upload failed:", e));
@@ -187,22 +186,37 @@ export class Texture2D {
         const src = this._source;
         if (src.kind === "bitmap") return src.bitmap;
         if (!hasCreateImageBitmap()) throw new Error("createImageBitmap() is not available in this environment.");
+        const options: ImageBitmapOptions = {
+            premultiplyAlpha: "none",
+            imageOrientation: "none",
+            colorSpaceConversion: (this._mipmapColorSpace === "srgb") ? "default" : "none",
+        };
         if (src.kind === "url") {
             const res = await fetch(src.url);
             if (!res.ok) throw new Error(`Failed to fetch texture: ${res.status} ${res.statusText}`);
             const blob = await res.blob();
-            return await createImageBitmap(blob);
+            try {
+                return await createImageBitmap(blob, options);
+            } catch {
+                return await createImageBitmap(blob);
+            }
         }
         const blob = new Blob([src.bytes], { type: src.mimeType ?? "application/octet-stream" });
-        return await createImageBitmap(blob);
+        try {
+            return await createImageBitmap(blob, options);
+        } catch {
+            return await createImageBitmap(blob);
+        }
     }
 
-    private generateMipmaps(device: GPUDevice, texture: GPUTexture, mipLevels: number): void {
+    private generateMipmaps(device: GPUDevice, texture: GPUTexture, mipLevels: number, colorSpace: TextureColorSpace): void {
         const cache = getMipmapCache(device);
+        const pipeline = (colorSpace === "srgb") ? cache.pipelineSrgb : cache.pipelineLinear;
+        const viewFormat: GPUTextureFormat = (colorSpace === "srgb") ? "rgba8unorm-srgb" : "rgba8unorm";
         const encoder = device.createCommandEncoder();
         for (let level = 1; level < mipLevels; level++) {
-            const srcView = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 });
-            const dstView = texture.createView({ baseMipLevel: level, mipLevelCount: 1 });
+            const srcView = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1, format: viewFormat });
+            const dstView = texture.createView({ baseMipLevel: level, mipLevelCount: 1, format: viewFormat });
             const bindGroup = device.createBindGroup({
                 layout: cache.bindGroupLayout,
                 entries: [
@@ -220,7 +234,7 @@ export class Texture2D {
                     },
                 ],
             });
-            pass.setPipeline(cache.pipeline);
+            pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
             pass.draw(3);
             pass.end();
