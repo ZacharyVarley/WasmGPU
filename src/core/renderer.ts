@@ -6,6 +6,7 @@ import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
 import { animf, cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
+import smaaWGSL from "../wgsl/smaa.wgsl";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -37,6 +38,26 @@ export class Renderer {
     private depthView!: GPUTextureView;
     private width = 0;
     private height = 0;
+    private smaaEnabled: boolean = false;
+    private smaaSceneColorTexture: GPUTexture | null = null;
+    private smaaSceneColorView: GPUTextureView | null = null;
+    private smaaEdgesTexture: GPUTexture | null = null;
+    private smaaEdgesView: GPUTextureView | null = null;
+    private smaaBlendTexture: GPUTexture | null = null;
+    private smaaBlendView: GPUTextureView | null = null;
+    private smaaParamsBuffer: GPUBuffer | null = null;
+    private smaaSamplerPoint: GPUSampler | null = null;
+    private smaaSamplerLinear: GPUSampler | null = null;
+    private smaaShaderModule: GPUShaderModule | null = null;
+    private smaaEdgePipeline: GPURenderPipeline | null = null;
+    private smaaWeightPipeline: GPURenderPipeline | null = null;
+    private smaaNeighborhoodPipeline: GPURenderPipeline | null = null;
+    private smaaEdgeBindGroupLayout: GPUBindGroupLayout | null = null;
+    private smaaWeightBindGroupLayout: GPUBindGroupLayout | null = null;
+    private smaaNeighborhoodBindGroupLayout: GPUBindGroupLayout | null = null;
+    private smaaEdgeBindGroup: GPUBindGroup | null = null;
+    private smaaWeightBindGroup: GPUBindGroup | null = null;
+    private smaaNeighborhoodBindGroup: GPUBindGroup | null = null;
     private globalBindGroupLayout!: GPUBindGroupLayout;
     private globalBindGroups: GPUBindGroup[] = [];
     private skinBindGroupLayout!: GPUBindGroupLayout;
@@ -102,6 +123,8 @@ export class Renderer {
         this.context = this.canvas.getContext("webgpu") as GPUCanvasContext;
         if (!this.context) throw new Error("Failed to get WebGPU canvas context.");
         this.format = navigator.gpu.getPreferredCanvasFormat();
+        this.smaaEnabled = descriptor.antialias ?? false;
+        if (this.smaaEnabled) this.createSmaaResources();
         this.createGlobalBindGroupLayout();
         this.createSkinBindGroupLayout();
         this.createUniformBuffers();
@@ -136,6 +159,7 @@ export class Renderer {
         if (this.depthTexture) this.depthTexture.destroy();
         this.depthTexture = createDepthTexture(this.device, this.width, this.height);
         this.depthView = this.depthTexture.createView();
+        if (this.smaaEnabled) this.resizeSmaaTargets();
     }
 
     get aspectRatio(): number {
@@ -204,31 +228,79 @@ export class Renderer {
         this.writeCameraUniforms(camera);
         this.writeLightingUniforms(scene);
         const encoder = this.device.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-            colorAttachments: [
-                {
-                    view: swapView,
-                    clearValue: { r: scene.background[0], g: scene.background[1], b: scene.background[2], a: 1 },
-                    loadOp: "clear",
-                    storeOp: "store"
+        if (this.smaaEnabled) {
+            if (!this.smaaSceneColorView || !this.smaaEdgesView || !this.smaaBlendView) this.resizeSmaaTargets();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [
+                    {
+                        view: this.smaaSceneColorView!,
+                        clearValue: { r: scene.background[0], g: scene.background[1], b: scene.background[2], a: 1 },
+                        loadOp: "clear",
+                        storeOp: "store"
+                    }
+                ],
+                depthStencilAttachment: {
+                    view: this.depthView,
+                    depthClearValue: 1.0,
+                    depthLoadOp: "clear",
+                    depthStoreOp: "store"
                 }
-            ],
-            depthStencilAttachment: {
-                view: this.depthView,
-                depthClearValue: 1.0,
-                depthLoadOp: "clear",
-                depthStoreOp: "store"
-            }
-        });
-        this.buildDrawLists(scene, camera);
-        this.executeDrawList(pass, this.opaqueDrawList);
-        this.executeDrawList(pass, this.transparentDrawList);
-        pass.end();
+            });
+            this.buildDrawLists(scene, camera);
+            this.executeDrawList(pass, this.opaqueDrawList);
+            this.executeDrawList(pass, this.transparentDrawList);
+            pass.end();
+            this.executeSmaa(encoder, swapView);
+        } else {
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [
+                    {
+                        view: swapView,
+                        clearValue: { r: scene.background[0], g: scene.background[1], b: scene.background[2], a: 1 },
+                        loadOp: "clear",
+                        storeOp: "store"
+                    }
+                ],
+                depthStencilAttachment: {
+                    view: this.depthView,
+                    depthClearValue: 1.0,
+                    depthLoadOp: "clear",
+                    depthStoreOp: "store"
+                }
+            });
+            this.buildDrawLists(scene, camera);
+            this.executeDrawList(pass, this.opaqueDrawList);
+            this.executeDrawList(pass, this.transparentDrawList);
+            pass.end();
+        }
         this.queue.submit([encoder.finish()]);
     }
 
     destroy(): void {
         this.depthTexture?.destroy();
+        this.smaaSceneColorTexture?.destroy();
+        this.smaaEdgesTexture?.destroy();
+        this.smaaBlendTexture?.destroy();
+        this.smaaSceneColorTexture = null;
+        this.smaaSceneColorView = null;
+        this.smaaEdgesTexture = null;
+        this.smaaEdgesView = null;
+        this.smaaBlendTexture = null;
+        this.smaaBlendView = null;
+        this.smaaParamsBuffer?.destroy();
+        this.smaaParamsBuffer = null;
+        this.smaaEdgeBindGroup = null;
+        this.smaaWeightBindGroup = null;
+        this.smaaNeighborhoodBindGroup = null;
+        this.smaaEdgePipeline = null;
+        this.smaaWeightPipeline = null;
+        this.smaaNeighborhoodPipeline = null;
+        this.smaaShaderModule = null;
+        this.smaaEdgeBindGroupLayout = null;
+        this.smaaWeightBindGroupLayout = null;
+        this.smaaNeighborhoodBindGroupLayout = null;
+        this.smaaSamplerPoint = null;
+        this.smaaSamplerLinear = null;
         this.fallbackWhiteTexture?.destroy();
         this.fallbackNormalTexture?.destroy();
         this.fallbackMRTex?.destroy();
@@ -373,6 +445,195 @@ export class Renderer {
         const occ = create1x1([255, 0, 0, 255], false);
         this.fallbackOcclusionTex = occ.tex;
         this.fallbackOcclusionViewLinear = occ.linear;
+    }
+
+    private createSmaaResources(): void {
+        if (this.smaaParamsBuffer) return;
+        this.smaaParamsBuffer = this.device.createBuffer({
+            size: 32,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        this.smaaSamplerPoint = this.device.createSampler({
+            addressModeU: "clamp-to-edge",
+            addressModeV: "clamp-to-edge",
+            magFilter: "nearest",
+            minFilter: "nearest"
+        });
+        this.smaaSamplerLinear = this.device.createSampler({
+            addressModeU: "clamp-to-edge",
+            addressModeV: "clamp-to-edge",
+            magFilter: "linear",
+            minFilter: "linear"
+        });
+        const shaderCode = smaaWGSL;
+        this.smaaShaderModule = this.device.createShaderModule({ code: shaderCode });
+        this.smaaEdgeBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
+            ]
+        });
+        this.smaaWeightBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
+            ]
+        });
+        this.smaaNeighborhoodBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
+            ]
+        });
+        const edgeLayout = this.device.createPipelineLayout({ bindGroupLayouts: [this.smaaEdgeBindGroupLayout] });
+        const weightLayout = this.device.createPipelineLayout({ bindGroupLayouts: [this.smaaWeightBindGroupLayout] });
+        const neighLayout = this.device.createPipelineLayout({ bindGroupLayouts: [this.smaaNeighborhoodBindGroupLayout] });
+        this.smaaEdgePipeline = this.device.createRenderPipeline({
+            layout: edgeLayout,
+            vertex: { module: this.smaaShaderModule, entryPoint: "vs_fullscreen" },
+            fragment: {
+                module: this.smaaShaderModule,
+                entryPoint: "fs_smaa_edges",
+                targets: [{ format: "rgba8unorm" }]
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" }
+        });
+        this.smaaWeightPipeline = this.device.createRenderPipeline({
+            layout: weightLayout,
+            vertex: { module: this.smaaShaderModule, entryPoint: "vs_fullscreen" },
+            fragment: {
+                module: this.smaaShaderModule,
+                entryPoint: "fs_smaa_weights",
+                targets: [{ format: "rgba8unorm" }]
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" }
+        });
+        this.smaaNeighborhoodPipeline = this.device.createRenderPipeline({
+            layout: neighLayout,
+            vertex: { module: this.smaaShaderModule, entryPoint: "vs_fullscreen" },
+            fragment: {
+                module: this.smaaShaderModule,
+                entryPoint: "fs_smaa_neighborhood",
+                targets: [{ format: this.format }]
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" }
+        });
+    }
+
+    private resizeSmaaTargets(): void {
+        if (!this.smaaEnabled) return;
+        if (!this.smaaParamsBuffer) this.createSmaaResources();
+        this.smaaSceneColorTexture?.destroy();
+        this.smaaEdgesTexture?.destroy();
+        this.smaaBlendTexture?.destroy();
+        const w = this.width | 0;
+        const h = this.height | 0;
+        if (w <= 0 || h <= 0) return;
+        this.smaaSceneColorTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: this.format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+        });
+        this.smaaSceneColorView = this.smaaSceneColorTexture.createView();
+        const intermediateFormat: GPUTextureFormat = "rgba8unorm";
+        this.smaaEdgesTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: intermediateFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+        });
+        this.smaaEdgesView = this.smaaEdgesTexture.createView();
+        this.smaaBlendTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: intermediateFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+        });
+        this.smaaBlendView = this.smaaBlendTexture.createView();
+        const params = new Float32Array(8);
+        params[0] = 1 / w;
+        params[1] = 1 / h;
+        params[2] = w;
+        params[3] = h;
+        params[4] = 0.1;
+        this.queue.writeBuffer(this.smaaParamsBuffer!, 0, params);
+        this.smaaEdgeBindGroup = this.device.createBindGroup({
+            layout: this.smaaEdgeBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.smaaParamsBuffer! } },
+                { binding: 2, resource: this.smaaSamplerPoint! },
+                { binding: 3, resource: this.smaaSceneColorView! }
+            ]
+        });
+        this.smaaWeightBindGroup = this.device.createBindGroup({
+            layout: this.smaaWeightBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.smaaParamsBuffer! } },
+                { binding: 2, resource: this.smaaSamplerPoint! },
+                { binding: 4, resource: this.smaaEdgesView! }
+            ]
+        });
+        this.smaaNeighborhoodBindGroup = this.device.createBindGroup({
+            layout: this.smaaNeighborhoodBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.smaaParamsBuffer! } },
+                { binding: 1, resource: this.smaaSamplerLinear! },
+                { binding: 2, resource: this.smaaSamplerPoint! },
+                { binding: 3, resource: this.smaaSceneColorView! },
+                { binding: 5, resource: this.smaaBlendView! }
+            ]
+        });
+    }
+
+    private executeSmaa(encoder: GPUCommandEncoder, outputView: GPUTextureView): void {
+        if (!this.smaaEdgePipeline || !this.smaaWeightPipeline || !this.smaaNeighborhoodPipeline) return;
+        if (!this.smaaEdgeBindGroup || !this.smaaWeightBindGroup || !this.smaaNeighborhoodBindGroup) return;
+        if (!this.smaaEdgesView || !this.smaaBlendView) return;
+        const edgePass = encoder.beginRenderPass({
+            colorAttachments: [
+                {
+                    view: this.smaaEdgesView,
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }
+            ]
+        });
+        edgePass.setPipeline(this.smaaEdgePipeline);
+        edgePass.setBindGroup(0, this.smaaEdgeBindGroup);
+        edgePass.draw(3);
+        edgePass.end();
+        const weightPass = encoder.beginRenderPass({
+            colorAttachments: [
+                {
+                    view: this.smaaBlendView,
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }
+            ]
+        });
+        weightPass.setPipeline(this.smaaWeightPipeline);
+        weightPass.setBindGroup(0, this.smaaWeightBindGroup);
+        weightPass.draw(3);
+        weightPass.end();
+        const neighborhoodPass = encoder.beginRenderPass({
+            colorAttachments: [
+                {
+                    view: outputView,
+                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }
+            ]
+        });
+        neighborhoodPass.setPipeline(this.smaaNeighborhoodPipeline);
+        neighborhoodPass.setBindGroup(0, this.smaaNeighborhoodBindGroup);
+        neighborhoodPass.draw(3);
+        neighborhoodPass.end();
     }
 
     private writeCameraUniforms(camera: Camera): void {
