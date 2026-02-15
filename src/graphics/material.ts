@@ -387,6 +387,7 @@ export class CustomMaterial extends Material {
     private _vertexShader: string;
     private _fragmentShader: string;
     private _uniforms: Record<string, UniformDefinition>;
+    private _uniformLayout: { size: number; offsets: Record<string, number> } | null = null;
 
     constructor(descriptor: CustomMaterialDescriptor) {
         super(descriptor);
@@ -416,21 +417,49 @@ export class CustomMaterial extends Material {
         }
     }
 
+    private getUniformAlignment(type: UniformType): number {
+        switch (type) {
+            case "f32": return 4;
+            case "vec2f": return 8;
+            case "vec3f": return 16;
+            case "vec4f": return 16;
+            case "mat4x4f": return 16;
+        }
+    }
+
+    private getUniformLayout(): { size: number; offsets: Record<string, number> } {
+        if (this._uniformLayout) return this._uniformLayout;
+        let offset = 0;
+        const offsets: Record<string, number> = {};
+        for (const [name, def] of Object.entries(this._uniforms)) {
+            const align = this.getUniformAlignment(def.type);
+            const size = this.getUniformSize(def.type);
+            offset = this.alignTo(offset, align);
+            offsets[name] = offset;
+            offset += size;
+        }
+        const sizeBytes = Math.ceil(offset / 16) * 16 || 16;
+        this._uniformLayout = { size: sizeBytes, offsets };
+        return this._uniformLayout;
+    }
+
+    private alignTo(n: number, alignment: number): number {
+        return (n + alignment - 1) & ~(alignment - 1);
+    }
+
     getUniformBufferSize(): number {
-        let size = 0;
-        for (const uniform of Object.values(this._uniforms)) size += this.getUniformSize(uniform.type);
-        return Math.ceil(size / 16) * 16 || 16;
+        return this.getUniformLayout().size;
     }
 
     getUniformData(): Float32Array {
-        const data: number[] = [];
-        for (const uniform of Object.values(this._uniforms)) {
-            if (typeof uniform.value === "number") data.push(uniform.value);
-            else data.push(...uniform.value);
+        const layout = this.getUniformLayout();
+        const data = new Float32Array(layout.size / 4);
+        for (const [name, def] of Object.entries(this._uniforms)) {
+            const floatOffset = layout.offsets[name] >>> 2;
+            if (typeof def.value === "number") data[floatOffset] = def.value;
+            else data.set(def.value as ArrayLike<number>, floatOffset);
         }
-        const floatCount = this.getUniformBufferSize() / 4;
-        while (data.length < floatCount) data.push(0);
-        return new Float32Array(data);
+        return data;
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {

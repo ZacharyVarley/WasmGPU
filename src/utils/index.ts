@@ -13,10 +13,11 @@ export const createBuffer = (device: GPUDevice, data: ArrayBufferView, usage: GP
     return buffer;
 }
 
-export const createDepthTexture = (device: GPUDevice, width: number, height: number): GPUTexture => {
+export const createDepthTexture = (device: GPUDevice, width: number, height: number, sampleCount: number = 1): GPUTexture => {
     return device.createTexture({
         size: { width, height, depthOrArrayLayers: 1 },
         format: "depth24plus",
+        sampleCount,
         usage: GPUTextureUsage.RENDER_ATTACHMENT
     });
 }

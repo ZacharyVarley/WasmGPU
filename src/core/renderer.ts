@@ -62,6 +62,7 @@ export class Renderer {
     private modelUniformStagingPtr!: WasmPtr;
     private cameraUniformStagingView!: Float32Array<ArrayBuffer>;
     private lightingUniformStagingView!: Float32Array<ArrayBuffer>;
+    private lightingCountView!: Uint32Array<ArrayBuffer>;
     private modelUniformStagingView!: Float32Array<ArrayBuffer>;
     private _wasmBuffer: ArrayBuffer | null = null;
     private frustumCullingEnabled: boolean = true;
@@ -147,6 +148,7 @@ export class Renderer {
         this._wasmBuffer = buf;
         this.cameraUniformStagingView = wasm.f32view(this.cameraUniformStagingPtr, 20);
         this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 104);
+        this.lightingCountView = new Uint32Array(buf as ArrayBuffer, this.lightingUniformStagingPtr + 16, 1);
         this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
     }
 
@@ -196,8 +198,8 @@ export class Renderer {
         this.modelUniformStagingPtr = frameArena.allocF32(32);
         this._wasmBuffer = null;
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
-        const colorTexture = this.context.getCurrentTexture();
-        const colorView = colorTexture.createView();
+        const swapTexture = this.context.getCurrentTexture();
+        const swapView = swapTexture.createView();
         Transform.updateAll();
         this.writeCameraUniforms(camera);
         this.writeLightingUniforms(scene);
@@ -205,7 +207,7 @@ export class Renderer {
         const pass = encoder.beginRenderPass({
             colorAttachments: [
                 {
-                    view: colorView,
+                    view: swapView,
                     clearValue: { r: scene.background[0], g: scene.background[1], b: scene.background[2], a: 1 },
                     loadOp: "clear",
                     storeOp: "store"
@@ -375,11 +377,15 @@ export class Renderer {
 
     private writeCameraUniforms(camera: Camera): void {
         const viewProj = camera.viewProjectionMatrix;
-        const pos = camera.position;
         this.refreshWasmStagingViews();
         const data = this.cameraUniformStagingView;
         data.set(viewProj, 0);
-        data.set(pos, 16);
+        const storeF32 = TransformStore.global().f32();
+        const wb = (camera.transform.worldMatrixPtr >>> 2);
+        data[16] = storeF32[wb + 12];
+        data[17] = storeF32[wb + 13];
+        data[18] = storeF32[wb + 14];
+        data[19] = 0;
         this.queue.writeBuffer(this.cameraUniformBuffer, 0, data);
     }
 
@@ -391,8 +397,7 @@ export class Renderer {
         data[1] = ambient[1];
         data[2] = ambient[2];
         data[3] = 1;
-        const countView = new Uint32Array(data.buffer, data.byteOffset + 16, 1);
-        countView[0] = lights.length;
+        this.lightingCountView[0] = lights.length;
         let offset = 8;
         for (let i = 0; i < lights.length && i < Scene.MAX_LIGHTS; i++) {
             const light = lights[i];
@@ -439,10 +444,11 @@ export class Renderer {
         }
         let visibleIndices: Uint32Array<ArrayBuffer> | null = null;
         let visibleCount = count;
-        const camPos = camera.position;
-        const camX = camPos[0];
-        const camY = camPos[1];
-        const camZ = camPos[2];
+        const storeF32 = TransformStore.global().f32();
+        const camWb = (camera.transform.worldMatrixPtr >>> 2);
+        const camX = storeF32[camWb + 12];
+        const camY = storeF32[camWb + 13];
+        const camZ = storeF32[camWb + 14];
         if (this.frustumCullingEnabled) {
             this.ensureCullingCapacity(count);
             const centers = wasm.f32view(this.cullCentersPtr, count * 3);
@@ -452,17 +458,29 @@ export class Renderer {
                 const geom = mesh.geometry;
                 const lc = geom.boundsCenter;
                 const lr = geom.boundsRadius;
-                const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
-                const cx = w[0] * lc[0] + w[4] * lc[1] + w[8] * lc[2] + w[12];
-                const cy = w[1] * lc[0] + w[5] * lc[1] + w[9] * lc[2] + w[13];
-                const cz = w[2] * lc[0] + w[6] * lc[1] + w[10] * lc[2] + w[14];
+                const wb = (mesh.transform.worldMatrixPtr >>> 2);
+                const w0 = storeF32[wb + 0];
+                const w1 = storeF32[wb + 1];
+                const w2 = storeF32[wb + 2];
+                const w4 = storeF32[wb + 4];
+                const w5 = storeF32[wb + 5];
+                const w6 = storeF32[wb + 6];
+                const w8 = storeF32[wb + 8];
+                const w9 = storeF32[wb + 9];
+                const w10 = storeF32[wb + 10];
+                const w12 = storeF32[wb + 12];
+                const w13 = storeF32[wb + 13];
+                const w14 = storeF32[wb + 14];
+                const cx = w0 * lc[0] + w4 * lc[1] + w8 * lc[2] + w12;
+                const cy = w1 * lc[0] + w5 * lc[1] + w9 * lc[2] + w13;
+                const cz = w2 * lc[0] + w6 * lc[1] + w10 * lc[2] + w14;
                 const base = i * 3;
                 centers[base + 0] = cx;
                 centers[base + 1] = cy;
                 centers[base + 2] = cz;
-                const sx = Math.hypot(w[0], w[1], w[2]);
-                const sy = Math.hypot(w[4], w[5], w[6]);
-                const sz = Math.hypot(w[8], w[9], w[10]);
+                const sx = Math.hypot(w0, w1, w2);
+                const sy = Math.hypot(w4, w5, w6);
+                const sz = Math.hypot(w8, w9, w10);
                 const smax = Math.max(sx, sy, sz);
                 radii[i] = lr * smax;
             }
@@ -496,10 +514,10 @@ export class Renderer {
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
                 } else {
-                    const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
-                    const dx = w[12] - camX;
-                    const dy = w[13] - camY;
-                    const dz = w[14] - camZ;
+                    const wb = (mesh.transform.worldMatrixPtr >>> 2);
+                    const dx = storeF32[wb + 12] - camX;
+                    const dy = storeF32[wb + 13] - camY;
+                    const dz = storeF32[wb + 14] - camZ;
                     item.sortKey = dx * dx + dy * dy + dz * dz;
                     this.transparentDrawList.push(item);
                 }
@@ -526,10 +544,10 @@ export class Renderer {
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
                 } else {
-                    const w = wasm.f32view(mesh.transform.worldMatrixPtr as WasmPtr, 16);
-                    const dx = w[12] - camX;
-                    const dy = w[13] - camY;
-                    const dz = w[14] - camZ;
+                    const wb = (mesh.transform.worldMatrixPtr >>> 2);
+                    const dx = storeF32[wb + 12] - camX;
+                    const dy = storeF32[wb + 13] - camY;
+                    const dz = storeF32[wb + 14] - camZ;
                     item.sortKey = dx * dx + dy * dy + dz * dz;
                     this.transparentDrawList.push(item);
                 }
@@ -620,7 +638,7 @@ export class Renderer {
     }
 
     private drawInstancedRun(pass: GPURenderPassEncoder, geometry: Geometry, material: Material, items: DrawItem[], start: number, count: number): void {
-        const ptrsPtr = frameArena.allocF32(count) as WasmPtr;
+        const ptrsPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
         const ptrs = wasm.u32view(ptrsPtr, count);
         for (let i = 0; i < count; i++) ptrs[i] = items[start + i].mesh.transform.worldMatrixPtr >>> 0;
         const outPtr = frameArena.allocF32(count * 32) as WasmPtr;
@@ -722,7 +740,10 @@ export class Renderer {
     }
 
     private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean): string {
-        return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned ? "skinned" : "noskin"}`;
+        const ctorId = this.getObjectId(material.constructor as unknown as object);
+        const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial;
+        const matKey = isBuiltin ? `${ctorId}` : `${ctorId}_${this.getObjectId(material)}`;
+        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned ? "skinned" : "noskin"}`;
     }
 
     private getBlendState(mode: BlendMode): GPUBlendState | undefined {
