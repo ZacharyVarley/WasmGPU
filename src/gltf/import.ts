@@ -2,6 +2,7 @@ import { wasm, mat4f, meshf, WasmPtr } from "../wasm";
 import { Geometry } from "../graphics/geometry";
 import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
+import { AnimationClip, Skin } from "../graphics/animation";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
 import { Scene } from "../world/scene";
 import { Mesh } from "../world/mesh";
@@ -9,14 +10,14 @@ import { DirectionalLight, PointLight, type Light } from "../world/light";
 import { Transform } from "../core/transform";
 import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfCamera, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
 import { decodeDataUri, isDataUri, resolveUri } from "./uri";
-
-import { readAccessorAsFloat32, readIndicesAsUint32 } from "./accessors";
+import { readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32 } from "./accessors";
 
 export type ImportedSkin = {
     name?: string;
     joints: Transform[];
     inverseBindMatrices?: Float32Array;
     skeleton?: Transform;
+    runtime: Skin;
 };
 
 export type ImportedAnimationSampler = {
@@ -35,6 +36,7 @@ export type ImportedAnimation = {
     name?: string;
     samplers: ImportedAnimationSampler[];
     channels: ImportedAnimationChannel[];
+    clip: AnimationClip | null;
 };
 
 export type GltfImportResult = {
@@ -45,6 +47,7 @@ export type GltfImportResult = {
     cameras: Camera[];
     skins: ImportedSkin[];
     animations: ImportedAnimation[];
+    clips: AnimationClip[];
     destroy(): void;
 };
 
@@ -381,6 +384,16 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     let uvs: Float32Array | null = null;
     const uvAcc = attrs["TEXCOORD_0"];
     if (uvAcc !== undefined) uvs = readAccessorAsFloat32(doc, uvAcc);
+    let joints: Uint16Array | null = null;
+    let weights: Float32Array | null = null;
+    const jAcc = attrs["JOINTS_0"];
+    const wAcc = attrs["WEIGHTS_0"];
+    if (jAcc !== undefined && wAcc !== undefined) {
+        joints = readAccessorAsUint16(doc, jAcc);
+        weights = readAccessorAsFloat32(doc, wAcc);
+    } else if (jAcc !== undefined || wAcc !== undefined) {
+        warn(opts, "Primitive has JOINTS_0/WEIGHTS_0 mismatch; ignoring skinning attributes for this primitive");
+    }
     const mode = prim.mode ?? 4;
     let indices: Uint32Array | null = null;
     if (prim.indices !== undefined) {
@@ -406,7 +419,9 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         positions,
         normals: normals ?? undefined,
         uvs: uvs ?? undefined,
-        indices: indices ?? undefined,
+        joints: joints ?? undefined,
+        weights: weights ?? undefined,
+        indices: indices ?? undefined
     });
 };
 
@@ -514,11 +529,13 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform
         let inverseBind: Float32Array | undefined;
         if (s.inverseBindMatrices !== undefined) inverseBind = readAccessorAsFloat32(doc, s.inverseBindMatrices);
         const skel = s.skeleton !== undefined ? nodeTransforms[s.skeleton] : undefined;
+        const runt = new Skin(s.name ?? `skin_${i}`, joints, inverseBind ?? null);
         out.push({
             name: s.name,
             joints,
             inverseBindMatrices: inverseBind,
             skeleton: skel,
+            runtime: runt
         });
     }
     return out;
@@ -527,35 +544,114 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform
 const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform[], opts: ImportGltfOptions): ImportedAnimation[] => {
     const anims = json.animations ?? [];
     const out: ImportedAnimation[] = [];
+    const interpToCode = (interp: string): number => {
+        switch (interp) {
+            case "STEP": return 0;
+            case "CUBICSPLINE": return 2;
+            case "LINEAR":
+            default: return 1;
+        }
+    };
+    const pathToCode = (path: ImportedAnimationChannel["path"]): number => {
+        switch (path) {
+            case "translation": return 0;
+            case "rotation": return 1;
+            case "scale": return 2;
+            default: return -1;
+        }
+    };
     for (let i = 0; i < anims.length; i++) {
         const a: GltfAnimation = anims[i]!;
         const samplers: ImportedAnimationSampler[] = [];
         const channels: ImportedAnimationChannel[] = [];
+        const samplerCount = a.samplers.length | 0;
+        const samplerTablePtr = samplerCount > 0 ? (wasm.allocU32(samplerCount * 5) as WasmPtr) : (0 as WasmPtr);
+        const samplerTable = samplerCount > 0 ? wasm.u32view(samplerTablePtr, samplerCount * 5) : null;
+        const ownedF32Allocs: { ptr: WasmPtr; len: number }[] = [];
+        const ownedU32Allocs: { ptr: WasmPtr; len: number }[] = [];
+        if (samplerCount > 0) ownedU32Allocs.push({ ptr: samplerTablePtr, len: samplerCount * 5 });
+        let startTime = Number.POSITIVE_INFINITY;
+        let endTime = Number.NEGATIVE_INFINITY;
         for (let si = 0; si < a.samplers.length; si++) {
             const s: GltfAnimationSampler = a.samplers[si]!;
             const input = readAccessorAsFloat32(doc, s.input);
+            const outView = readAccessor(doc, s.output);
             const output = readAccessorAsFloat32(doc, s.output);
             samplers.push({
-                interpolation: s.interpolation ?? "LINEAR",
+                interpolation: (s.interpolation ?? "LINEAR") as ImportedAnimationSampler["interpolation"],
                 input,
                 output,
             });
+            if (input.length > 0) {
+                startTime = Math.min(startTime, input[0]!);
+                endTime = Math.max(endTime, input[input.length - 1]!);
+            }
+            if (samplerTable) {
+                const timesPtr = wasm.allocF32(input.length) as WasmPtr;
+                wasm.f32view(timesPtr, input.length).set(input);
+                ownedF32Allocs.push({ ptr: timesPtr, len: input.length });
+                const valuesPtr = wasm.allocF32(output.length) as WasmPtr;
+                wasm.f32view(valuesPtr, output.length).set(output);
+                ownedF32Allocs.push({ ptr: valuesPtr, len: output.length });
+                const base = si * 5;
+                samplerTable[base + 0] = timesPtr >>> 0;
+                samplerTable[base + 1] = (input.length | 0) >>> 0;
+                samplerTable[base + 2] = valuesPtr >>> 0;
+                samplerTable[base + 3] = (outView.numComponents | 0) >>> 0;
+                samplerTable[base + 4] = interpToCode(s.interpolation ?? "LINEAR") >>> 0;
+            }
         }
+        const runtimeChannels: { sampler: number; targetIndex: number; pathCode: number }[] = [];
         for (let ci = 0; ci < a.channels.length; ci++) {
             const c: GltfAnimationChannel = a.channels[ci]!;
             const nodeIndex = c.target.node;
             const t = nodeIndex !== undefined ? nodeTransforms[nodeIndex] ?? null : null;
-            channels.push({
+            const chan: ImportedAnimationChannel = {
                 sampler: c.sampler | 0,
                 targetNode: t,
                 path: c.target.path,
-            });
+            };
+            channels.push(chan);
+            const pathCode = pathToCode(chan.path);
+            if (t && pathCode >= 0) {
+                runtimeChannels.push({
+                    sampler: chan.sampler | 0,
+                    targetIndex: t.index >>> 0,
+                    pathCode,
+                });
+            }
         }
-        out.push({
-            name: a.name,
-            samplers,
-            channels,
-        });
+        let clip: AnimationClip | null = null;
+        const channelCount = runtimeChannels.length | 0;
+        if (samplerCount > 0 && channelCount > 0) {
+            const channelsPtr = wasm.allocU32(channelCount * 3) as WasmPtr;
+            const ch = wasm.u32view(channelsPtr, channelCount * 3);
+            ownedU32Allocs.push({ ptr: channelsPtr, len: channelCount * 3 });
+            for (let ci = 0; ci < channelCount; ci++) {
+                const rc = runtimeChannels[ci]!;
+                const base = ci * 3;
+                ch[base + 0] = rc.sampler >>> 0;
+                ch[base + 1] = rc.targetIndex >>> 0;
+                ch[base + 2] = rc.pathCode >>> 0;
+            }
+            if (!Number.isFinite(startTime)) startTime = 0;
+            if (!Number.isFinite(endTime)) endTime = 0;
+            clip = new AnimationClip({
+                name: a.name ?? `anim_${i}`,
+                samplerCount,
+                channelCount,
+                samplersPtr: samplerTablePtr,
+                channelsPtr,
+                startTime,
+                endTime,
+                ownedF32Allocs,
+                ownedU32Allocs
+            });
+        } else {
+            for (const a of ownedF32Allocs) wasm.freeF32(a.ptr, a.len);
+            for (const a of ownedU32Allocs) wasm.freeU32(a.ptr, a.len);
+        }
+        out.push({ name: a.name, samplers, channels, clip });
     }
     return out;
 };
@@ -590,6 +686,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
             else warn(opts, `Node ${i} child ${child} missing transform`);
         }
     }
+    const skins = parseSkins(doc, json, nodeTransforms, opts);
     const materialCache = new Map<number, Material>();
     const textureCache = new Map<number, Texture2D>();
     const geometryCache = new Map<string, Geometry | null>();
@@ -603,6 +700,20 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         const nodeT = nodeTransforms[nodeIndex]!;
         if (!nodeT) return;
         const createdMeshes = instantiateMeshNode(doc, json, node, nodeT, materialCache, textureCache, geometryCache, opts);
+        if (node.skin !== undefined) {
+            const skinDef = skins[node.skin];
+            if (!skinDef) {
+                warn(opts, `nodes[${nodeIndex}].skin=${node.skin} missing; skipping skin binding`);
+            } else {
+                for (const m of createdMeshes) {
+                    if (m.geometry.joints === null || m.geometry.weights === null) {
+                        warn(opts, `Mesh '${m.name}' is skinned (node.skin) but is missing JOINTS_0/WEIGHTS_0; it will render unskinned.`);
+                        continue;
+                    }
+                    m.skin = skinDef.runtime.createInstance(m.transform);
+                }
+            }
+        }
         for (const m of createdMeshes) {
             meshes.push(m);
             if (addToScene) scene.add(m);
@@ -634,8 +745,8 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const gltfScene: GltfScene | undefined = json.scenes?.[sceneIndex];
     const roots = gltfScene?.nodes ?? [];
     for (const root of roots) instantiateNodeRecursive(root);
-    const skins = parseSkins(doc, json, nodeTransforms, opts);
     const animations = parseAnimations(doc, json, nodeTransforms, opts);
+    const clips = animations.map((a) => a.clip).filter((c): c is AnimationClip => c !== null);
     const uniqueGeometries = Array.from(new Set(meshes.map((m) => m.geometry)));
     const uniqueMaterials = Array.from(new Set(meshes.map((m) => m.material)));
     return {
@@ -646,9 +757,12 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         cameras,
         skins,
         animations,
+        clips,
         destroy(): void {
             if (addToScene) for (const m of meshes) scene.remove(m);
             for (const m of meshes) m.destroy();
+            for (const a of animations) a.clip?.dispose();
+            for (const s of skins) s.runtime.dispose();
             for (const g of uniqueGeometries) g.destroy();
             for (const tex of textureCache.values()) tex.destroy();
             for (const mat of uniqueMaterials) mat.destroy();

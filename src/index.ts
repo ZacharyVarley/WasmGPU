@@ -14,6 +14,8 @@ export { Material, UnlitMaterial, StandardMaterial, CustomMaterial, BlendMode, C
 export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
 export { Texture2D } from "./graphics/texture";
 export type { Texture2DDescriptor, TextureColorSpace, TextureSamplerOptions, TextureSource } from "./graphics/texture";
+export { AnimationClip, AnimationPlayer, Skin, SkinInstance } from "./graphics/animation";
+export type { AnimationClipDescriptor } from "./graphics/animation";
 export { Transform } from "./core/transform";
 export { initMath, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
 export * from "./gltf";

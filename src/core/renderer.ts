@@ -1,11 +1,11 @@
-import { Transform } from "./transform";
+import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
 import { Light, DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
-import { cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
+import { animf, cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -23,6 +23,7 @@ type DrawItem = {
     pipelineId: number;
     materialId: number;
     geometryId: number;
+    skinned: boolean;
     sortKey: number;
 };
 
@@ -38,6 +39,7 @@ export class Renderer {
     private height = 0;
     private globalBindGroupLayout!: GPUBindGroupLayout;
     private globalBindGroups: GPUBindGroup[] = [];
+    private skinBindGroupLayout!: GPUBindGroupLayout;
     private cameraUniformBuffer!: GPUBuffer;
     private modelUniformBuffers: GPUBuffer[] = [];
     private modelBufferIndex: number = 0;
@@ -100,6 +102,7 @@ export class Renderer {
         if (!this.context) throw new Error("Failed to get WebGPU canvas context.");
         this.format = navigator.gpu.getPreferredCanvasFormat();
         this.createGlobalBindGroupLayout();
+        this.createSkinBindGroupLayout();
         this.createUniformBuffers();
         this.createFallbackTextures();
         this.resize();
@@ -167,6 +170,7 @@ export class Renderer {
                 pipelineId: 0,
                 materialId: 0,
                 geometryId: 0,
+                skinned: false,
                 sortKey: 0
             };
             this.drawItemPool[i] = item;
@@ -258,6 +262,16 @@ export class Renderer {
                     buffer: { type: "uniform", minBindingSize: 416 }
                 }
             ]
+        });
+    }
+
+    private createSkinBindGroupLayout(): void {
+        this.skinBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [{
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "read-only-storage" }
+            }]
         });
     }
 
@@ -467,7 +481,8 @@ export class Renderer {
                 const mesh = candidates[i];
                 const geometry = mesh.geometry;
                 const material = mesh.material;
-                const pipeline = this.getOrCreatePipeline(material);
+                const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
+                const pipeline = this.getOrCreatePipeline(material, false, skinned);
                 const item = this.acquireDrawItem();
                 item.mesh = mesh;
                 item.geometry = geometry;
@@ -476,6 +491,7 @@ export class Renderer {
                 item.pipelineId = this.getObjectId(pipeline);
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
+                item.skinned = skinned;
                 item.sortKey = 0;
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
@@ -495,7 +511,8 @@ export class Renderer {
                 const mesh = candidates[i];
                 const geometry = mesh.geometry;
                 const material = mesh.material;
-                const pipeline = this.getOrCreatePipeline(material);
+                const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
+                const pipeline = this.getOrCreatePipeline(material, false, skinned);
                 const item = this.acquireDrawItem();
                 item.mesh = mesh;
                 item.geometry = geometry;
@@ -504,6 +521,7 @@ export class Renderer {
                 item.pipelineId = this.getObjectId(pipeline);
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
+                item.skinned = skinned;
                 item.sortKey = 0;
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
@@ -553,10 +571,14 @@ export class Renderer {
                 pass.setVertexBuffer(0, geometry.positionBuffer);
                 pass.setVertexBuffer(1, geometry.normalBuffer);
                 pass.setVertexBuffer(2, geometry.uvBuffer);
+                if (first.skinned) {
+                    pass.setVertexBuffer(3, geometry.jointsBuffer!);
+                    pass.setVertexBuffer(4, geometry.weightsBuffer!);
+                }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                 lastGeometry = geometry;
             }
-            const canInstance = runCount > 1 && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
+            const canInstance = runCount > 1 && !first.skinned && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
             if (canInstance) {
                 const instancedPipeline = this.getOrCreatePipeline(material, true);
                 if (instancedPipeline !== lastPipeline) {
@@ -571,6 +593,15 @@ export class Renderer {
                     const modelBuffer = this.modelUniformBuffers[modelSlot];
                     const globalBindGroup = this.globalBindGroups[modelSlot];
                     const mesh = items[k].mesh;
+                    const skin = first.skinned ? mesh.skin : null;
+                    if (skin) {
+                        skin.ensureGpuResources(this.device, this.skinBindGroupLayout);
+                        const jointCount = skin.jointCount | 0;
+                        const jointMatPtr = frameArena.allocF32(jointCount * 16) as WasmPtr;
+                        animf.computeJointMatricesTo(jointMatPtr, skin.skin.jointIndicesPtr, jointCount, skin.skin.invBindPtr, TransformStore.global().worldPtr as WasmPtr, skin.meshTransform.worldMatrixPtr as WasmPtr);
+                        this.queue.writeBuffer(skin.boneBuffer!, 0, wasm.memory().buffer as ArrayBuffer, jointMatPtr, jointCount * 64);
+                        pass.setBindGroup(2, skin.bindGroup!);
+                    }
                     const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
                     const invPtr = this.modelUniformStagingPtr;
                     const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
@@ -607,48 +638,63 @@ export class Renderer {
         this.instanceBufferOffset = dstEnd;
     }
 
-    private getOrCreatePipeline(material: Material, instanced: boolean = false): GPURenderPipeline {
-        const key = this.getPipelineCacheKey(material, instanced);
+    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false): GPURenderPipeline {
+        if (instanced && skinned) throw new Error("Renderer: instanced + skinned pipelines are not supported (attribute layout conflict).");
+        const key = this.getPipelineCacheKey(material, instanced, skinned);
         let pipeline = this.pipelineCache.get(key);
         if (pipeline) return pipeline;
-        const shaderCode = material.getShaderCode(instanced);
+        const shaderCode = material.getShaderCode({ instanced, skinned });
         let shaderModule = this.shaderCache.get(shaderCode);
         if (!shaderModule) {
             shaderModule = this.device.createShaderModule({ code: shaderCode });
             this.shaderCache.set(shaderCode, shaderModule);
         }
         const materialBindGroupLayout = material.createBindGroupLayout(this.device);
-        const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [this.globalBindGroupLayout, materialBindGroupLayout] });
+        const bindGroupLayouts: GPUBindGroupLayout[] = [this.globalBindGroupLayout, materialBindGroupLayout];
+        if (skinned) bindGroupLayouts.push(this.skinBindGroupLayout);
+        const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts });
+        let buffers: GPUVertexBufferLayout[];
+        if (instanced) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                {
+                    arrayStride: this.INSTANCE_STRIDE_BYTES,
+                    stepMode: "instance",
+                    attributes: [
+                        { shaderLocation: 3, offset: 0, format: "float32x4" },
+                        { shaderLocation: 4, offset: 16, format: "float32x4" },
+                        { shaderLocation: 5, offset: 32, format: "float32x4" },
+                        { shaderLocation: 6, offset: 48, format: "float32x4" },
+                        { shaderLocation: 7, offset: 64, format: "float32x4" },
+                        { shaderLocation: 8, offset: 80, format: "float32x4" },
+                        { shaderLocation: 9, offset: 96, format: "float32x4" },
+                        { shaderLocation: 10, offset: 112, format: "float32x4" }
+                    ]
+                }
+            ];
+        } else if (skinned) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] }
+            ];
+        } else {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] }
+            ];
+        }
         pipeline = this.device.createRenderPipeline({
             layout: pipelineLayout,
             vertex: {
                 module: shaderModule,
                 entryPoint: "vs_main",
-                buffers: instanced
-                ? [
-                    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
-                    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
-                    { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
-                    {
-                        arrayStride: this.INSTANCE_STRIDE_BYTES,
-                        stepMode: "instance",
-                        attributes: [
-                            { shaderLocation: 3,  offset: 0,   format: "float32x4" },
-                            { shaderLocation: 4,  offset: 16,  format: "float32x4" },
-                            { shaderLocation: 5,  offset: 32,  format: "float32x4" },
-                            { shaderLocation: 6,  offset: 48,  format: "float32x4" },
-                            { shaderLocation: 7,  offset: 64,  format: "float32x4" },
-                            { shaderLocation: 8,  offset: 80,  format: "float32x4" },
-                            { shaderLocation: 9,  offset: 96,  format: "float32x4" },
-                            { shaderLocation: 10, offset: 112, format: "float32x4" }
-                        ]
-                    }
-                ]
-                : [
-                    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
-                    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
-                    { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] }
-                ]
+                buffers
             },
             fragment: {
                 module: shaderModule,
@@ -675,8 +721,8 @@ export class Renderer {
         return pipeline;
     }
 
-    private getPipelineCacheKey(material: Material, instanced: boolean): string {
-        return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}`;
+    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean): string {
+        return `${material.constructor.name}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned ? "skinned" : "noskin"}`;
     }
 
     private getBlendState(mode: BlendMode): GPUBlendState | undefined {
@@ -809,6 +855,10 @@ export class Renderer {
     }
 
     private materialSupportsInstancing(material: Material): boolean {
+        return material instanceof UnlitMaterial || material instanceof StandardMaterial;
+    }
+
+    private materialSupportsSkinning(material: Material): boolean {
         return material instanceof UnlitMaterial || material instanceof StandardMaterial;
     }
 

@@ -72,3 +72,13 @@ pub extern "C" fn wasmgpu_alloc_f32(len: u32) -> u32 {
 pub extern "C" fn wasmgpu_free_f32(_ptr: u32, _len: u32) {
     // bump allocator: no-op free
 }
+
+#[no_mangle]
+pub extern "C" fn wasmgpu_alloc_u32(len: u32) -> u32 {
+    unsafe { alloc_raw((len as usize) * mem::size_of::<u32>(), mem::align_of::<u32>()) }
+}
+
+#[no_mangle]
+pub extern "C" fn wasmgpu_free_u32(_ptr: u32, _len: u32) {
+    // bump allocator: no-op free
+}

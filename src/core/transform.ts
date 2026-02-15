@@ -2,7 +2,7 @@ import { wasm, quatf, vec3f, transformf, WasmPtr } from "../wasm";
 
 const NO_PARENT = 0xFFFFFFFF;
 
-class TransformStore {
+export class TransformStore {
     private static _global: TransformStore | null = null;
     static global(): TransformStore {
         if (!TransformStore._global) TransformStore._global = new TransformStore(16384);

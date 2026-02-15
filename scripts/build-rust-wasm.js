@@ -280,6 +280,8 @@ export const wasmgpu_alloc = wasm.wasmgpu_alloc;
 export const wasmgpu_free = wasm.wasmgpu_free;
 export const wasmgpu_alloc_f32 = wasm.wasmgpu_alloc_f32;
 export const wasmgpu_free_f32 = wasm.wasmgpu_free_f32;
+export const wasmgpu_alloc_u32 = wasm.wasmgpu_alloc_u32;
+export const wasmgpu_free_u32 = wasm.wasmgpu_free_u32;
 export const wasmgpu_seed = wasm.wasmgpu_seed;
 
 export const wasmgpu_frame_arena_init = wasm.wasmgpu_frame_arena_init;
@@ -299,6 +301,9 @@ export const transform_pack_model_normal_mat4_from_ptrs = wasm.transform_pack_mo
 export const cull_spheres_frustum = wasm.cull_spheres_frustum;
 
 export const mesh_compute_vertex_normals = wasm.mesh_compute_vertex_normals;
+
+export const anim_sample_clip_trs = wasm.anim_sample_clip_trs;
+export const anim_compute_joint_matrices_to = wasm.anim_compute_joint_matrices_to;
 
 export const mat4_abs = wasm.mat4_abs;
 export const mat4_add = wasm.mat4_add;
@@ -537,6 +542,8 @@ export function wasmgpu_alloc(bytes: number): number;
 export function wasmgpu_free(ptr: number, bytes: number): void;
 export function wasmgpu_alloc_f32(len: number): number;
 export function wasmgpu_free_f32(ptr: number, len: number): void;
+export function wasmgpu_alloc_u32(len: number): number;
+export function wasmgpu_free_u32(ptr: number, len: number): void;
 export function wasmgpu_seed(seed: number): void;
 
 export function wasmgpu_frame_arena_init(capBytes: number): number;
@@ -556,6 +563,9 @@ export function transform_pack_model_normal_mat4_from_ptrs(outPtr: number, matPt
 export function cull_spheres_frustum(outIndicesPtr: number, centersPtr: number, radiiPtr: number, count: number, frustumPtr: number): number;
 
 export function mesh_compute_vertex_normals(outNormalsPtr: number, positionsPtr: number, vertexCount: number, indicesPtr: number, indexCount: number): number;
+
+export function anim_sample_clip_trs(posPtr: number, rotPtr: number, sclPtr: number, transformCount: number, samplersPtr: number, samplerCount: number, channelsPtr: number, channelCount: number, time: number): number;
+export function anim_compute_joint_matrices_to(outPtr: number, jointIndicesPtr: number, jointCount: number, invBindPtr: number, worldBasePtr: number, meshWorldPtr: number): number;
 
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;

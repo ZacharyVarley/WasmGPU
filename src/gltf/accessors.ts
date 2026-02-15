@@ -196,6 +196,23 @@ export const readAccessorAsFloat32 = (doc: GltfDocument, accessorIndex: number):
     return out;
 };
 
+export const readAccessorAsUint16 = (doc: GltfDocument, accessorIndex: number): Uint16Array => {
+    const view = readAccessor(doc, accessorIndex);
+    const ct = view.componentType;
+    if (ct === 5123 && !view.normalized) return view.array as Uint16Array;
+    const out = new Uint16Array(view.array.length);
+    if (ct === 5121 && !view.normalized) {
+        const src = view.array as Uint8Array;
+        for (let i = 0; i < src.length; i++) out[i] = src[i]!;
+        return out;
+    }
+    for (let i = 0; i < view.array.length; i++) {
+        const v = (view.array as any)[i] as number;
+        out[i] = v < 0 ? 0 : v > 65535 ? 65535 : (v | 0);
+    }
+    return out;
+};
+
 export const readIndicesAsUint32 = (doc: GltfDocument, accessorIndex: number): Uint32Array => {
     const view = readAccessor(doc, accessorIndex);
     const ct = view.componentType;

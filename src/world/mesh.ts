@@ -1,5 +1,6 @@
 import { Geometry } from "../graphics/geometry";
 import { Material } from "../graphics/material";
+import { SkinInstance } from "../graphics/animation";
 import { Transform } from "../core/transform";
 
 export class Mesh {
@@ -11,6 +12,7 @@ export class Mesh {
     private _receiveShadow: boolean = true;
     name: string = "";
     userData: Record<string, unknown> = {};
+    skin: SkinInstance | null = null;
 
     constructor(geometry: Geometry, material: Material) {
         this.geometry = geometry;
@@ -62,6 +64,8 @@ export class Mesh {
     }
 
     destroy(): void {
+        this.skin?.dispose();
+        this.skin = null;
         this.transform.dispose();
         this.geometry.destroy();
         this.material.destroy();

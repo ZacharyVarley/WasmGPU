@@ -43,6 +43,8 @@ export const wasm = {
     seed: (seed: number): void => { ensure().wasmgpu_seed(seed >>> 0); },
     allocF32: (len: number): WasmPtr => ensure().wasmgpu_alloc_f32(len >>> 0) >>> 0,
     freeF32: (ptr: WasmPtr, len: number): void => ensure().wasmgpu_free_f32(ptr >>> 0, len >>> 0),
+    allocU32: (len: number): WasmPtr => ensure().wasmgpu_alloc_u32(len >>> 0) >>> 0,
+    freeU32: (ptr: WasmPtr, len: number): void => ensure().wasmgpu_free_u32(ptr >>> 0, len >>> 0),
     f32view: (ptr: WasmPtr, len: number): Float32Array<ArrayBuffer> => ensure().f32view(ptr >>> 0, len >>> 0) as unknown as Float32Array<ArrayBuffer>,
     u32view: (ptr: WasmPtr, len: number): Uint32Array<ArrayBuffer> => ensure().u32view(ptr >>> 0, len >>> 0) as unknown as Uint32Array<ArrayBuffer>,
     writeF32: (ptr: WasmPtr, len: number, src: ArrayLike<number> | null | undefined): void => {
@@ -83,6 +85,15 @@ export const frameArena = {
     },
     usedBytes: (): number => ensure().wasmgpu_frame_arena_used() >>> 0,
     capBytes: (): number => ensure().wasmgpu_frame_arena_cap() >>> 0,
+};
+
+export const animf = {
+    sampleClipTRS: (posPtr: WasmPtr, rotPtr: WasmPtr, sclPtr: WasmPtr, transformCount: number, samplersPtr: WasmPtr, samplerCount: number, channelsPtr: WasmPtr, channelCount: number, time: number): void => {
+        ensure().anim_sample_clip_trs(posPtr >>> 0, rotPtr >>> 0, sclPtr >>> 0, transformCount >>> 0, samplersPtr >>> 0, samplerCount >>> 0, channelsPtr >>> 0, channelCount >>> 0, time);
+    },
+    computeJointMatricesTo: (outPtr: WasmPtr, jointIndicesPtr: WasmPtr, jointCount: number, invBindPtr: WasmPtr, worldBasePtr: WasmPtr, meshWorldPtr: WasmPtr): void => {
+        ensure().anim_compute_joint_matrices_to(outPtr >>> 0, jointIndicesPtr >>> 0, jointCount >>> 0, invBindPtr >>> 0, worldBasePtr >>> 0, meshWorldPtr >>> 0);
+    }
 };
 
 export const cullf = {

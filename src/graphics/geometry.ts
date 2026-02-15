@@ -9,6 +9,8 @@ export type GeometryDescriptor = {
     positions: Float32Array;
     normals?: Float32Array;
     uvs?: Float32Array;
+    joints?: Uint16Array;
+    weights?: Float32Array;
     indices?: Uint32Array;
 };
 
@@ -16,6 +18,10 @@ export class Geometry {
     readonly positions: Float32Array;
     readonly normals: Float32Array;
     readonly uvs: Float32Array;
+    readonly joints: Uint16Array | null;
+    readonly weights: Float32Array | null;
+    private _jointsBuffer: GPUBuffer | null = null;
+    private _weightsBuffer: GPUBuffer | null = null;
     readonly indices: Uint32Array | null;
     readonly vertexCount: number;
     readonly indexCount: number;
@@ -33,6 +39,23 @@ export class Geometry {
         this.normals = descriptor.normals ?? new Float32Array(this.vertexCount * 3).fill(0);
         if (!descriptor.normals) for (let i = 1; i < this.normals.length; i += 3) this.normals[i] = 1;
         this.uvs = descriptor.uvs ?? new Float32Array(this.vertexCount * 2);
+        let joints = descriptor.joints ?? null;
+        let weights = descriptor.weights ?? null;
+        const expected = this.vertexCount * 4;
+        if ((joints && !weights) || (!joints && weights)) {
+            console.warn(`[Geometry] JOINTS_0/WEIGHTS_0 must be provided together. Skinning disabled for this geometry.`);
+            joints = null; weights = null;
+        }
+        if (joints && joints.length !== expected) {
+            console.warn(`[Geometry] joints length mismatch (got ${joints.length}, expected ${expected}). Skinning disabled.`);
+            joints = null; weights = null;
+        }
+        if (weights && weights.length !== expected) {
+            console.warn(`[Geometry] weights length mismatch (got ${weights.length}, expected ${expected}). Skinning disabled.`);
+            joints = null; weights = null;
+        }
+        this.joints = joints;
+        this.weights = weights;
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
         if (this.vertexCount > 0) {
@@ -74,6 +97,8 @@ export class Geometry {
         this._positionBuffer = createBuffer(device, this.positions, GPUBufferUsage.VERTEX);
         this._normalBuffer = createBuffer(device, this.normals, GPUBufferUsage.VERTEX);
         this._uvBuffer = createBuffer(device, this.uvs, GPUBufferUsage.VERTEX);
+        if (this.joints) this._jointsBuffer = createBuffer(device, this.joints, GPUBufferUsage.VERTEX);
+        if (this.weights) this._weightsBuffer = createBuffer(device, this.weights, GPUBufferUsage.VERTEX);
         if (this.indices) this._indexBuffer = createBuffer(device, this.indices, GPUBufferUsage.INDEX);
     }
 
@@ -92,12 +117,24 @@ export class Geometry {
         return this._uvBuffer;
     }
 
+    get jointsBuffer(): GPUBuffer | null {
+        return this._jointsBuffer;
+    }
+
+    get weightsBuffer(): GPUBuffer | null {
+        return this._weightsBuffer;
+    }
+
     get indexBuffer(): GPUBuffer | null {
         return this._indexBuffer;
     }
 
     get isIndexed(): boolean {
         return this._indexBuffer !== null;
+    }
+
+    get isSkinned(): boolean {
+        return this._jointsBuffer !== null && this._weightsBuffer !== null;
     }
 
     get boundsCenter(): readonly [number, number, number] {
@@ -112,6 +149,10 @@ export class Geometry {
         this._positionBuffer?.destroy();
         this._normalBuffer?.destroy();
         this._uvBuffer?.destroy();
+        this._jointsBuffer?.destroy();
+        this._weightsBuffer?.destroy();
+        this._jointsBuffer = null;
+        this._weightsBuffer = null;
         this._indexBuffer?.destroy();
         this._positionBuffer = null;
         this._normalBuffer = null;

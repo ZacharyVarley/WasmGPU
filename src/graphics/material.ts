@@ -1,8 +1,10 @@
 import { Texture2D } from "./texture";
 import unlitWGSL from "../wgsl/unlit.wgsl";
 import unlitInstancedWGSL from "../wgsl/unlit-instanced.wgsl";
+import unlitSkinnedWGSL from "../wgsl/unlit-skinned.wgsl";
 import standardWGSL from "../wgsl/standard.wgsl";
 import standardInstancedWGSL from "../wgsl/standard-instanced.wgsl";
+import standardSkinnedWGSL from "../wgsl/standard-skinned.wgsl";
 import customDefaultVertexWGSL from "../wgsl/custom-default-vertex.wgsl";
 
 export type Color = [number, number, number];
@@ -54,7 +56,7 @@ export abstract class Material {
     }
 
     abstract getUniformData(): Float32Array;
-    abstract getShaderCode(instanced?: boolean): string;
+    abstract getShaderCode(opts?: { instanced?: boolean; skinned?: boolean }): string;
     abstract getUniformBufferSize(): number;
     abstract createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout;
 
@@ -148,9 +150,10 @@ export class UnlitMaterial extends Material {
         });
     }
 
-    getShaderCode(instanced: boolean = false): string {
-        if (!instanced) return unlitWGSL;
-        return unlitInstancedWGSL;
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
+        if (opts.instanced) return unlitInstancedWGSL;
+        if (opts.skinned) return unlitSkinnedWGSL;
+        return unlitWGSL;
     }
 }
 
@@ -360,9 +363,10 @@ export class StandardMaterial extends Material {
         });
     }
 
-    getShaderCode(instanced: boolean = false): string {
-        if (!instanced) return standardWGSL;
-        return standardInstancedWGSL;
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
+        if (opts.instanced) return standardInstancedWGSL;
+        if (opts.skinned) return standardSkinnedWGSL;
+        return standardWGSL;
     }
 }
 
@@ -445,7 +449,7 @@ export class CustomMaterial extends Material {
         return customDefaultVertexWGSL;
     }
 
-    getShaderCode(_instanced: boolean = false): string {
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
         let uniformStruct = "struct CustomUniforms {\n";
         for (const [name, def] of Object.entries(this._uniforms)) uniformStruct += `    ${name}: ${def.type},\n`;
         uniformStruct += "};\n\n@group(1) @binding(0) var<uniform> custom: CustomUniforms;\n\n";
