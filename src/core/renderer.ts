@@ -167,12 +167,20 @@ export class Renderer {
     }
 
     private refreshWasmStagingViews(): void {
-        const buf = wasm.memory().buffer;
-        if (this._wasmBuffer === buf) return;
+        const buf = wasm.memory().buffer as ArrayBuffer;
+        const needRefresh =
+            buf !== this._wasmBuffer ||
+            !this.cameraUniformStagingView ||
+            this.cameraUniformStagingView.byteOffset !== this.cameraUniformStagingPtr ||
+            !this.lightingUniformStagingView ||
+            this.lightingUniformStagingView.byteOffset !== this.lightingUniformStagingPtr ||
+            !this.modelUniformStagingView ||
+            this.modelUniformStagingView.byteOffset !== this.modelUniformStagingPtr;
+        if (!needRefresh) return;
         this._wasmBuffer = buf;
         this.cameraUniformStagingView = wasm.f32view(this.cameraUniformStagingPtr, 20);
         this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 104);
-        this.lightingCountView = new Uint32Array(buf as ArrayBuffer, this.lightingUniformStagingPtr + 16, 1);
+        this.lightingCountView = wasm.u32view(this.lightingUniformStagingPtr + 16, 1);
         this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
     }
 
@@ -220,7 +228,6 @@ export class Renderer {
         this.cameraUniformStagingPtr = frameArena.allocF32(20);
         this.lightingUniformStagingPtr = frameArena.allocF32(104);
         this.modelUniformStagingPtr = frameArena.allocF32(32);
-        this._wasmBuffer = null;
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
         const swapTexture = this.context.getCurrentTexture();
         const swapView = swapTexture.createView();
@@ -637,17 +644,20 @@ export class Renderer {
     }
 
     private writeCameraUniforms(camera: Camera): void {
-        const viewProj = camera.viewProjectionMatrix;
         this.refreshWasmStagingViews();
-        const data = this.cameraUniformStagingView;
-        data.set(viewProj, 0);
-        const storeF32 = TransformStore.global().f32();
-        const wb = (camera.transform.worldMatrixPtr >>> 2);
-        data[16] = storeF32[wb + 12];
-        data[17] = storeF32[wb + 13];
-        data[18] = storeF32[wb + 14];
-        data[19] = 0;
-        this.queue.writeBuffer(this.cameraUniformBuffer, 0, data);
+        const proj = camera.getProjectionMatrix();
+        this.modelUniformStagingView.set(proj, 0);
+        const viewPtr = this.modelUniformStagingPtr + 16 * 4;
+        mat4f.invert(viewPtr, camera.transform.worldMatrixPtr);
+        mat4f.mul(this.cameraUniformStagingPtr, this.modelUniformStagingPtr, viewPtr);
+        const store = TransformStore.global();
+        const storeF32 = store.f32();
+        const base = (store.worldPtr >>> 2) + camera.transform.index * 16;
+        this.cameraUniformStagingView[16] = storeF32[base + 12];
+        this.cameraUniformStagingView[17] = storeF32[base + 13];
+        this.cameraUniformStagingView[18] = storeF32[base + 14];
+        this.cameraUniformStagingView[19] = 0.0;
+        this.queue.writeBuffer(this.cameraUniformBuffer, 0, this.cameraUniformStagingView);
     }
 
     private writeLightingUniforms(scene: Scene): void {
@@ -746,7 +756,7 @@ export class Renderer {
                 radii[i] = lr * smax;
             }
             const frustumPtr = frameArena.allocF32(24) as WasmPtr;
-            frustumf.writePlanesFromViewProjection(frustumPtr, camera.viewProjectionMatrix);
+            frustumf.writePlanesFromViewProjection(frustumPtr, this.cameraUniformStagingView);
             const outPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
             visibleCount = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, count, frustumPtr);
             visibleIndices = wasm.u32view(outPtr, visibleCount);
