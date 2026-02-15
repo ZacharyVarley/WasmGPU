@@ -38,6 +38,7 @@ export abstract class Material {
     bindGroup: GPUBindGroup | null = null;
     bindGroupKey: string | null = null;
     uniformBuffer: GPUBuffer | null = null;
+    protected _uniformDataCache: Float32Array | null = null;
     protected _dirty: boolean = true;
 
     constructor(descriptor: MaterialDescriptor = {}) {
@@ -53,6 +54,11 @@ export abstract class Material {
 
     markClean(): void {
         this._dirty = false;
+    }
+
+    protected getUniformDataCache(floatCount: number): Float32Array {
+        if (!this._uniformDataCache || this._uniformDataCache.length !== floatCount) this._uniformDataCache = new Float32Array(floatCount);
+        return this._uniformDataCache;
     }
 
     abstract getUniformData(): Float32Array;
@@ -81,6 +87,8 @@ export class UnlitMaterial extends Material {
     private _opacity: number;
     private _baseColorTexture: Texture2D | null;
     private _alphaCutoff: number;
+    private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
+    private static _cachedLayoutDevice: GPUDevice | null = null;
 
     constructor(descriptor: UnlitMaterialDescriptor = {}) {
         super({
@@ -134,20 +142,30 @@ export class UnlitMaterial extends Material {
     }
 
     getUniformData(): Float32Array {
-        return new Float32Array([
-            this._color[0], this._color[1], this._color[2], this._opacity,
-            this._alphaCutoff, 0, 0, 0
-        ]);
+        const f = this.getUniformDataCache(8);
+        f[0] = this._color[0];
+        f[1] = this._color[1];
+        f[2] = this._color[2];
+        f[3] = this._opacity;
+        f[4] = this._alphaCutoff;
+        f[5] = 0;
+        f[6] = 0;
+        f[7] = 0;
+        return f;
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
-        return device.createBindGroupLayout({
+        if (UnlitMaterial._cachedBindGroupLayout && UnlitMaterial._cachedLayoutDevice === device) return UnlitMaterial._cachedBindGroupLayout;
+        const layout = device.createBindGroupLayout({
             entries: [
                 { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
                 { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
                 { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
             ]
         });
+        UnlitMaterial._cachedBindGroupLayout = layout;
+        UnlitMaterial._cachedLayoutDevice = device;
+        return layout;
     }
 
     getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
@@ -189,6 +207,8 @@ export class StandardMaterial extends Material {
     private _normalScale: number;
     private _occlusionStrength: number;
     private _alphaCutoff: number;
+    private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
+    private static _cachedLayoutDevice: GPUDevice | null = null;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
         super({
@@ -337,16 +357,29 @@ export class StandardMaterial extends Material {
     }
 
     getUniformData(): Float32Array {
-        return new Float32Array([
-            this._color[0], this._color[1], this._color[2], this._opacity,
-            this._emissive[0], this._emissive[1], this._emissive[2], this._emissiveIntensity,
-            this._metallic, this._roughness, this._normalScale, this._occlusionStrength,
-            this._alphaCutoff, 0, 0, 0
-        ]);
+        const f = this.getUniformDataCache(16);
+        f[0] = this._color[0];
+        f[1] = this._color[1];
+        f[2] = this._color[2];
+        f[3] = this._opacity;
+        f[4] = this._emissive[0];
+        f[5] = this._emissive[1];
+        f[6] = this._emissive[2];
+        f[7] = this._emissiveIntensity;
+        f[8] = this._metallic;
+        f[9] = this._roughness;
+        f[10] = this._normalScale;
+        f[11] = this._occlusionStrength;
+        f[12] = this._alphaCutoff;
+        f[13] = 0;
+        f[14] = 0;
+        f[15] = 0;
+        return f;
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
-        return device.createBindGroupLayout({
+        if (StandardMaterial._cachedBindGroupLayout && StandardMaterial._cachedLayoutDevice === device) return StandardMaterial._cachedBindGroupLayout;
+        const layout = device.createBindGroupLayout({
             entries: [
                 { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
                 { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
@@ -358,9 +391,12 @@ export class StandardMaterial extends Material {
                 { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
                 { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
                 { binding: 9, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+                { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
             ]
         });
+        StandardMaterial._cachedBindGroupLayout = layout;
+        StandardMaterial._cachedLayoutDevice = device;
+        return layout;
     }
 
     getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
@@ -388,6 +424,8 @@ export class CustomMaterial extends Material {
     private _fragmentShader: string;
     private _uniforms: Record<string, UniformDefinition>;
     private _uniformLayout: { size: number; offsets: Record<string, number> } | null = null;
+    private _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
+    private _cachedLayoutDevice: GPUDevice | null = null;
 
     constructor(descriptor: CustomMaterialDescriptor) {
         super(descriptor);
@@ -453,7 +491,8 @@ export class CustomMaterial extends Material {
 
     getUniformData(): Float32Array {
         const layout = this.getUniformLayout();
-        const data = new Float32Array(layout.size / 4);
+        const data = this.getUniformDataCache(layout.size / 4);
+        data.fill(0);
         for (const [name, def] of Object.entries(this._uniforms)) {
             const floatOffset = layout.offsets[name] >>> 2;
             if (typeof def.value === "number") data[floatOffset] = def.value;
@@ -463,7 +502,8 @@ export class CustomMaterial extends Material {
     }
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
-        return device.createBindGroupLayout({
+        if (this._cachedBindGroupLayout && this._cachedLayoutDevice === device) return this._cachedBindGroupLayout;
+        const layout = device.createBindGroupLayout({
             entries: [
                 {
                     binding: 0,
@@ -472,6 +512,9 @@ export class CustomMaterial extends Material {
                 }
             ]
         });
+        this._cachedBindGroupLayout = layout;
+        this._cachedLayoutDevice = device;
+        return layout;
     }
 
     private defaultVertexShader(): string {
