@@ -9,10 +9,10 @@
 
 ## Status
 
-- 🚀 Latest release: [**`v0.3.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.3.0).
+- 🚀 Latest release: [**`v0.4.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.4.0).
 - 💡 Documentation: [https://zushah.github.io/WasmGPU](https://zushah.github.io/WasmGPU)
-- ⚙️ WebGPU engine renders scenes with meshes, materials, lights, and camera, with opaque draw batching and instanced rendering to minimize CPU overhead.
-- 🦀 WebAssembly driver with a Rust runtime backend, where transforms live in SoA memory, updates are batched, uniform uploads are zero-copy from WASM memory, and per-frame scratch allocations use a bounded frame arena.
+- ⚙️ WebGPU engine renders scenes with meshes, materials, lights, and camera, as well as glTF 2.0 assets (PBR/unlit materials with normal/occlusion/emissive maps, Texture2D sampling with mipmaps, transparency, animations, and skinning), combining frustum culling, opaque draw batching, and automatic instanced rendering plus optional SMAA to minimize CPU overhead while keeping edges clean.
+- 🦀 WebAssembly driver with a Rust runtime backend where transforms live in SoA memory, local/world updates and animation sampling run in WASM, joint matrices for skinned meshes are generated in WASM and streamed to GPU storage buffers, uniforms/instance data are staged as zero-copy views into WASM memory, and hot-path allocations are avoided via cached pipelines/bind-group layouts/uniform arrays and a reset-every-frame arena.
 - 🛠️ API still evolving so expect breaking changes often!
 
 ## Architecture Comparison Table
@@ -28,17 +28,27 @@
 | **Uniform Uploads** | Manual packing | Extraction & packing | Zero-copy views & no packing |
 | **Garbage Collection** | Manual & low/high pressure via JavaScript engine | Automatic & high pressure via JavaScript engine | Automatic & low pressure via WebAssembly driver |
 | **Instancing** | Manual | Manual | Automatic |
+| **Asset Importing** | Not available | glTF 2.0 | glTF 2.0 |
+| **Textures** | Manual | Managed objects | Managed objects |
+| **Animation System** | Not available | Executed in JavaScript | Executed in WebAssembly |
+| **Skinning** | Not available | Data textures | Storage buffers |
+| **Visibility Culling** | Not available | Frustum culling in JavaScript | Frustum culling in WebAssembly |
+| **Anti-aliasing** | Not available | MSAA | SMAA |
+| **Render State Caching** | Not available | State filtering | Pipeline caching |
 | **Render Loop** | Run by JavaScript | Run by JavaScript | Run by JavaScript & WebAssembly |
 
 ## Getting Started
 
-Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/examples/esm.html) and [`./examples/iife.html`](https://zushah.github.io/WasmGPU/examples/iife.html).
+Basic examples: 
+- [`./examples/esm.html`](https://zushah.github.io/WasmGPU/examples/esm.html)
+- [`./examples/iife.html`](https://zushah.github.io/WasmGPU/examples/iife.html)
+- [`./examples/gltf.html`](https://zushah.github.io/WasmGPU/examples/gltf.html)
 
 ```html
 <canvas></canvas>
 <script type="module">
     // Setup
-    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.3.0/dist/WasmGPU.min.js";
+    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.4.0/dist/WasmGPU.min.js";
     const canvas = document.querySelector("canvas");
     const wgpu = await WasmGPU.create(canvas);
 
@@ -81,7 +91,7 @@ Basic examples: [`./examples/esm.html`](https://zushah.github.io/WasmGPU/example
 
 Using the IIFE bundle instead of the ESM bundle is exactly the same as above, except you must use a `script` tag instead of an `import` statement:
 ```html
-<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.3.0/dist/WasmGPU.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.4.0/dist/WasmGPU.iife.min.js"></script>
 ```
 
 ## Development
@@ -93,16 +103,16 @@ Using the IIFE bundle instead of the ESM bundle is exactly the same as above, ex
 The `./dist/` folder generates:
 - `WasmGPU.js` / `WasmGPU.min.js` — ESM bundle
 - `WasmGPU.iife.min.js` — IIFE bundle
-- `math.js` — Bridge to load WebAssembly
-- `math.wasm` — WebAssembly math module
+- `wasm.js` — Bridge to load WebAssembly
+- `wasm.wasm` — WebAssembly driver
 
-Note: `math.js` and `math.wasm` must be located beside the WasmGPU bundles, i.e. in the `./dist/` folder. These files are automatically copied from the `./build/` folder by `esbuild.config.js` so this should not be a problem, but it could become one.
+Note: `wasm.js` and `wasm.wasm` must be located beside the WasmGPU bundles, i.e. in the `./dist/` folder. These files are automatically copied from the `./build/` folder by `esbuild.config.js` so this should not be a problem, but it could become one.
 
 The `./build/` folder generates:
-- `math.js` — Bridge to load WebAssembly
-- `math.d.ts` — AssemblyScript type declarations
-- `math.wasm` — WebAssembly math module
-- `math.wat` — WebAssembly text format
+- `wasm.js` — Bridge to load WebAssembly
+- `wasm.d.ts` — WebAssembly type declarations
+- `wasm.wasm` — WebAssembly driver
+- `wasm.wat` — WebAssembly text format
 
 ## License
 WasmGPU is available under the [Mozilla Public License 2.0 (MPL-2.0)](https://www.github.com/Zushah/WasmGPU/blob/main/LICENSE.md).

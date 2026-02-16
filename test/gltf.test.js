@@ -1,5 +1,5 @@
 import assert from "assert";
-import { initMath, readAccessorAsFloat32, parseGLB, loadGltf, importGltf } from "../dist/WasmGPU.js";
+import { initWebAssembly, readAccessorAsFloat32, parseGLB, loadGltf, importGltf } from "../dist/WasmGPU.js";
 
 const pad4 = (n) => (n + 3) & ~3;
 const makeGLB = (gltfJson, binBytes) => {
@@ -28,7 +28,7 @@ const makeGLB = (gltfJson, binBytes) => {
     return out;
 };
 
-await initMath();
+await initWebAssembly(new URL("../dist/", import.meta.url).toString());
 
 // 1) parseGLB: minimal valid GLB with a single accessor + bufferView + buffer
 {

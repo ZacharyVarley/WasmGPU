@@ -51,8 +51,8 @@ try {
 })();`
     }
   });
-  fs.copyFileSync("./build/math.wasm", "./dist/math.wasm");
-  fs.copyFileSync("./build/math.js", "./dist/math.js");
+  fs.copyFileSync("./build/wasm.wasm", "./dist/wasm.wasm");
+  fs.copyFileSync("./build/wasm.js", "./dist/wasm.js");
 } catch (e) {
   process.exit(1);
 }

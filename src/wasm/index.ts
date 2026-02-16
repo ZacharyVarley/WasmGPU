@@ -1,11 +1,11 @@
 declare const __WASMGPU_BASE_URL__: string;
 
-type MathModule = typeof import("../../build/math.js");
+type WebAssemblyDriver = typeof import("../../build/wasm.js");
 
 export type WasmPtr = number;
 
-let modPromise: Promise<MathModule> | null = null;
-let mod: MathModule | null = null;
+let modPromise: Promise<WebAssemblyDriver> | null = null;
+let mod: WebAssemblyDriver | null = null;
 
 const DEFAULT_FRAME_ARENA_BYTES = 8 * 1024 * 1024;
 
@@ -22,17 +22,17 @@ const defaultBaseURL = (): string => {
     return new URL(".", base).toString();
 };
 
-export const initMath = async (baseURL?: string): Promise<void> => {
+export const initWebAssembly = async (baseURL?: string): Promise<void> => {
     if (mod) return;
     const base = baseURL ?? defaultBaseURL();
-    const mathURL = new URL("math.js", base).toString();
-    modPromise ??= import(mathURL) as Promise<MathModule>;
+    const wasmURL = new URL("wasm.js", base).toString();
+    modPromise ??= import(wasmURL) as Promise<WebAssemblyDriver>;
     mod = await modPromise;
     mod.wasmgpu_frame_arena_init(DEFAULT_FRAME_ARENA_BYTES);
 };
 
-const ensure = (): MathModule => {
-    if (!mod) throw new Error("Math module not initialized. Call await initMath() first.");
+const ensure = (): WebAssemblyDriver => {
+    if (!mod) throw new Error("WebAssembly driver not initialized. Call await initWebAssembly() first.");
     return mod;
 };
 

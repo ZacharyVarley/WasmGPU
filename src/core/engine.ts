@@ -1,4 +1,4 @@
-import { frameArena, initMath } from "../wasm";
+import { frameArena, initWebAssembly } from "../wasm";
 import { Renderer, RendererDescriptor } from "./renderer";
 import { Scene } from "../world/scene";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
@@ -32,7 +32,7 @@ export class WasmGPU {
     }
 
     static async create(canvas: HTMLCanvasElement, descriptor: WasmGPUDescriptor = {}): Promise<WasmGPU> {
-        await initMath();
+        await initWebAssembly();
         const renderer = await Renderer.create(canvas, descriptor);
         return new WasmGPU(renderer);
     }

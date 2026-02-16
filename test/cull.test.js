@@ -1,7 +1,7 @@
 import assert from "assert";
-import { initMath, wasm, frameArena, cullf, frustumf } from "../dist/WasmGPU.js";
+import { initWebAssembly, wasm, frameArena, cullf, frustumf } from "../dist/WasmGPU.js";
 
-await initMath(new URL("../dist/", import.meta.url).toString());
+await initWebAssembly(new URL("../dist/", import.meta.url).toString());
 
 const approx = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol;
 

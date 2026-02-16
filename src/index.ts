@@ -2,7 +2,8 @@ export { WasmGPU } from "./core/engine";
 export type { WasmGPUDescriptor, FrameCallback } from "./core/engine";
 export { Renderer } from "./core/renderer";
 export type { RendererDescriptor } from "./core/renderer";
-export { Scene, SceneDescriptor } from "./world/scene";
+export { Scene } from "./world/scene";
+export type { SceneDescriptor } from "./world/scene";
 export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light";
 export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
 export { Camera, PerspectiveCamera, OrthographicCamera } from "./world/camera";
@@ -17,6 +18,6 @@ export type { Texture2DDescriptor, TextureColorSpace, TextureSamplerOptions, Tex
 export { AnimationClip, AnimationPlayer, Skin, SkinInstance } from "./graphics/animation";
 export type { AnimationClipDescriptor } from "./graphics/animation";
 export { Transform } from "./core/transform";
-export { initMath, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
-export * from "./gltf";
+export { initWebAssembly, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
+export { readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32, parseGLB, loadGltf, importGltf } from "./gltf";
 export { WasmGPU as default } from "./core/engine";

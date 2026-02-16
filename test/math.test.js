@@ -1,7 +1,7 @@
 import assert from "assert";
-import { initMath, mat4, quat, vec3 } from "../dist/WasmGPU.js";
+import { initWebAssembly, mat4, quat, vec3 } from "../dist/WasmGPU.js";
 
-await initMath(new URL("../dist/", import.meta.url).toString());
+await initWebAssembly(new URL("../dist/", import.meta.url).toString());
 
 const numberApproxEqual = (a, b, tol = 1e-5, msg = "Numbers differ") => {
     assert.ok(Number.isFinite(a) && Number.isFinite(b), "Expected finite numbers");
