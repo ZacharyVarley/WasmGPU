@@ -1,40 +1,60 @@
 struct MaterialUniforms {
-    color: vec4<f32>
+    color: vec4f,
+    emissive: vec4f,
+    params: vec4f,
+    params2: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
-@group(1) @binding(1) var baseColorTexture: texture_2d<f32>;
-@group(1) @binding(2) var baseColorSampler: sampler;
+@group(1) @binding(1) var baseColorSampler: sampler;
+@group(1) @binding(2) var baseColorTex: texture_2d<f32>;
+@group(1) @binding(3) var metallicRoughnessSampler: sampler;
+@group(1) @binding(4) var metallicRoughnessTex: texture_2d<f32>;
+@group(1) @binding(5) var normalSampler: sampler;
+@group(1) @binding(6) var normalTex: texture_2d<f32>;
+@group(1) @binding(7) var occlusionSampler: sampler;
+@group(1) @binding(8) var occlusionTex: texture_2d<f32>;
+@group(1) @binding(9) var emissiveSampler: sampler;
+@group(1) @binding(10) var emissiveTex: texture_2d<f32>;
 
 struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) joints: vec4<u32>,
-    @location(4) weights: vec4<f32>
+    @location(0) position: vec3f,
+    @location(1) normal: vec3f,
+    @location(2) uv: vec2f,
+    @location(3) joints: vec4u,
+    @location(4) weights: vec4f
 };
 
 struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) worldPos: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) uv: vec2<f32>
+    @builtin(position) position: vec4f,
+    @location(0) worldPos: vec3f,
+    @location(1) normal: vec3f,
+    @location(2) uv: vec2f
 };
 
 struct CameraUniforms {
-    viewProjection: mat4x4<f32>,
-    position: vec4<f32>
+    viewProjection: mat4x4f,
+    position: vec3f
 };
 
 struct ModelUniforms {
-    model: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>
+    model: mat4x4f,
+    normalMatrix: mat4x4f
+};
+
+struct Light {
+    position: vec4f,
+    color: vec4f,
+    params: vec4f
 };
 
 struct LightingUniforms {
-    direction: vec4<f32>,
-    color: vec4<f32>,
-    ambient: vec4<f32>
+    ambient: vec4f,
+    lightCount: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    lights: array<Light, 8>
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -42,34 +62,126 @@ struct LightingUniforms {
 @group(0) @binding(2) var<uniform> lighting: LightingUniforms;
 
 struct SkinBuffer {
-    joints: array<mat4x4<f32>>
+    joints: array<mat4x4f>,
 };
 
 @group(2) @binding(0) var<storage, read> skin: SkinBuffer;
+
+const PI: f32 = 3.14159265359;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     let j = in.joints;
     let w = in.weights;
-    let m = skin.joints[j.x] * w.x + skin.joints[j.y] * w.y + skin.joints[j.z] * w.z + skin.joints[j.w] * w.w;
-    let localPos = m * vec4<f32>(in.position, 1.0);
-    let localNormal = (m * vec4<f32>(in.normal, 0.0)).xyz;
-    let worldPos = model.model * localPos;
-    out.position = camera.viewProjection * worldPos;
-    out.worldPos = worldPos.xyz;
-    out.normal = normalize((model.normalMatrix * vec4<f32>(localNormal, 0.0)).xyz);
+    let skinMatrix = skin.joints[j.x] * w.x + 
+                     skin.joints[j.y] * w.y + 
+                     skin.joints[j.z] * w.z + 
+                     skin.joints[j.w] * w.w;
+
+    let localPos = skinMatrix * vec4f(in.position, 1.0);
+    let localNormal = (skinMatrix * vec4f(in.normal, 0.0)).xyz;
+    let worldPos4 = model.model * localPos;
+    out.position = camera.viewProjection * worldPos4;
+    out.worldPos = worldPos4.xyz;
+    out.normal = normalize((model.normalMatrix * vec4f(localNormal, 0.0)).xyz);
     out.uv = in.uv;
     return out;
 }
 
+fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let a2 = a * a;
+    let NdotH = max(dot(N, H), 0.0);
+    let NdotH2 = NdotH * NdotH;
+    let denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+
+fn geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
+    let r = roughness + 1.0;
+    let k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
+    let NdotV = max(dot(N, V), 0.0);
+    let NdotL = max(dot(N, L), 0.0);
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+    let n = normalize(N);
+    let dp1 = dpdx(worldPos);
+    let dp2 = dpdy(worldPos);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let det = duv1.x * duv2.y - duv1.y * duv2.x;
+    if (abs(det) < 1e-6) {
+        return n;
+    }
+    let r = 1.0 / det;
+    var T = (dp1 * duv2.y - dp2 * duv1.y) * r;
+    T = normalize(T - n * dot(n, T));
+    let B = normalize(cross(n, T)) * sign(det);
+    let tbn = mat3x3f(T, B, n);
+    var ns = normalSample * 2.0 - vec3f(1.0);
+    ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
+    return normalize(tbn * ns);
+}
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let baseColorSample = textureSample(baseColorTexture, baseColorSampler, in.uv);
-    let baseColor = material.color * baseColorSample;
-    let n = normalize(in.normal);
-    let lightDir = normalize(-lighting.direction.xyz);
-    let diff = max(dot(n, lightDir), 0.0);
-    let lit = baseColor.xyz * (lighting.ambient.xyz + diff * lighting.color.xyz);
-    return vec4<f32>(lit, baseColor.w);
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    let baseSample = textureSample(baseColorTex, baseColorSampler, in.uv);
+    let baseColor = material.color * baseSample;
+    let alphaCutoff = material.params2.x;
+    if (alphaCutoff > 0.0 && baseColor.a < alphaCutoff) {
+        discard;
+    }
+    let mrSample = textureSample(metallicRoughnessTex, metallicRoughnessSampler, in.uv);
+    let metallic = clamp(material.params.x * mrSample.b, 0.0, 1.0);
+    let roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
+    let normalSample = textureSample(normalTex, normalSampler, in.uv).xyz;
+    let N = applyNormalMap(in.normal, in.worldPos, in.uv, normalSample, material.params.z);
+    let occlSample = textureSample(occlusionTex, occlusionSampler, in.uv).r;
+    let ao = 1.0 + material.params.w * (occlSample - 1.0);
+    let emissiveSample = textureSample(emissiveTex, emissiveSampler, in.uv).rgb;
+    let emissive = emissiveSample * material.emissive.rgb * material.emissive.a;
+    let albedo = baseColor.rgb;
+    let V = normalize(camera.position - in.worldPos);
+    let F0 = mix(vec3f(0.04), albedo, metallic);
+    var Lo = lighting.ambient.rgb * albedo * ao;
+    for (var i = 0u; i < lighting.lightCount; i++) {
+        let light = lighting.lights[i];
+        var L: vec3f;
+        var attenuation: f32 = 1.0;
+        if (light.position.w == 0.0) {
+            L = normalize(-light.position.xyz);
+        } else {
+            let lightDir = light.position.xyz - in.worldPos;
+            let distance = length(lightDir);
+            L = normalize(lightDir);
+            attenuation = 1.0 / (distance * distance);
+        }
+        let H = normalize(V + L);
+        let radiance = light.color.rgb * light.color.a * attenuation;
+        let NDF = distributionGGX(N, H, roughness);
+        let G = geometrySmith(N, V, L, roughness);
+        let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        let numerator = NDF * G * F;
+        let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        let specular = numerator / denominator;
+        let kS = F;
+        let kD = (1.0 - kS) * (1.0 - metallic);
+        let NdotL = max(dot(N, L), 0.0);
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+    }
+    Lo += emissive;
+    Lo = Lo / (Lo + vec3f(1.0));
+    Lo = pow(Lo, vec3f(1.0 / 2.2));
+    return vec4f(Lo, baseColor.a);
 }
