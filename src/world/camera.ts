@@ -119,6 +119,7 @@ export class PerspectiveCamera extends Camera {
     }
 
     set fov(value: number) {
+        if (value === this._fov) return;
         this._fov = value;
         this.markProjectionDirty();
     }
@@ -128,6 +129,7 @@ export class PerspectiveCamera extends Camera {
     }
 
     set aspect(value: number) {
+        if (value === this._aspect) return;
         this._aspect = value;
         this.markProjectionDirty();
     }
@@ -137,6 +139,7 @@ export class PerspectiveCamera extends Camera {
     }
 
     set near(value: number) {
+        if (value === this._near) return;
         this._near = value;
         this.markProjectionDirty();
     }
@@ -146,6 +149,7 @@ export class PerspectiveCamera extends Camera {
     }
 
     set far(value: number) {
+        if (value === this._far) return;
         this._far = value;
         this.markProjectionDirty();
     }
@@ -198,6 +202,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set left(value: number) {
+        if (value === this._left) return;
         this._left = value;
         this.markProjectionDirty();
     }
@@ -207,6 +212,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set right(value: number) {
+        if (value === this._right) return;
         this._right = value;
         this.markProjectionDirty();
     }
@@ -216,6 +222,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set top(value: number) {
+        if (value === this._top) return;
         this._top = value;
         this.markProjectionDirty();
     }
@@ -225,6 +232,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set bottom(value: number) {
+        if (value === this._bottom) return;
         this._bottom = value;
         this.markProjectionDirty();
     }
@@ -234,6 +242,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set near(value: number) {
+        if (value === this._near) return;
         this._near = value;
         this.markProjectionDirty();
     }
@@ -243,6 +252,7 @@ export class OrthographicCamera extends Camera {
     }
 
     set far(value: number) {
+        if (value === this._far) return;
         this._far = value;
         this.markProjectionDirty();
     }
