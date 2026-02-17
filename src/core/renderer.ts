@@ -713,17 +713,19 @@ export class Renderer {
             }
             return;
         }
-        let visibleIndices: Uint32Array<ArrayBuffer> | null = null;
+        let visibleIndicesBase = 0;
         let visibleCount = count;
-        const storeF32 = TransformStore.global().f32();
+        const store = TransformStore.global();
+        const storeF32 = store.f32();
+        const storeU32 = store.u32();
         const camWb = (camera.transform.worldMatrixPtr >>> 2);
         const camX = storeF32[camWb + 12];
         const camY = storeF32[camWb + 13];
         const camZ = storeF32[camWb + 14];
         if (this.frustumCullingEnabled) {
             this.ensureCullingCapacity(count);
-            const centers = wasm.f32view(this.cullCentersPtr, count * 3);
-            const radii = wasm.f32view(this.cullRadiiPtr, count);
+            const centersBase = this.cullCentersPtr >>> 2;
+            const radiiBase = this.cullRadiiPtr >>> 2;
             for (let i = 0; i < count; i++) {
                 const mesh = candidates[i];
                 const geom = mesh.geometry;
@@ -745,21 +747,60 @@ export class Renderer {
                 const cx = w0 * lc[0] + w4 * lc[1] + w8 * lc[2] + w12;
                 const cy = w1 * lc[0] + w5 * lc[1] + w9 * lc[2] + w13;
                 const cz = w2 * lc[0] + w6 * lc[1] + w10 * lc[2] + w14;
-                const base = i * 3;
-                centers[base + 0] = cx;
-                centers[base + 1] = cy;
-                centers[base + 2] = cz;
+                const base = centersBase + i * 3;
+                storeF32[base + 0] = cx;
+                storeF32[base + 1] = cy;
+                storeF32[base + 2] = cz;
                 const sx = Math.hypot(w0, w1, w2);
                 const sy = Math.hypot(w4, w5, w6);
                 const sz = Math.hypot(w8, w9, w10);
                 const smax = Math.max(sx, sy, sz);
-                radii[i] = lr * smax;
+                storeF32[radiiBase + i] = lr * smax;
             }
             const frustumPtr = frameArena.allocF32(24) as WasmPtr;
-            frustumf.writePlanesFromViewProjection(frustumPtr, this.cameraUniformStagingView);
+            const frb = frustumPtr >>> 2;
+            const m = this.cameraUniformStagingView;
+            storeF32[frb + 0] = m[3] + m[0];
+            storeF32[frb + 1] = m[7] + m[4];
+            storeF32[frb + 2] = m[11] + m[8];
+            storeF32[frb + 3] = m[15] + m[12];
+            storeF32[frb + 4] = m[3] - m[0];
+            storeF32[frb + 5] = m[7] - m[4];
+            storeF32[frb + 6] = m[11] - m[8];
+            storeF32[frb + 7] = m[15] - m[12];
+            storeF32[frb + 8] = m[3] + m[1];
+            storeF32[frb + 9] = m[7] + m[5];
+            storeF32[frb + 10] = m[11] + m[9];
+            storeF32[frb + 11] = m[15] + m[13];
+            storeF32[frb + 12] = m[3] - m[1];
+            storeF32[frb + 13] = m[7] - m[5];
+            storeF32[frb + 14] = m[11] - m[9];
+            storeF32[frb + 15] = m[15] - m[13];
+            storeF32[frb + 16] = m[2];
+            storeF32[frb + 17] = m[6];
+            storeF32[frb + 18] = m[10];
+            storeF32[frb + 19] = m[14];
+            storeF32[frb + 20] = m[3] - m[2];
+            storeF32[frb + 21] = m[7] - m[6];
+            storeF32[frb + 22] = m[11] - m[10];
+            storeF32[frb + 23] = m[15] - m[14];
+            for (let p = 0; p < 6; p++) {
+                const off = frb + p * 4;
+                const nx = storeF32[off + 0];
+                const ny = storeF32[off + 1];
+                const nz = storeF32[off + 2];
+                const len = Math.hypot(nx, ny, nz);
+                if (len > 0) {
+                    const inv = 1.0 / len;
+                    storeF32[off + 0] = nx * inv;
+                    storeF32[off + 1] = ny * inv;
+                    storeF32[off + 2] = nz * inv;
+                    storeF32[off + 3] = storeF32[off + 3] * inv;
+                }
+            }
             const outPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
             visibleCount = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, count, frustumPtr);
-            visibleIndices = wasm.u32view(outPtr, visibleCount);
+            visibleIndicesBase = outPtr >>> 2;
         }
         if (this.frustumCullingStatsEnabled) {
             this.cullingStats.tested = count;
@@ -794,9 +835,9 @@ export class Renderer {
                 }
             }
         } else {
-            const vis = visibleIndices!;
+            const visBase = visibleIndicesBase;
             for (let k = 0; k < visibleCount; k++) {
-                const i = vis[k];
+                const i = storeU32[visBase + k];
                 const mesh = candidates[i];
                 const geometry = mesh.geometry;
                 const material = mesh.material;
@@ -910,8 +951,9 @@ export class Renderer {
 
     private drawInstancedRun(pass: GPURenderPassEncoder, geometry: Geometry, material: Material, items: DrawItem[], start: number, count: number): void {
         const ptrsPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
-        const ptrs = wasm.u32view(ptrsPtr, count);
-        for (let i = 0; i < count; i++) ptrs[i] = items[start + i].mesh.transform.worldMatrixPtr >>> 0;
+        const u32 = TransformStore.global().u32();
+        const ptrsBase = ptrsPtr >>> 2;
+        for (let i = 0; i < count; i++) u32[ptrsBase + i] = items[start + i].mesh.transform.worldMatrixPtr >>> 0;
         const outPtr = frameArena.allocF32(count * 32) as WasmPtr;
         transformf.packModelNormalMat4FromPtrs(outPtr, ptrsPtr, count);
         const outBytes = count * this.INSTANCE_STRIDE_BYTES;
