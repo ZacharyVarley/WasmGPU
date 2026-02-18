@@ -149,6 +149,9 @@ export class Texture2D {
         this._viewLinear = null;
         this._viewSrgb = null;
         this._sampler = null;
+        this._uploadStarted = false;
+        this._uploadPromise = null;
+        this._mipmapColorSpace = null;
         this._revision++;
     }
 
@@ -157,29 +160,43 @@ export class Texture2D {
         this._uploadStarted = true;
         this._mipmapColorSpace = colorSpace;
         this._uploadPromise = (async () => {
-            const bitmap = await this.decodeBitmap();
-            const w = bitmap.width | 0;
-            const h = bitmap.height | 0;
-            const mipLevelCount = this._mipmaps ? mipLevelCountForSize(w, h) : 1;
-            const texture = device.createTexture({
-                size: { width: w, height: h },
-                format: "rgba8unorm",
-                mipLevelCount,
-                usage: this._mipmaps
-                    ? (GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT)
-                    : (GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST),
-                viewFormats: ["rgba8unorm-srgb"],
-            });
-            queue.copyExternalImageToTexture({ source: bitmap }, { texture }, { width: w, height: h });
-            if (this._mipmaps && mipLevelCount > 1) this.generateMipmaps(device, texture, mipLevelCount, this._mipmapColorSpace ?? "linear");
-            this._viewLinear = texture.createView({ format: "rgba8unorm" });
-            this._viewSrgb = texture.createView({ format: "rgba8unorm-srgb" });
-            this._width = w;
-            this._height = h;
-            this._gpuTexture = texture;
-            this._revision++;
+            let bitmap: ImageBitmap | null = null;
+            let texture: GPUTexture | null = null;
+            try {
+                bitmap = await this.decodeBitmap();
+                const w = bitmap.width | 0;
+                const h = bitmap.height | 0;
+                const mipLevelCount = this._mipmaps ? mipLevelCountForSize(w, h) : 1;
+                texture = device.createTexture({
+                    size: { width: w, height: h },
+                    format: "rgba8unorm",
+                    mipLevelCount,
+                    usage: this._mipmaps
+                        ? (GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT)
+                        : (GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST),
+                    viewFormats: ["rgba8unorm-srgb"],
+                });
+                queue.copyExternalImageToTexture({ source: bitmap }, { texture }, { width: w, height: h });
+                if (this._mipmaps && mipLevelCount > 1) this.generateMipmaps(device, texture, mipLevelCount, this._mipmapColorSpace ?? "linear");
+                const viewLinear = texture.createView({ format: "rgba8unorm" });
+                const viewSrgb = texture.createView({ format: "rgba8unorm-srgb" });
+                this._viewLinear = viewLinear;
+                this._viewSrgb = viewSrgb;
+                this._width = w;
+                this._height = h;
+                this._gpuTexture = texture;
+                this._revision++;
+            } catch (e) {
+                this._uploadStarted = false;
+                this._uploadPromise = null;
+                this._mipmapColorSpace = null;
+                try { texture?.destroy(); } catch { /* ignore */ }
+                throw e;
+            } finally {
+                if (bitmap && this._source.kind !== "bitmap") try { (bitmap as unknown as { close?: () => void }).close?.(); } catch { /* ignore */ }
+            }
         })();
-        this._uploadPromise.catch((e) => console.warn("Texture2D upload failed:", e));
+        this._uploadPromise.catch((e) => console.warn("Texture2D upload failed: ", e));
     }
 
     private async decodeBitmap(): Promise<ImageBitmap> {
