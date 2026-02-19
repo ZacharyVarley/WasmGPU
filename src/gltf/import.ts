@@ -192,7 +192,7 @@ const ensureNormalScratch = (posLenF32: number, idxLenU32: number): void => {
     }
     if (idxLenU32 > 0 && _normIdxCap < idxLenU32) {
         _normIdxCap = nextPow2(idxLenU32);
-        _normIdxPtr = wasm.allocF32(_normIdxCap);
+        _normIdxPtr = wasm.allocU32(_normIdxCap);
     }
 };
 
