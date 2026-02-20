@@ -18,7 +18,8 @@
     "esbuild": "^0.27.2",
     "typedoc": "^0.28.16",
     "typedoc-github-theme": "^0.3.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "webgpu": "^0.3.8"
   },
   "scripts": {
     "build:rs": "node ./scripts/build-rust-wasm.js",
@@ -26,10 +27,11 @@
     "build:es": "node ./esbuild.config.js",
     "build": "npm run build:rs && npm run build:ts && npm run build:es",
     "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
-    "test:math": "node ./test/math.test.js",
+    "test:compute": "node ./test/compute.test.js",
     "test:cull": "node ./test/cull.test.js",
     "test:gltf": "node ./test/gltf.test.js",
-    "test": "npm run test:math && npm run test:cull && npm run test:gltf",
+    "test:math": "node ./test/math.test.js",
+    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:math",
     "start": "npx serve ."
   },
   "repository": {

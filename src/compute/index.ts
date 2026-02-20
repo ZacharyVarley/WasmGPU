@@ -1,0 +1,97 @@
+import { StorageBuffer, type StorageBufferDescriptor, UniformBuffer, type UniformBufferDescriptor } from "./buffer";
+import { ComputePipeline, type ComputePipelineDescriptor } from "./pipeline";
+import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, validateWorkgroupsForDevice } from "./dispatch";
+import { workgroups1D, workgroups2D, workgroups3D, type WorkgroupCounts } from "./workgroups";
+
+export type ComputeDispatchOptions = {
+    submit?: boolean;
+    validateLimits?: boolean;
+};
+
+export class Compute {
+    readonly device: GPUDevice;
+    readonly queue: GPUQueue;
+
+    constructor(device: GPUDevice, queue: GPUQueue) {
+        this.device = device;
+        this.queue = queue;
+    }
+
+    createStorageBuffer(desc: StorageBufferDescriptor): StorageBuffer {
+        return new StorageBuffer(this.device, this.queue, desc);
+    }
+
+    createUniformBuffer(desc: UniformBufferDescriptor): UniformBuffer {
+        return new UniformBuffer(this.device, this.queue, desc);
+    }
+
+    createPipeline(desc: ComputePipelineDescriptor): ComputePipeline {
+        return new ComputePipeline(this.device, desc);
+    }
+
+    encodeDispatch(encoder: GPUCommandEncoder, cmd: ComputeDispatchCommand, validateLimits: boolean = false): void {
+        if (validateLimits) validateWorkgroupsForDevice(this.device, cmd.workgroups);
+        encodeDispatch(encoder, cmd);
+    }
+
+    encodeDispatchBatch(encoder: GPUCommandEncoder, commands: ReadonlyArray<ComputeDispatchCommand>, label?: string, validateLimits: boolean = false): void {
+        if (validateLimits) for (const cmd of commands) validateWorkgroupsForDevice(this.device, cmd.workgroups);
+        encodeDispatchBatch(encoder, commands, label);
+    }
+
+    dispatch(cmd: ComputeDispatchCommand, opts: ComputeDispatchOptions = {}): GPUCommandBuffer {
+        const encoder = this.device.createCommandEncoder();
+        this.encodeDispatch(encoder, cmd, opts.validateLimits ?? false);
+        const commandBuffer = encoder.finish();
+        if (opts.submit !== false) this.queue.submit([commandBuffer]);
+        return commandBuffer;
+    }
+
+    dispatchBatch(commands: ReadonlyArray<ComputeDispatchCommand>, label?: string, opts: ComputeDispatchOptions = {}): GPUCommandBuffer {
+        const encoder = this.device.createCommandEncoder();
+        this.encodeDispatchBatch(encoder, commands, label, opts.validateLimits ?? false);
+        const commandBuffer = encoder.finish();
+        if (opts.submit !== false) this.queue.submit([commandBuffer]);
+        return commandBuffer;
+    }
+
+    dispatch1D(pipeline: GPUComputePipeline | ComputePipeline, bindGroups: ReadonlyArray<GPUBindGroup | null | undefined>, invocations: number, workgroupSizeX: number, label?: string, opts: ComputeDispatchOptions = {}): GPUCommandBuffer {
+        const workgroups: WorkgroupCounts = workgroups1D(invocations, workgroupSizeX);
+        return this.dispatch({ pipeline, bindGroups, workgroups, label }, opts);
+    }
+
+    dispatch2D(pipeline: GPUComputePipeline | ComputePipeline, bindGroups: ReadonlyArray<GPUBindGroup | null | undefined>, width: number, height: number, workgroupSizeX: number, workgroupSizeY: number, label?: string, opts: ComputeDispatchOptions = {}): GPUCommandBuffer {
+        const workgroups: WorkgroupCounts = workgroups2D(width, height, workgroupSizeX, workgroupSizeY);
+        return this.dispatch({ pipeline, bindGroups, workgroups, label }, opts);
+    }
+
+    dispatch3D(pipeline: GPUComputePipeline | ComputePipeline, bindGroups: ReadonlyArray<GPUBindGroup | null | undefined>, width: number, height: number, depth: number, workgroupSizeX: number, workgroupSizeY: number, workgroupSizeZ: number, label?: string, opts: ComputeDispatchOptions = {}): GPUCommandBuffer {
+        const workgroups: WorkgroupCounts = workgroups3D(width, height, depth, workgroupSizeX, workgroupSizeY, workgroupSizeZ);
+        return this.dispatch({ pipeline, bindGroups, workgroups, label }, opts);
+    }
+
+    workgroups1D(invocations: number, workgroupSizeX: number): WorkgroupCounts {
+        return workgroups1D(invocations, workgroupSizeX);
+    }
+
+    workgroups2D(width: number, height: number, workgroupSizeX: number, workgroupSizeY: number): WorkgroupCounts {
+        return workgroups2D(width, height, workgroupSizeX, workgroupSizeY);
+    }
+
+    workgroups3D(width: number, height: number, depth: number, workgroupSizeX: number, workgroupSizeY: number, workgroupSizeZ: number): WorkgroupCounts {
+        return workgroups3D(width, height, depth, workgroupSizeX, workgroupSizeY, workgroupSizeZ);
+    }
+
+    destroy(): void {
+        /* Currently no persistent GPU-side resources are owned by Compute as buffers and pipelines are explicitly user-owned. */
+    }
+}
+
+export { StorageBuffer, UniformBuffer } from "./buffer";
+export type { StorageBufferDescriptor, UniformBufferDescriptor, TypedArrayConstructor } from "./buffer";
+export { ComputePipeline, storageBufferLayout, uniformBufferLayout } from "./pipeline";
+export type { ComputePipelineDescriptor, ComputeBindGroupLayoutDescriptor, ComputeBindGroupResources, StorageBufferBindingLayout, UniformBufferBindingLayout, BufferResource, BufferBindingResource } from "./pipeline";
+export { ceilDiv, makeWorkgroupSize, makeWorkgroupCounts, workgroups1D, workgroups2D, workgroups3D } from "./workgroups";
+export type { WorkgroupSize, WorkgroupCounts } from "./workgroups";
+export { normalizeWorkgroups, validateWorkgroupsForDevice, encodeDispatch, encodeDispatchBatch } from "./dispatch";
+export type { DispatchWorkgroups, ComputeDispatchCommand } from "./dispatch";

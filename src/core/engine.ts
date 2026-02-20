@@ -1,13 +1,14 @@
-import { frameArena, initWebAssembly } from "../wasm";
 import { Renderer, RendererDescriptor } from "./renderer";
-import { Scene } from "../world/scene";
-import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
-import { Mesh } from "../world/mesh";
-import { Geometry } from "../graphics/geometry";
-import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
-import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
+import { Compute } from "../compute";
 import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
+import { Geometry } from "../graphics/geometry";
+import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
+import { frameArena, initWebAssembly } from "../wasm";
+import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
+import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
+import { Mesh } from "../world/mesh";
+import { Scene } from "../world/scene";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
     // Future options: physics, audio, etc.
@@ -22,6 +23,7 @@ export type GltfOptions = {
 
 export class WasmGPU {
     private renderer: Renderer;
+    readonly compute: Compute;
     private _isRunning: boolean = false;
     private _lastTime: number = 0;
     private _frameCallback: FrameCallback | null = null;
@@ -29,6 +31,8 @@ export class WasmGPU {
 
     private constructor(renderer: Renderer) {
         this.renderer = renderer;
+        const gpu = renderer.gpu;
+        this.compute = new Compute(gpu.device, gpu.queue);
     }
 
     static async create(canvas: HTMLCanvasElement, descriptor: WasmGPUDescriptor = {}): Promise<WasmGPU> {
@@ -153,6 +157,7 @@ export class WasmGPU {
 
     destroy(): void {
         this.stop();
+        this.compute.destroy();
         this.renderer.destroy();
     }
 }
