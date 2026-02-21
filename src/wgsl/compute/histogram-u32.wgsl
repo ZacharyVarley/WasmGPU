@@ -1,0 +1,14 @@
+@group(0) @binding(0) var<storage, read> keys: array<u32>;
+@group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&keys);
+    if (i >= n) { return; }
+    let k = keys[i];
+    let b = arrayLength(&bins);
+    if (k < b) {
+        _ = atomicAdd(&bins[k], 1u);
+    }
+}

@@ -1,7 +1,8 @@
 import { StorageBuffer, type StorageBufferDescriptor, UniformBuffer, type UniformBufferDescriptor } from "./buffer";
 import { ComputePipeline, type ComputePipelineDescriptor } from "./pipeline";
-import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, validateWorkgroupsForDevice } from "./dispatch";
 import { workgroups1D, workgroups2D, workgroups3D, type WorkgroupCounts } from "./workgroups";
+import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, validateWorkgroupsForDevice } from "./dispatch";
+import { ComputeKernels } from "./kernels";
 
 export type ComputeDispatchOptions = {
     submit?: boolean;
@@ -11,10 +12,12 @@ export type ComputeDispatchOptions = {
 export class Compute {
     readonly device: GPUDevice;
     readonly queue: GPUQueue;
+    readonly kernels: ComputeKernels;
 
     constructor(device: GPUDevice, queue: GPUQueue) {
         this.device = device;
         this.queue = queue;
+        this.kernels = new ComputeKernels(device, queue);
     }
 
     createStorageBuffer(desc: StorageBufferDescriptor): StorageBuffer {
@@ -83,7 +86,7 @@ export class Compute {
     }
 
     destroy(): void {
-        /* Currently no persistent GPU-side resources are owned by Compute as buffers and pipelines are explicitly user-owned. */
+        this.kernels.destroy();
     }
 }
 
@@ -95,3 +98,5 @@ export { ceilDiv, makeWorkgroupSize, makeWorkgroupCounts, workgroups1D, workgrou
 export type { WorkgroupSize, WorkgroupCounts } from "./workgroups";
 export { normalizeWorkgroups, validateWorkgroupsForDevice, encodeDispatch, encodeDispatchBatch } from "./dispatch";
 export type { DispatchWorkgroups, ComputeDispatchCommand } from "./dispatch";
+export { ComputeKernels } from "./kernels";
+export type { KernelDispatchOptions, ReduceOptions, ScanOptions, HistogramOptions, CompactOptions, RadixSortOptions, ReduceOp, ArgReduceOp } from "./kernels";

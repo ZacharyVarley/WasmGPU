@@ -30,8 +30,9 @@
     "test:compute": "node ./test/compute.test.js",
     "test:cull": "node ./test/cull.test.js",
     "test:gltf": "node ./test/gltf.test.js",
+    "test:kernels": "node ./test/kernels.test.js",
     "test:math": "node ./test/math.test.js",
-    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:math",
+    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:kernels && npm run test:math",
     "start": "npx serve ."
   },
   "repository": {
