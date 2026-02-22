@@ -1032,7 +1032,7 @@ export class Renderer {
                         skin.ensureGpuResources(this.device, this.skinBindGroupLayout);
                         const jointCount = skin.jointCount | 0;
                         const jointMatPtr = frameArena.allocF32(jointCount * 16) as WasmPtr;
-                        animf.computeJointMatricesTo(jointMatPtr, skin.skin.jointIndicesPtr, jointCount, skin.skin.invBindPtr, TransformStore.global().worldPtr as WasmPtr, skin.meshTransform.worldMatrixPtr as WasmPtr);
+                        animf.computeJointMatricesTo(jointMatPtr, skin.skin.jointIndicesPtr, jointCount, skin.skin.invBindPtr, TransformStore.global().worldPtr as WasmPtr, skin.bindMatrixPtr);
                         this.queue.writeBuffer(skin.boneBuffer!, 0, wasm.memory().buffer as ArrayBuffer, jointMatPtr, jointCount * 64);
                         pass.setBindGroup(2, skin.bindGroup!);
                     }

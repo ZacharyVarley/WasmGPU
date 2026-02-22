@@ -152,12 +152,17 @@ export class Skin {
 export class SkinInstance {
     readonly skin: Skin;
     readonly meshTransform: Transform;
+    bindMatrixPtr: WasmPtr = 0;
     boneBuffer: GPUBuffer | null = null;
     bindGroup: GPUBindGroup | null = null;
 
     constructor(skin: Skin, meshTransform: Transform) {
         this.skin = skin;
         this.meshTransform = meshTransform;
+        this.bindMatrixPtr = wasm.allocF32(16) as WasmPtr;
+        const dst = wasm.f32view(this.bindMatrixPtr, 16);
+        const m = meshTransform.worldMatrix;
+        for (let i = 0; i < 16; i++) dst[i] = (m[i] ?? (i % 5 === 0 ? 1 : 0)) as number;
     }
 
     get jointCount(): number {
@@ -181,5 +186,9 @@ export class SkinInstance {
         this.boneBuffer?.destroy();
         this.boneBuffer = null;
         this.bindGroup = null;
+        if (this.bindMatrixPtr) {
+            wasm.freeF32(this.bindMatrixPtr, 16);
+            this.bindMatrixPtr = 0;
+        }
     }
 }
