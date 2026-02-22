@@ -1,4 +1,4 @@
-import mipmapWGSL from "../wgsl/mipmap.wgsl";
+import mipmapWGSL from "../wgsl/graphics/mipmap.wgsl";
 
 export type TextureColorSpace = "srgb" | "linear";
 

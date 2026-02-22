@@ -6,7 +6,7 @@ import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
 import { animf, cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
-import smaaWGSL from "../wgsl/smaa.wgsl";
+import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import { createBuffer, createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {

@@ -1,11 +1,11 @@
 import { Texture2D } from "./texture";
-import unlitWGSL from "../wgsl/unlit.wgsl";
-import unlitInstancedWGSL from "../wgsl/unlit-instanced.wgsl";
-import unlitSkinnedWGSL from "../wgsl/unlit-skinned.wgsl";
-import standardWGSL from "../wgsl/standard.wgsl";
-import standardInstancedWGSL from "../wgsl/standard-instanced.wgsl";
-import standardSkinnedWGSL from "../wgsl/standard-skinned.wgsl";
-import customDefaultVertexWGSL from "../wgsl/custom-default-vertex.wgsl";
+import unlitWGSL from "../wgsl/graphics/unlit.wgsl";
+import unlitInstancedWGSL from "../wgsl/graphics/unlit-instanced.wgsl";
+import unlitSkinnedWGSL from "../wgsl/graphics/unlit-skinned.wgsl";
+import standardWGSL from "../wgsl/graphics/standard.wgsl";
+import standardInstancedWGSL from "../wgsl/graphics/standard-instanced.wgsl";
+import standardSkinnedWGSL from "../wgsl/graphics/standard-skinned.wgsl";
+import customDefaultVertexWGSL from "../wgsl/graphics/custom-default-vertex.wgsl";
 
 export type Color = [number, number, number];
 export type Color4 = [number, number, number, number];
