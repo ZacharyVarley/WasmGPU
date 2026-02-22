@@ -65,6 +65,36 @@ const warn = (opts: ImportGltfOptions | undefined, msg: string): void => {
     opts?.onWarning?.(msg);
 };
 
+const pickPreferredUvSetForMaterial = (mat: GltfMaterial | undefined, opts: ImportGltfOptions | undefined, context: string): number => {
+    if (!mat) return 0;
+    const used = new Set<number>();
+    const addInfo = (info: any | undefined): void => {
+        if (!info) return;
+        const tc = (info.texCoord ?? 0) | 0;
+        used.add(tc);
+    };
+    addInfo(mat.pbrMetallicRoughness?.baseColorTexture as any);
+    addInfo(mat.pbrMetallicRoughness?.metallicRoughnessTexture as any);
+    addInfo(mat.normalTexture as any);
+    addInfo(mat.occlusionTexture as any);
+    addInfo(mat.emissiveTexture as any);
+    const specGloss = (mat.extensions as any)?.KHR_materials_pbrSpecularGlossiness as any;
+    addInfo(specGloss?.diffuseTexture as any);
+    addInfo(specGloss?.specularGlossinessTexture as any);
+    const baseTc = ((mat.pbrMetallicRoughness?.baseColorTexture as any)?.texCoord ?? (specGloss?.diffuseTexture as any)?.texCoord);
+    let preferred = typeof baseTc === "number" ? (baseTc | 0) : 0;
+    if (typeof baseTc !== "number" && used.size > 0) preferred = Math.max(...Array.from(used.values()));
+    if (preferred < 0 || preferred > 1) {
+        warn(opts, `${context}: TEXCOORD_${preferred} requested by material, but WasmGPU only supports TEXCOORD_0 or TEXCOORD_1; using TEXCOORD_0.`);
+        preferred = 0;
+    }
+    if (used.size > 1) {
+        const list = Array.from(used.values()).sort((a, b) => a - b).join(", ");
+        warn(opts, `${context}: material references multiple texCoord sets (${list}). WasmGPU uses TEXCOORD_${preferred} for all textures on this primitive.`);
+    }
+    return preferred;
+};
+
 const GL_NEAREST = 9728;
 const GL_LINEAR = 9729;
 const GL_NEAREST_MIPMAP_NEAREST = 9984;
@@ -309,7 +339,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const getTex = (info: any | undefined, usage: string): Texture2D | null => {
         if (!info) return null;
         const texCoord = (info.texCoord ?? 0) | 0;
-        if (texCoord !== 0) warn(opts, `Texture texCoord=${texCoord} not supported yet (usage=${usage}); using TEXCOORD_0.`);
+        if (texCoord > 1) warn(opts, `Texture texCoord=${texCoord} not supported yet (usage=${usage}); expected 0 or 1.`);
         const ext = info.extensions as any;
         if (ext?.KHR_texture_transform) warn(opts, `KHR_texture_transform not supported yet (usage=${usage}); ignoring.`);
         return getOrCreateTextureByIndex(info.index, usage);
@@ -319,11 +349,26 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const blendMode = alphaMode === "BLEND" ? BlendMode.Transparent : BlendMode.Opaque;
     const cullMode = mat.doubleSided ? CullMode.None : CullMode.Back;
     const pbr = mat.pbrMetallicRoughness;
-    const baseColorFactor = pbr?.baseColorFactor ?? [1, 1, 1, 1];
-    const metallicFactor = pbr?.metallicFactor ?? 1;
-    const roughnessFactor = pbr?.roughnessFactor ?? 1;
-    const baseColorTexture = getTex(pbr?.baseColorTexture as any, "baseColor");
-    const metallicRoughnessTexture = getTex(pbr?.metallicRoughnessTexture as any, "metallicRoughness");
+    const specGloss = (mat.extensions as any)?.KHR_materials_pbrSpecularGlossiness;
+    if (!pbr && specGloss) {
+        warn(opts, `Material '${mat.name ?? materialIndex}' uses KHR_materials_pbrSpecularGlossiness; approximating using diffuse as baseColor. Specular/glossiness are not fully supported yet.`);
+        if (specGloss.specularGlossinessTexture) warn(opts, `Material '${mat.name ?? materialIndex}' has specularGlossinessTexture; currently ignored (highlights/roughness may look off).`);
+    }
+    const baseColorFactor = (pbr?.baseColorFactor ?? specGloss?.diffuseFactor ?? [1, 1, 1, 1]) as number[];
+    const baseColorTexture = getTex((pbr?.baseColorTexture ?? specGloss?.diffuseTexture) as any, "baseColor");
+    let metallicFactor = 1;
+    let roughnessFactor = 1;
+    if (pbr) {
+        metallicFactor = pbr.metallicFactor ?? 1;
+        roughnessFactor = pbr.roughnessFactor ?? 1;
+    } else if (specGloss) {
+        metallicFactor = 0;
+        const gloss = specGloss.glossinessFactor ?? 1;
+        roughnessFactor = 1 - gloss;
+        if (roughnessFactor < 0) roughnessFactor = 0;
+        if (roughnessFactor > 1) roughnessFactor = 1;
+    }
+    const metallicRoughnessTexture = pbr ? getTex(pbr.metallicRoughnessTexture as any, "metallicRoughness") : null;
     const normalTexture = getTex(mat.normalTexture as any, "normal");
     const occlusionTexture = getTex(mat.occlusionTexture as any, "occlusion");
     const emissiveTexture = getTex(mat.emissiveTexture as any, "emissive");
@@ -442,6 +487,9 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, 
         }
         const cacheKey = `${node.mesh ?? -1}:${primIndex}`;
         let geom = geometryCache.get(cacheKey);
+        const meshName = `${gltfMesh.name ?? `mesh_${node.mesh}`}_${primIndex}`;
+        const matJson = prim.material !== undefined ? json.materials?.[prim.material] : undefined;
+        const uvSet = pickPreferredUvSetForMaterial(matJson, opts, `Mesh '${gltfMesh.name ?? node.mesh}' primitive ${primIndex}`);
         if (!geom) {
             const built = buildGeometryFromPrimitive(doc, json, prim, computeMissingNormals, opts);
             geom = built;
