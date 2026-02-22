@@ -29,7 +29,7 @@ type DrawItem = {
 };
 
 export class Renderer {
-    private canvas: HTMLCanvasElement;
+    readonly canvas: HTMLCanvasElement;
     private context!: GPUCanvasContext;
     private device!: GPUDevice;
     private queue!: GPUQueue;
@@ -103,6 +103,13 @@ export class Renderer {
     private fallbackMRViewLinear!: GPUTextureView;
     private fallbackOcclusionTex!: GPUTexture;
     private fallbackOcclusionViewLinear!: GPUTextureView;
+    private gpuTimingSupported: boolean = false;
+    private gpuTimingEnabled: boolean = false;
+    private gpuQuerySet: GPUQuerySet | null = null;
+    private gpuResolveBuffer: GPUBuffer | null = null;
+    private gpuResultBuffer: GPUBuffer | null = null;
+    private gpuResultPending: boolean = false;
+    private _gpuTimeNs: number | null = null;
 
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -118,7 +125,12 @@ export class Renderer {
         if (!navigator.gpu) throw new Error("WebGPU is not supported in this browser.");
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: descriptor.powerPreference ?? "high-performance" });
         if (!adapter) throw new Error("Failed to get GPU adapter.");
-        this.device = await adapter.requestDevice();
+        const requiredFeatures: GPUFeatureName[] = [];
+        if (adapter.features.has("timestamp-query")) requiredFeatures.push("timestamp-query");
+        const deviceDesc: GPUDeviceDescriptor = {};
+        if (requiredFeatures.length > 0) deviceDesc.requiredFeatures = requiredFeatures;
+        this.device = await adapter.requestDevice(deviceDesc);
+        this.gpuTimingSupported = this.device.features.has("timestamp-query");
         this.queue = this.device.queue;
         this.context = this.canvas.getContext("webgpu") as GPUCanvasContext;
         if (!this.context) throw new Error("Failed to get WebGPU canvas context.");
@@ -140,6 +152,70 @@ export class Renderer {
             queue: this.queue,
             format: this.format
         };
+    }
+
+    get gpuTimeNs(): number | null {
+        return this._gpuTimeNs;
+    }
+
+    get isGpuTimingSupported(): boolean {
+        return this.gpuTimingSupported;
+    }
+
+    enableGpuTiming(enabled: boolean): void {
+        const want = !!enabled;
+        if (want && this.gpuTimingSupported && !this.gpuQuerySet) this.createGpuTimingResources();
+        this.gpuTimingEnabled = want && this.gpuTimingSupported;
+    }
+
+    private createGpuTimingResources(): void {
+        if (!this.gpuTimingSupported) return;
+        if (this.gpuQuerySet) return;
+        try {
+            this.gpuQuerySet = this.device.createQuerySet({ type: "timestamp", count: 2 });
+            this.gpuResolveBuffer = this.device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC
+            });
+            this.gpuResultBuffer = this.device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            });
+        } catch (e) {
+            this.gpuQuerySet = null;
+            this.gpuResolveBuffer?.destroy();
+            this.gpuResolveBuffer = null;
+            this.gpuResultBuffer?.destroy();
+            this.gpuResultBuffer = null;
+            this.gpuTimingSupported = false;
+            this.gpuTimingEnabled = false;
+            console.warn("Renderer: failed to initialize GPU timing resources:", e);
+        }
+    }
+
+    private tryReadGpuTiming(): void {
+        if (!this.gpuResultPending) return;
+        const buf = this.gpuResultBuffer;
+        if (!buf) return;
+        if (buf.mapState !== "unmapped") return;
+        this.gpuResultPending = false;
+        buf.mapAsync(GPUMapMode.READ).then(() => {
+            try {
+                const mapped = buf.getMappedRange();
+                const times = new BigUint64Array(mapped);
+                const begin = times[0];
+                const end = times[1];
+                const delta = end - begin;
+                const ns = delta > 0n ? Number(delta) : 0;
+                this._gpuTimeNs = Number.isFinite(ns) ? ns : 0;
+            } catch {
+                /* ignore */
+            } finally {
+                try { buf.unmap(); } catch { /* ignore */ }
+            }
+        }).catch(() => {
+            try { buf.unmap(); } catch { /* ignore */ }
+        });
     }
 
     resize(): void {
@@ -235,6 +311,9 @@ export class Renderer {
         this.writeCameraUniforms(camera);
         this.writeLightingUniforms(scene);
         const encoder = this.device.createCommandEncoder();
+        const timestampWrites = (this.gpuTimingEnabled && this.gpuQuerySet)
+            ? ({ querySet: this.gpuQuerySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } as any)
+            : undefined;
         if (this.smaaEnabled) {
             if (!this.smaaSceneColorView || !this.smaaEdgesView || !this.smaaBlendView) this.resizeSmaaTargets();
             const pass = encoder.beginRenderPass({
@@ -251,12 +330,20 @@ export class Renderer {
                     depthClearValue: 1.0,
                     depthLoadOp: "clear",
                     depthStoreOp: "store"
-                }
+                },
+                ...(timestampWrites ? { timestampWrites } : {})
             });
             this.buildDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeDrawList(pass, this.transparentDrawList);
             pass.end();
+            if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
+                encoder.resolveQuerySet(this.gpuQuerySet!, 0, 2, this.gpuResolveBuffer, 0);
+                if (this.gpuResultBuffer.mapState === "unmapped") {
+                    encoder.copyBufferToBuffer(this.gpuResolveBuffer, 0, this.gpuResultBuffer, 0, 16);
+                    this.gpuResultPending = true;
+                }
+            }
             this.executeSmaa(encoder, swapView);
         } else {
             const pass = encoder.beginRenderPass({
@@ -273,14 +360,23 @@ export class Renderer {
                     depthClearValue: 1.0,
                     depthLoadOp: "clear",
                     depthStoreOp: "store"
-                }
+                },
+                ...(timestampWrites ? { timestampWrites } : {})
             });
             this.buildDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeDrawList(pass, this.transparentDrawList);
             pass.end();
+            if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
+                encoder.resolveQuerySet(this.gpuQuerySet!, 0, 2, this.gpuResolveBuffer, 0);
+                if (this.gpuResultBuffer.mapState === "unmapped") {
+                    encoder.copyBufferToBuffer(this.gpuResolveBuffer, 0, this.gpuResultBuffer, 0, 16);
+                    this.gpuResultPending = true;
+                }
+            }
         }
         this.queue.submit([encoder.finish()]);
+        this.tryReadGpuTiming();
     }
 
     destroy(): void {
@@ -322,6 +418,14 @@ export class Renderer {
         this.globalBindGroups = [];
         this.pipelineCache.clear();
         this.shaderCache.clear();
+        this.gpuQuerySet?.destroy();
+        this.gpuQuerySet = null;
+        this.gpuResolveBuffer?.destroy();
+        this.gpuResolveBuffer = null;
+        this.gpuResultBuffer?.destroy();
+        this.gpuResultBuffer = null;
+        this.gpuResultPending = false;
+        this._gpuTimeNs = null;
     }
 
     private createGlobalBindGroupLayout(): void {

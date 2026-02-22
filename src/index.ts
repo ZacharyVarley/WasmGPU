@@ -2,6 +2,8 @@ export { WasmGPU } from "./core/engine";
 export type { WasmGPUDescriptor, FrameCallback } from "./core/engine";
 export { Renderer } from "./core/renderer";
 export type { RendererDescriptor } from "./core/renderer";
+export { PerformanceStats } from "./core/stats";
+export type { PerformanceStatsDescriptor, PerformanceStatsPosition, PerformanceStatsSources } from "./core/stats";
 export { Transform, TransformStore } from "./core/transform";
 export { Compute, ComputeKernels, ComputePipeline, StorageBuffer, UniformBuffer, makeWorkgroupSize, makeWorkgroupCounts, workgroups1D, workgroups2D, workgroups3D, normalizeWorkgroups } from "./compute";
 export type { ComputeDispatchOptions, ComputePipelineDescriptor, ComputeBindGroupLayoutDescriptor, StorageBufferDescriptor, UniformBufferDescriptor, ComputeDispatchCommand, KernelDispatchOptions, ReduceOptions, ScanOptions, HistogramOptions, CompactOptions, RadixSortOptions, ReduceOp, ArgReduceOp } from "./compute";

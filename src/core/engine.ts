@@ -1,4 +1,5 @@
 import { Renderer, RendererDescriptor } from "./renderer";
+import { PerformanceStats, type PerformanceStatsDescriptor } from "./stats";
 import { Compute } from "../compute";
 import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
@@ -25,6 +26,7 @@ export type GltfOptions = {
 export class WasmGPU {
     private renderer: Renderer;
     readonly compute: Compute;
+    private _performanceStats: PerformanceStats | null = null;
     private _isRunning: boolean = false;
     private _lastTime: number = 0;
     private _frameCallback: FrameCallback | null = null;
@@ -52,7 +54,10 @@ export class WasmGPU {
             frameArena.reset();
             const dt = (now - this._lastTime) / 1000;
             this._lastTime = now;
+            const cpuStart = performance.now();
             this._frameCallback?.(dt, now / 1000, this);
+            const cpuMs = performance.now() - cpuStart;
+            this._performanceStats?.update(dt, cpuMs);
             this._animationFrameId = requestAnimationFrame(loop);
         };
         this._animationFrameId = requestAnimationFrame(loop);
@@ -76,6 +81,30 @@ export class WasmGPU {
 
     get cullingStats(): { tested: number; visible: number } {
         return this.renderer.cullingStats;
+    }
+
+    createPerformanceStats(desc: PerformanceStatsDescriptor = {}): PerformanceStats {
+        this._performanceStats?.destroy();
+        this.renderer.enableGpuTiming(desc.showGpuTime ?? true);
+        const stats = new PerformanceStats({
+            getGpuTimeNs: () => this.renderer.gpuTimeNs,
+            getCullingStats: () => this.renderer.cullingStats
+        }, {
+            canvas: this.renderer.canvas,
+            ...desc
+        });
+        this._performanceStats = stats;
+        return stats;
+    }
+
+    get performanceStats(): PerformanceStats | null {
+        return this._performanceStats;
+    }
+
+    destroyPerformanceStats(): void {
+        this._performanceStats?.destroy();
+        this._performanceStats = null;
+        this.renderer.enableGpuTiming(false);
     }
 
     render(scene: Scene, camera: Camera): void {
@@ -164,6 +193,7 @@ export class WasmGPU {
 
     destroy(): void {
         this.stop();
+        this.destroyPerformanceStats();
         this.compute.destroy();
         this.renderer.destroy();
     }
