@@ -239,6 +239,104 @@ const computeVertexNormalsWasm = (positions: Float32Array, indices: Uint32Array 
     return out;
 };
 
+const normalizeWeightsTo4 = (weights: Float32Array): Float32Array => {
+    const out = new Float32Array(weights);
+    for (let i = 0; i < out.length; i += 4) {
+        const w0 = out[i + 0] ?? 0;
+        const w1 = out[i + 1] ?? 0;
+        const w2 = out[i + 2] ?? 0;
+        const w3 = out[i + 3] ?? 0;
+        const sum = w0 + w1 + w2 + w3;
+        if (sum > 0) {
+            const inv = 1 / sum;
+            out[i + 0] = w0 * inv;
+            out[i + 1] = w1 * inv;
+            out[i + 2] = w2 * inv;
+            out[i + 3] = w3 * inv;
+        } else {
+            out[i + 0] = 1;
+            out[i + 1] = 0;
+            out[i + 2] = 0;
+            out[i + 3] = 0;
+        }
+    }
+    return out;
+};
+
+const mergeSkinInfluencesTo4 = (joints0: Uint16Array, weights0: Float32Array, joints1: Uint16Array, weights1: Float32Array): { joints: Uint16Array; weights: Float32Array } => {
+    const outJoints = new Uint16Array(joints0.length);
+    const outWeights = new Float32Array(weights0.length);
+    const consider = (w: number, j: number, topW: number[], topJ: number[]): void => {
+        if (w <= topW[3]) return;
+        if (w > topW[0]) {
+            topW[3] = topW[2];
+            topJ[3] = topJ[2];
+            topW[2] = topW[1];
+            topJ[2] = topJ[1];
+            topW[1] = topW[0];
+            topJ[1] = topJ[0];
+            topW[0] = w;
+            topJ[0] = j;
+            return;
+        }
+        if (w > topW[1]) {
+            topW[3] = topW[2];
+            topJ[3] = topJ[2];
+            topW[2] = topW[1];
+            topJ[2] = topJ[1];
+            topW[1] = w;
+            topJ[1] = j;
+            return;
+        }
+        if (w > topW[2]) {
+            topW[3] = topW[2];
+            topJ[3] = topJ[2];
+            topW[2] = w;
+            topJ[2] = j;
+            return;
+        }
+        topW[3] = w;
+        topJ[3] = j;
+    };
+    const topW = [0, 0, 0, 0];
+    const topJ = [0, 0, 0, 0];
+    for (let i = 0; i < joints0.length; i += 4) {
+        topW[0] = 0; topW[1] = 0; topW[2] = 0; topW[3] = 0;
+        topJ[0] = 0; topJ[1] = 0; topJ[2] = 0; topJ[3] = 0;
+        consider(weights0[i + 0] ?? 0, joints0[i + 0] ?? 0, topW, topJ);
+        consider(weights0[i + 1] ?? 0, joints0[i + 1] ?? 0, topW, topJ);
+        consider(weights0[i + 2] ?? 0, joints0[i + 2] ?? 0, topW, topJ);
+        consider(weights0[i + 3] ?? 0, joints0[i + 3] ?? 0, topW, topJ);
+        consider(weights1[i + 0] ?? 0, joints1[i + 0] ?? 0, topW, topJ);
+        consider(weights1[i + 1] ?? 0, joints1[i + 1] ?? 0, topW, topJ);
+        consider(weights1[i + 2] ?? 0, joints1[i + 2] ?? 0, topW, topJ);
+        consider(weights1[i + 3] ?? 0, joints1[i + 3] ?? 0, topW, topJ);
+        const sum = topW[0] + topW[1] + topW[2] + topW[3];
+        if (sum > 0) {
+            const inv = 1 / sum;
+            outJoints[i + 0] = topJ[0];
+            outJoints[i + 1] = topJ[1];
+            outJoints[i + 2] = topJ[2];
+            outJoints[i + 3] = topJ[3];
+
+            outWeights[i + 0] = topW[0] * inv;
+            outWeights[i + 1] = topW[1] * inv;
+            outWeights[i + 2] = topW[2] * inv;
+            outWeights[i + 3] = topW[3] * inv;
+        } else {
+            outJoints[i + 0] = joints0[i + 0] ?? 0;
+            outJoints[i + 1] = joints0[i + 1] ?? 0;
+            outJoints[i + 2] = joints0[i + 2] ?? 0;
+            outJoints[i + 3] = joints0[i + 3] ?? 0;
+            outWeights[i + 0] = 1;
+            outWeights[i + 1] = 0;
+            outWeights[i + 2] = 0;
+            outWeights[i + 3] = 0;
+        }
+    }
+    return { joints: outJoints, weights: outWeights };
+};
+
 const triangulateStrip = (indices: Uint32Array): Uint32Array => {
     const tris: number[] = [];
     for (let i = 0; i + 2 < indices.length; i++) {
@@ -431,12 +529,34 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     if (uvAcc !== undefined) uvs = readAccessorAsFloat32(doc, uvAcc);
     let joints: Uint16Array | null = null;
     let weights: Float32Array | null = null;
-    const jAcc = attrs["JOINTS_0"];
-    const wAcc = attrs["WEIGHTS_0"];
-    if (jAcc !== undefined && wAcc !== undefined) {
-        joints = readAccessorAsUint16(doc, jAcc);
-        weights = readAccessorAsFloat32(doc, wAcc);
-    } else if (jAcc !== undefined || wAcc !== undefined) {
+    const jAcc0 = attrs["JOINTS_0"];
+    const wAcc0 = attrs["WEIGHTS_0"];
+    const jAcc1 = attrs["JOINTS_1"];
+    const wAcc1 = attrs["WEIGHTS_1"];
+    if (jAcc0 !== undefined && wAcc0 !== undefined) {
+        const joints0 = readAccessorAsUint16(doc, jAcc0);
+        const weights0 = readAccessorAsFloat32(doc, wAcc0);
+        if (jAcc1 !== undefined && wAcc1 !== undefined) {
+            const joints1 = readAccessorAsUint16(doc, jAcc1);
+            const weights1 = readAccessorAsFloat32(doc, wAcc1);
+            if (joints1.length === joints0.length && weights1.length === weights0.length) {
+                const merged = mergeSkinInfluencesTo4(joints0, weights0, joints1, weights1);
+                joints = merged.joints;
+                weights = merged.weights;
+            } else {
+                warn(opts, "Primitive has JOINTS_1/WEIGHTS_1 but lengths don't match JOINTS_0/WEIGHTS_0; ignoring additional influences");
+                joints = joints0;
+                weights = normalizeWeightsTo4(weights0);
+            }
+        } else if (jAcc1 !== undefined || wAcc1 !== undefined) {
+            warn(opts, "Primitive has JOINTS_1/WEIGHTS_1 mismatch; ignoring additional influences");
+            joints = joints0;
+            weights = normalizeWeightsTo4(weights0);
+        } else {
+            joints = joints0;
+            weights = normalizeWeightsTo4(weights0);
+        }
+    } else if (jAcc0 !== undefined || wAcc0 !== undefined) {
         warn(opts, "Primitive has JOINTS_0/WEIGHTS_0 mismatch; ignoring skinning attributes for this primitive");
     }
     const mode = prim.mode ?? 4;
@@ -742,16 +862,17 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const cameras: Camera[] = [];
     const lights: Light[] = [];
     const khrLights = getKHRLightsFromRoot(json);
-    const instantiateNodeRecursive = (nodeIndex: number): void => {
+    const instantiateNodeRecursive = (nodeIndex: number, inheritedSkinIndex: number | undefined): void => {
         const node = nodes[nodeIndex];
         if (!node) return;
         const nodeT = nodeTransforms[nodeIndex]!;
         if (!nodeT) return;
         const createdMeshes = instantiateMeshNode(doc, json, node, nodeT, materialCache, textureCache, geometryCache, opts);
-        if (node.skin !== undefined) {
-            const skinDef = skins[node.skin];
+        const skinIndex = node.skin !== undefined ? (node.skin | 0) : inheritedSkinIndex;
+        if (skinIndex !== undefined) {
+            const skinDef = skins[skinIndex];
             if (!skinDef) {
-                warn(opts, `nodes[${nodeIndex}].skin=${node.skin} missing; skipping skin binding`);
+                warn(opts, `nodes[${nodeIndex}].skin=${skinIndex} missing; skipping skin binding`);
             } else {
                 for (const m of createdMeshes) {
                     if (m.geometry.joints === null || m.geometry.weights === null) {
@@ -787,12 +908,12 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
                 }
             }
         }
-        for (const child of node.children ?? []) instantiateNodeRecursive(child);
+        for (const child of node.children ?? []) instantiateNodeRecursive(child, skinIndex);
     };
     const sceneIndex = getSceneIndex(json, opts);
     const gltfScene: GltfScene | undefined = json.scenes?.[sceneIndex];
     const roots = gltfScene?.nodes ?? [];
-    for (const root of roots) instantiateNodeRecursive(root);
+    for (const root of roots) instantiateNodeRecursive(root, undefined);
     const animations = parseAnimations(doc, json, nodeTransforms, opts);
     const clips = animations.map((a) => a.clip).filter((c): c is AnimationClip => c !== null);
     const uniqueGeometries = Array.from(new Set(meshes.map((m) => m.geometry)));
