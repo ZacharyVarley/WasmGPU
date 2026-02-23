@@ -1,7 +1,9 @@
 struct Params {
     rtMetrics: vec4f,
     threshold: f32,
-    _pad0: vec3f
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -24,9 +26,9 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VsOut {
         vec2f(-1.0, 3.0)
     );
     var uvs = array<vec2f, 3>(
-        vec2f(0.0, 0.0),
-        vec2f(2.0, 0.0),
-        vec2f(0.0, 2.0)
+        vec2f(0.0, 1.0),
+        vec2f(2.0, 1.0),
+        vec2f(0.0, -1.0)
     );
     var out: VsOut;
     out.pos = vec4f(positions[vi], 0.0, 1.0);
