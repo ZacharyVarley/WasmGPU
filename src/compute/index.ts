@@ -3,6 +3,7 @@ import { ComputePipeline, type ComputePipelineDescriptor } from "./pipeline";
 import { workgroups1D, workgroups2D, workgroups3D, type WorkgroupCounts } from "./workgroups";
 import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, validateWorkgroupsForDevice } from "./dispatch";
 import { ComputeKernels } from "./kernels";
+import { RGBA8BufferCanvasBlitter, type BlitRGBA8BufferToCanvasOptions, type RGBA8BufferSource } from "./blit";
 
 export type ComputeDispatchOptions = {
     submit?: boolean;
@@ -13,6 +14,7 @@ export class Compute {
     readonly device: GPUDevice;
     readonly queue: GPUQueue;
     readonly kernels: ComputeKernels;
+    private _rgba8Blitter: RGBA8BufferCanvasBlitter | null = null;
 
     constructor(device: GPUDevice, queue: GPUQueue) {
         this.device = device;
@@ -73,6 +75,11 @@ export class Compute {
         return this.dispatch({ pipeline, bindGroups, workgroups, label }, opts);
     }
 
+    blitRGBA8BufferToCanvas(encoder: GPUCommandEncoder, canvas: HTMLCanvasElement, src: RGBA8BufferSource, outWidth: number, outHeight: number, opts: BlitRGBA8BufferToCanvasOptions = {}): void {
+        if (!this._rgba8Blitter) this._rgba8Blitter = new RGBA8BufferCanvasBlitter(this.device, this.queue);
+        this._rgba8Blitter.encode(encoder, canvas, src, outWidth, outHeight, opts);
+    }
+
     workgroups1D(invocations: number, workgroupSizeX: number): WorkgroupCounts {
         return workgroups1D(invocations, workgroupSizeX);
     }
@@ -86,6 +93,8 @@ export class Compute {
     }
 
     destroy(): void {
+        this._rgba8Blitter?.destroy();
+        this._rgba8Blitter = null;
         this.kernels.destroy();
     }
 }
@@ -98,5 +107,7 @@ export { ceilDiv, makeWorkgroupSize, makeWorkgroupCounts, workgroups1D, workgrou
 export type { WorkgroupSize, WorkgroupCounts } from "./workgroups";
 export { normalizeWorkgroups, validateWorkgroupsForDevice, encodeDispatch, encodeDispatchBatch } from "./dispatch";
 export type { DispatchWorkgroups, ComputeDispatchCommand } from "./dispatch";
+export { RGBA8BufferCanvasBlitter } from "./blit";
+export type { RGBA8BufferSource, BlitRGBA8BufferToCanvasOptions } from "./blit";
 export { ComputeKernels } from "./kernels";
 export type { KernelDispatchOptions, ReduceOptions, ScanOptions, HistogramOptions, CompactOptions, RadixSortOptions, ReduceOp, ArgReduceOp } from "./kernels";
