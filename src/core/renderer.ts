@@ -25,6 +25,7 @@ type DrawItem = {
     materialId: number;
     geometryId: number;
     skinned: boolean;
+    skinned8: boolean;
     sortKey: number;
 };
 
@@ -281,6 +282,7 @@ export class Renderer {
                 materialId: 0,
                 geometryId: 0,
                 skinned: false,
+                skinned8: false,
                 sortKey: 0
             };
             this.drawItemPool[i] = item;
@@ -916,7 +918,8 @@ export class Renderer {
                 const geometry = mesh.geometry;
                 const material = mesh.material;
                 const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
-                const pipeline = this.getOrCreatePipeline(material, false, skinned);
+                const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
+                const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8);
                 const item = this.acquireDrawItem();
                 item.mesh = mesh;
                 item.geometry = geometry;
@@ -926,6 +929,7 @@ export class Renderer {
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
                 item.skinned = skinned;
+                item.skinned8 = skinned8;
                 item.sortKey = 0;
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
@@ -946,7 +950,8 @@ export class Renderer {
                 const geometry = mesh.geometry;
                 const material = mesh.material;
                 const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
-                const pipeline = this.getOrCreatePipeline(material, false, skinned);
+                const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
+                const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8);
                 const item = this.acquireDrawItem();
                 item.mesh = mesh;
                 item.geometry = geometry;
@@ -956,6 +961,7 @@ export class Renderer {
                 item.materialId = this.getObjectId(material);
                 item.geometryId = this.getObjectId(geometry);
                 item.skinned = skinned;
+                item.skinned8 = skinned8;
                 item.sortKey = 0;
                 if (material.blendMode === BlendMode.Opaque) {
                     this.opaqueDrawList.push(item);
@@ -1008,6 +1014,10 @@ export class Renderer {
                 if (first.skinned) {
                     pass.setVertexBuffer(3, geometry.jointsBuffer!);
                     pass.setVertexBuffer(4, geometry.weightsBuffer!);
+                    if (first.skinned8) {
+                        pass.setVertexBuffer(5, geometry.joints1Buffer!);
+                        pass.setVertexBuffer(6, geometry.weights1Buffer!);
+                    }
                 }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                 lastGeometry = geometry;
@@ -1073,12 +1083,13 @@ export class Renderer {
         this.instanceBufferOffset = dstEnd;
     }
 
-    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false): GPURenderPipeline {
+    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false, skinned8: boolean = false): GPURenderPipeline {
         if (instanced && skinned) throw new Error("Renderer: instanced + skinned pipelines are not supported (attribute layout conflict).");
-        const key = this.getPipelineCacheKey(material, instanced, skinned);
+        if (skinned8 && !skinned) skinned = true;
+        const key = this.getPipelineCacheKey(material, instanced, skinned, skinned8);
         let pipeline = this.pipelineCache.get(key);
         if (pipeline) return pipeline;
-        const shaderCode = material.getShaderCode({ instanced, skinned });
+        const shaderCode = material.getShaderCode({ instanced, skinned, skinned8 });
         let shaderModule = this.shaderCache.get(shaderCode);
         if (!shaderModule) {
             shaderModule = this.device.createShaderModule({ code: shaderCode });
@@ -1108,6 +1119,16 @@ export class Renderer {
                         { shaderLocation: 10, offset: 112, format: "float32x4" }
                     ]
                 }
+            ];
+        } else if (skinned8) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 5, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 6, offset: 0, format: "float32x4" }] }
             ];
         } else if (skinned) {
             buffers = [
@@ -1156,11 +1177,11 @@ export class Renderer {
         return pipeline;
     }
 
-    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean): string {
+    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean): string {
         const ctorId = this.getObjectId(material.constructor as unknown as object);
         const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial;
         const matKey = isBuiltin ? `${ctorId}` : `${ctorId}_${this.getObjectId(material)}`;
-        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned ? "skinned" : "noskin"}`;
+        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
     }
 
     private getBlendState(mode: BlendMode): GPUBlendState | undefined {

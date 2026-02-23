@@ -263,6 +263,43 @@ const normalizeWeightsTo4 = (weights: Float32Array): Float32Array => {
     return out;
 };
 
+const normalizeWeightsTo8 = (weights0: Float32Array, weights1: Float32Array): { weights0: Float32Array; weights1: Float32Array } => {
+    const out0 = new Float32Array(weights0);
+    const out1 = new Float32Array(weights1);
+    for (let i = 0; i < out0.length; i += 4) {
+        const w0 = out0[i + 0] ?? 0;
+        const w1 = out0[i + 1] ?? 0;
+        const w2 = out0[i + 2] ?? 0;
+        const w3 = out0[i + 3] ?? 0;
+        const w4 = out1[i + 0] ?? 0;
+        const w5 = out1[i + 1] ?? 0;
+        const w6 = out1[i + 2] ?? 0;
+        const w7 = out1[i + 3] ?? 0;
+        const sum = w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7;
+        if (sum > 0) {
+            const inv = 1 / sum;
+            out0[i + 0] = w0 * inv;
+            out0[i + 1] = w1 * inv;
+            out0[i + 2] = w2 * inv;
+            out0[i + 3] = w3 * inv;
+            out1[i + 0] = w4 * inv;
+            out1[i + 1] = w5 * inv;
+            out1[i + 2] = w6 * inv;
+            out1[i + 3] = w7 * inv;
+        } else {
+            out0[i + 0] = 1;
+            out0[i + 1] = 0;
+            out0[i + 2] = 0;
+            out0[i + 3] = 0;
+            out1[i + 0] = 0;
+            out1[i + 1] = 0;
+            out1[i + 2] = 0;
+            out1[i + 3] = 0;
+        }
+    }
+    return { weights0: out0, weights1: out1 };
+};
+
 const mergeSkinInfluencesTo4 = (joints0: Uint16Array, weights0: Float32Array, joints1: Uint16Array, weights1: Float32Array): { joints: Uint16Array; weights: Float32Array } => {
     const outJoints = new Uint16Array(joints0.length);
     const outWeights = new Float32Array(weights0.length);
@@ -529,6 +566,8 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     if (uvAcc !== undefined) uvs = readAccessorAsFloat32(doc, uvAcc);
     let joints: Uint16Array | null = null;
     let weights: Float32Array | null = null;
+    let joints1: Uint16Array | null = null;
+    let weights1: Float32Array | null = null;
     const jAcc0 = attrs["JOINTS_0"];
     const wAcc0 = attrs["WEIGHTS_0"];
     const jAcc1 = attrs["JOINTS_1"];
@@ -537,12 +576,14 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         const joints0 = readAccessorAsUint16(doc, jAcc0);
         const weights0 = readAccessorAsFloat32(doc, wAcc0);
         if (jAcc1 !== undefined && wAcc1 !== undefined) {
-            const joints1 = readAccessorAsUint16(doc, jAcc1);
-            const weights1 = readAccessorAsFloat32(doc, wAcc1);
-            if (joints1.length === joints0.length && weights1.length === weights0.length) {
-                const merged = mergeSkinInfluencesTo4(joints0, weights0, joints1, weights1);
-                joints = merged.joints;
-                weights = merged.weights;
+            const joints1Raw = readAccessorAsUint16(doc, jAcc1);
+            const weights1Raw = readAccessorAsFloat32(doc, wAcc1);
+            if (joints1Raw.length === joints0.length && weights1Raw.length === weights0.length) {
+                const norm = normalizeWeightsTo8(weights0, weights1Raw);
+                joints = joints0;
+                weights = norm.weights0;
+                joints1 = joints1Raw;
+                weights1 = norm.weights1;
             } else {
                 warn(opts, "Primitive has JOINTS_1/WEIGHTS_1 but lengths don't match JOINTS_0/WEIGHTS_0; ignoring additional influences");
                 joints = joints0;
@@ -586,6 +627,8 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         uvs: uvs ?? undefined,
         joints: joints ?? undefined,
         weights: weights ?? undefined,
+        joints1: joints1 ?? undefined,
+        weights1: weights1 ?? undefined,
         indices: indices ?? undefined
     });
 };

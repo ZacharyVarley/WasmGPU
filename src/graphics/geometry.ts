@@ -11,6 +11,8 @@ export type GeometryDescriptor = {
     uvs?: Float32Array;
     joints?: Uint16Array;
     weights?: Float32Array;
+    joints1?: Uint16Array;
+    weights1?: Float32Array;
     indices?: Uint32Array;
 };
 
@@ -20,8 +22,12 @@ export class Geometry {
     readonly uvs: Float32Array;
     readonly joints: Uint16Array | null;
     readonly weights: Float32Array | null;
+    readonly joints1: Uint16Array | null;
+    readonly weights1: Float32Array | null;
     private _jointsBuffer: GPUBuffer | null = null;
     private _weightsBuffer: GPUBuffer | null = null;
+    private _joints1Buffer: GPUBuffer | null = null;
+    private _weights1Buffer: GPUBuffer | null = null;
     readonly indices: Uint32Array | null;
     readonly vertexCount: number;
     readonly indexCount: number;
@@ -56,6 +62,26 @@ export class Geometry {
         }
         this.joints = joints;
         this.weights = weights;
+        let joints1 = descriptor.joints1 ?? null;
+        let weights1 = descriptor.weights1 ?? null;
+        if ((joints1 && !weights1) || (!joints1 && weights1)) {
+            console.warn(`[Geometry] JOINTS_1/WEIGHTS_1 must be provided together. Ignoring additional influences.`);
+            joints1 = null; weights1 = null;
+        }
+        if ((joints1 || weights1) && (!joints || !weights)) {
+            console.warn(`[Geometry] JOINTS_1/WEIGHTS_1 provided without JOINTS_0/WEIGHTS_0. Ignoring additional influences.`);
+            joints1 = null; weights1 = null;
+        }
+        if (joints1 && joints1.length !== expected) {
+            console.warn(`[Geometry] joints1 length mismatch (got ${joints1.length}, expected ${expected}). Ignoring additional influences.`);
+            joints1 = null; weights1 = null;
+        }
+        if (weights1 && weights1.length !== expected) {
+            console.warn(`[Geometry] weights1 length mismatch (got ${weights1.length}, expected ${expected}). Ignoring additional influences.`);
+            joints1 = null; weights1 = null;
+        }
+        this.joints1 = joints1;
+        this.weights1 = weights1;
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
         if (this.vertexCount > 0) {
@@ -99,6 +125,8 @@ export class Geometry {
         this._uvBuffer = createBuffer(device, this.uvs, GPUBufferUsage.VERTEX);
         if (this.joints) this._jointsBuffer = createBuffer(device, this.joints, GPUBufferUsage.VERTEX);
         if (this.weights) this._weightsBuffer = createBuffer(device, this.weights, GPUBufferUsage.VERTEX);
+        if (this.joints1) this._joints1Buffer = createBuffer(device, this.joints1, GPUBufferUsage.VERTEX);
+        if (this.weights1) this._weights1Buffer = createBuffer(device, this.weights1, GPUBufferUsage.VERTEX);
         if (this.indices) this._indexBuffer = createBuffer(device, this.indices, GPUBufferUsage.INDEX);
     }
 
@@ -125,6 +153,14 @@ export class Geometry {
         return this._weightsBuffer;
     }
 
+    get joints1Buffer(): GPUBuffer | null {
+        return this._joints1Buffer;
+    }
+
+    get weights1Buffer(): GPUBuffer | null {
+        return this._weights1Buffer;
+    }
+
     get indexBuffer(): GPUBuffer | null {
         return this._indexBuffer;
     }
@@ -135,6 +171,10 @@ export class Geometry {
 
     get isSkinned(): boolean {
         return this._jointsBuffer !== null && this._weightsBuffer !== null;
+    }
+
+    get isSkinned8(): boolean {
+        return this._jointsBuffer !== null && this._weightsBuffer !== null && this._joints1Buffer !== null && this._weights1Buffer !== null;
     }
 
     get boundsCenter(): readonly [number, number, number] {
@@ -151,8 +191,12 @@ export class Geometry {
         this._uvBuffer?.destroy();
         this._jointsBuffer?.destroy();
         this._weightsBuffer?.destroy();
+        this._joints1Buffer?.destroy();
+        this._weights1Buffer?.destroy();
         this._jointsBuffer = null;
         this._weightsBuffer = null;
+        this._joints1Buffer = null;
+        this._weights1Buffer = null;
         this._indexBuffer?.destroy();
         this._positionBuffer = null;
         this._normalBuffer = null;

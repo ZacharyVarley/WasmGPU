@@ -2,9 +2,11 @@ import { Texture2D } from "./texture";
 import unlitWGSL from "../wgsl/graphics/unlit.wgsl";
 import unlitInstancedWGSL from "../wgsl/graphics/unlit-instanced.wgsl";
 import unlitSkinnedWGSL from "../wgsl/graphics/unlit-skinned.wgsl";
+import unlitSkinned8WGSL from "../wgsl/graphics/unlit-skinned8.wgsl";
 import standardWGSL from "../wgsl/graphics/standard.wgsl";
 import standardInstancedWGSL from "../wgsl/graphics/standard-instanced.wgsl";
 import standardSkinnedWGSL from "../wgsl/graphics/standard-skinned.wgsl";
+import standardSkinned8WGSL from "../wgsl/graphics/standard-skinned8.wgsl";
 import customDefaultVertexWGSL from "../wgsl/graphics/custom-default-vertex.wgsl";
 
 export type Color = [number, number, number];
@@ -62,7 +64,7 @@ export abstract class Material {
     }
 
     abstract getUniformData(): Float32Array;
-    abstract getShaderCode(opts?: { instanced?: boolean; skinned?: boolean }): string;
+    abstract getShaderCode(opts?: { instanced?: boolean; skinned?: boolean; skinned8?: boolean }): string;
     abstract getUniformBufferSize(): number;
     abstract createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout;
 
@@ -168,8 +170,9 @@ export class UnlitMaterial extends Material {
         return layout;
     }
 
-    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean; skinned8?: boolean } = {}): string {
         if (opts.instanced) return unlitInstancedWGSL;
+        if (opts.skinned8) return unlitSkinned8WGSL;
         if (opts.skinned) return unlitSkinnedWGSL;
         return unlitWGSL;
     }
@@ -399,8 +402,9 @@ export class StandardMaterial extends Material {
         return layout;
     }
 
-    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean; skinned8?: boolean } = {}): string {
         if (opts.instanced) return standardInstancedWGSL;
+        if (opts.skinned8) return standardSkinned8WGSL;
         if (opts.skinned) return standardSkinnedWGSL;
         return standardWGSL;
     }
@@ -521,7 +525,7 @@ export class CustomMaterial extends Material {
         return customDefaultVertexWGSL;
     }
 
-    getShaderCode(opts: { instanced?: boolean; skinned?: boolean } = {}): string {
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean; skinned8?: boolean } = {}): string {
         let uniformStruct = "struct CustomUniforms {\n";
         for (const [name, def] of Object.entries(this._uniforms)) uniformStruct += `    ${name}: ${def.type},\n`;
         uniformStruct += "};\n\n@group(1) @binding(0) var<uniform> custom: CustomUniforms;\n\n";
