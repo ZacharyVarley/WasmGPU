@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WasmGPU Compute Example</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #000; overflow: hidden; }
+            canvas { display: block; width: 100%; height: 100%; }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <script type="module">
+            import { WasmGPU } from "../dist/WasmGPU.min.js";
+            const canvas = document.querySelector("canvas");
+            const wgpu = await WasmGPU.create(canvas, {
+                powerPreference: "high-performance",
+                antialias: false,
+                frustumCulling: false
+            });
+            const device = wgpu.gpu.device, queue = wgpu.gpu.queue, format = wgpu.gpu.format;
+            const camera = wgpu.createCamera.perspective({ fov: 50, near: 0.1, far: 200 });
+            camera.transform.setPosition(0, 0, 4);
+            camera.lookAt(0, 0, 0);
+            const controls = wgpu.createControls.orbit(camera, canvas, {
+                target: [0, 0, 0],
+                minDistance: 1.0,
+                maxDistance: 20.0,
+                rotateSpeed: 1.0,
+                zoomSpeed: 1.0,
+                panSpeed: 1.0,
+                enableDamping: true,
+                dampingFactor: 0.1
+            });
+            const stats = wgpu.createPerformanceStats({
+                showFrameTime: false,
+                showCpuTime: false,
+                showGpuTime: false,
+                showMemory: false
+            });
+            const paramsF32 = new Float32Array(5 * 4);
+            const paramsBuffer = wgpu.compute.createUniformBuffer({
+                label: "mandelbulb:params",
+                data: paramsF32
+            });
+            const wgsl = `
+                struct Params {
+                    p0: vec4f,
+                    p1: vec4f,
+                    p2: vec4f,
+                    p3: vec4f,
+                    p4: vec4f
+                }
+                @group(0) @binding(0) var<uniform> params: Params;
+                @group(0) @binding(1) var<storage, read_write> pixels: array<u32>;
+                fn packRGBA8(color: vec3f, alpha: f32) -> u32 {
+                    let c = clamp(color, vec3f(0.0), vec3f(1.0));
+                    let a = u32(clamp(alpha, 0.0, 1.0) * 255.0 + 0.5);
+                    let r = u32(c.r * 255.0 + 0.5);
+                    let g = u32(c.g * 255.0 + 0.5);
+                    let b = u32(c.b * 255.0 + 0.5);
+                    return (a << 24u) | (b << 16u) | (g << 8u) | r;
+                }
+                fn palette(t: f32) -> vec3f {
+                    let tt = fract(t);
+                    return 0.5 + 0.5 * cos(6.2831853 * (vec3f(1.0, 1.0, 1.0) * tt + vec3f(0.00, 0.33, 0.67)));
+                }
+                struct DEOut {
+                    dist: f32,
+                    trap: f32,
+                    iter: i32
+                }
+                fn mandelbulbDE(p: vec3f, power: f32, maxIter: i32, bailout: f32) -> DEOut {
+                    var z = p;
+                    var dr: f32 = 1.0;
+                    var r: f32 = 0.0;
+                    var trap: f32 = 1e9;
+                    var i: i32 = 0;
+                    loop {
+                        if (i >= maxIter) { break; }
+                        r = length(z);
+                        trap = min(trap, r);
+                        if (r > bailout) { break; }
+                        let rn = max(r, 1e-9);
+                        let theta = acos(clamp(z.z / rn, -1.0, 1.0));
+                        let phi = atan2(z.y, z.x);
+                        dr = pow(rn, power - 1.0) * power * dr + 1.0;
+                        let zr = pow(rn, power);
+                        let newTheta = theta * power;
+                        let newPhi = phi * power;
+                        let sinT = sin(newTheta);
+                        z = zr * vec3f(sinT * cos(newPhi), sinT * sin(newPhi), cos(newTheta));
+                        z = z + p;
+                        i = i + 1;
+                    }
+                    var dist: f32 = 0.0;
+                    if (r > 0.0) { dist = 0.5 * log(r) * r / dr; }
+                    dist = abs(dist);
+                    return DEOut(dist, trap, i);
+                }
+                fn render(ro: vec3f, rd: vec3f, power: f32, maxSteps: i32, maxIter: i32, bailout: f32, time: f32) -> u32 {
+                    let maxDist: f32 = 30.0;
+                    let hitEps: f32 = 0.0001;
+                    let stepScale: f32 = 1.0;
+                    var t: f32 = 0.0;
+                    var hit: bool = false;
+                    var info: DEOut = mandelbulbDE(ro, power, maxIter, bailout);
+                    for (var s: i32 = 0; s < maxSteps; s = s + 1) {
+                        let p = ro + rd * t;
+                        info = mandelbulbDE(p, power, maxIter, bailout);
+                        if (info.dist < hitEps) { hit = true; break; }
+                        t = t + info.dist * stepScale;
+                        if (t > maxDist) { break; }
+                    }
+                    if (!hit) { return packRGBA8(vec3f(0.0, 0.0, 0.0), 1.0); }
+                    let tIter = f32(info.iter) / max(1.0, f32(maxIter));
+                    let trap = clamp(0.5 - log2(info.trap + 1e-6) * 0.1, 0.0, 1.0);
+                    var col = palette(tIter + time * 0.03);
+                    col = col * (0.35 + 0.65 * trap);
+                    return packRGBA8(col, 1.0);
+                }
+                @compute @workgroup_size(8, 8, 1)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let w = u32(params.p0.x);
+                    let h = u32(params.p0.y);
+                    if (gid.x >= w || gid.y >= h) { return; }
+                    let aspect = max(1.0, params.p0.x) / max(1.0, params.p0.y);
+                    let tanHalfFov = params.p0.z;
+                    let time = params.p0.w;
+                    let ro = params.p1.xyz;
+                    let power = params.p1.w;
+                    let camRight = params.p2.xyz;
+                    let maxSteps = i32(params.p2.w);
+                    let camUp = params.p3.xyz;
+                    let maxIter = i32(params.p3.w);
+                    let camForward = params.p4.xyz;
+                    let bailout = params.p4.w;
+                    let px = (f32(gid.x) + 0.5) / max(1.0, f32(w));
+                    let py = (f32(gid.y) + 0.5) / max(1.0, f32(h));
+                    let ndc = vec2f(px * 2.0 - 1.0, (1.0 - py) * 2.0 - 1.0);
+                    let rd = normalize(
+                        camForward +
+                        camRight * (ndc.x * aspect * tanHalfFov) +
+                        camUp * (ndc.y * tanHalfFov)
+                    );
+                    let idx = gid.y * w + gid.x;
+                    pixels[idx] = render(ro, rd, power, maxSteps, maxIter, bailout, time);
+                }
+            `;
+            const computePipeline = wgpu.compute.createPipeline({
+                label: "mandelbulb:compute",
+                code: wgsl,
+                entryPoint: "main"
+            });
+            let w = 0, h = 0;
+            let outBuffer = null;
+            let computeBindGroup = null;
+            const resize = () => {
+                const dpr = Math.max(1, window.devicePixelRatio || 1);
+                const nextW = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+                const nextH = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+                if (nextW === w && nextH === h) return;
+                w = nextW, h = nextH;
+                canvas.width = w, canvas.height = h;
+                camera.updateAspect(w, h);
+                if (outBuffer) outBuffer.destroy();
+                outBuffer = wgpu.compute.createStorageBuffer({
+                    label: "mandelbulb:output",
+                    byteLength: w * h * 4,
+                    copyDst: false
+                });
+                computeBindGroup = computePipeline.createBindGroup(0, {
+                    0: paramsBuffer,
+                    1: outBuffer
+                }, "mandelbulb:compute:bg0");
+            };
+            resize();
+            window.addEventListener("resize", resize);
+            const power = 8.0;
+            const maxSteps = 256;
+            const maxIter = 32;
+            const bailout = 8.0;
+            let time = 0;
+            wgpu.run((dt) => {
+                resize();
+                time += dt;
+                controls.update(dt);
+                const m = camera.transform.worldMatrix;
+                const camPosX = m[12], camPosY = m[13], camPosZ = m[14];
+                const camRightX = m[0], camRightY = m[1], camRightZ = m[2];
+                const camUpX = m[4], camUpY = m[5], camUpZ = m[6];
+                const camForwardX = -m[8], camForwardY = -m[9], camForwardZ = -m[10];
+                const fovRad = (camera.fov * Math.PI) / 180;
+                const tanHalfFov = Math.tan(fovRad * 0.5);
+                paramsF32[0] = w, paramsF32[1] = h;
+                paramsF32[2] = tanHalfFov;
+                paramsF32[3] = time;
+                paramsF32[4] = camPosX, paramsF32[5] = camPosY, paramsF32[6] = camPosZ;
+                paramsF32[7] = power;
+                paramsF32[8] = camRightX, paramsF32[9] = camRightY, paramsF32[10] = camRightZ;
+                paramsF32[11] = maxSteps;
+                paramsF32[12] = camUpX, paramsF32[13] = camUpY, paramsF32[14] = camUpZ;
+                paramsF32[15] = maxIter;
+                paramsF32[16] = camForwardX, paramsF32[17] = camForwardY, paramsF32[18] = camForwardZ;
+                paramsF32[19] = bailout;
+                paramsBuffer.write(paramsF32);
+                if (!outBuffer || !computeBindGroup) return;
+                const encoder = device.createCommandEncoder({ label: "mandelbulb:frame" });
+                wgpu.compute.encodeDispatch(encoder, {
+                    label: "mandelbulb:compute",
+                    pipeline: computePipeline,
+                    bindGroups: [computeBindGroup],
+                    workgroups: { x: Math.ceil(w / 8), y: Math.ceil(h / 8), z: 1 }
+                });
+                wgpu.compute.blitRGBA8BufferToCanvas(encoder, canvas, outBuffer, w, h, {
+                    label: "mandelbulb:present",
+                    format: format,
+                    alphaMode: "opaque",
+                    autoResize: false,
+                    loadOp: "clear",
+                    storeOp: "store",
+                    clearColor: { r: 0, g: 0, b: 0, a: 1 }
+                });
+                queue.submit([encoder.finish()]);
+                stats.update(dt);
+            });
+        </script>
+    </body>
+</html>
