@@ -37,12 +37,7 @@ export function mat4_copy(outPtr: number, mPtr: number): number;
 export function mat4_decompose_trs(outTrsPtr: number, mPtr: number): number;
 export function mat4_det(mPtr: number): number;
 export function mat4_identity(outPtr: number): number;
-export function mat4_init(outPtr: number,
-  m0: number, m1: number, m2: number, m3: number,
-  m4: number, m5: number, m6: number, m7: number,
-  m8: number, m9: number, m10: number, m11: number,
-  m12: number, m13: number, m14: number, m15: number
-): number;
+export function mat4_init(outPtr: number, m0: number, m1: number, m2: number, m3: number, m4: number, m5: number, m6: number, m7: number, m8: number, m9: number, m10: number, m11: number, m12: number, m13: number, m14: number, m15: number): number;
 export function mat4_invert(outPtr: number, mPtr: number): number;
 export function mat4_isEqual(m1Ptr: number, m2Ptr: number): number;
 export function mat4_isIdentity(mPtr: number): number;

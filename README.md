@@ -9,10 +9,10 @@
 
 ## Status
 
-- 🚀 Latest release: [**`v0.4.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.4.0).
+- 🚀 Latest release: [**`v0.5.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.5.0).
 - 💡 Documentation: [https://zushah.github.io/WasmGPU](https://zushah.github.io/WasmGPU)
-- ⚙️ WebGPU engine renders scenes with meshes, materials, lights, and camera, as well as glTF 2.0 assets (PBR/unlit materials with normal/occlusion/emissive maps, Texture2D sampling with mipmaps, transparency, animations, and skinning), combining frustum culling, opaque draw batching, and automatic instanced rendering plus optional SMAA to minimize CPU overhead while keeping edges clean.
-- 🦀 WebAssembly driver with a Rust runtime backend where transforms live in SoA memory, local/world updates and animation sampling run in WASM, joint matrices for skinned meshes are generated in WASM and streamed to GPU storage buffers, uniforms/instance data are staged as zero-copy views into WASM memory, and hot-path allocations are avoided via cached pipelines/bind-group layouts/uniform arrays and a reset-every-frame arena.
+- ⚙️ WebGPU engine written in TypeScript, for scenes with meshes, materials, lights, and camera plus glTF 2.0 assets (PBR/unlit materials, texture sampling with mipmaps and robust async uploads, transparency, animations, and 4- or 8‑influence skinning), combining WebAssembly-driven frustum culling, opaque draw batching with automatic instanced rendering, optional subpixel morphological anti-aliasing (SMAA), built-in orbit controls, and an in-engine PerformanceStats HUD, and now also shipping a first-class WebGPU compute API with reusable pipelines/buffers and built-in parallel primitives (reduce/scan/compact/radix sort/histogram) for scientific workloads.
+- 🦀 WebAssembly driver written in Rust, where transforms live in SoA memory with per-index dirty tracking and partial local/world propagation, animation sampling and joint-matrix generation run in WebAssembly and stream to WebGPU storage buffers, uniforms/instance data are staged as zero-copy views into WebAssembly memory, hot-path allocations are avoided via cached pipelines/bind-group layouts and a reset-every-frame arena, the build is optimized with Binaryen, and SIMD128 enabled for higher throughput.
 - 🛠️ API still evolving so expect breaking changes often!
 
 ## Architecture Comparison Table
@@ -22,12 +22,14 @@
 | **Origin** | 2011 / 2023 | 2010 / 2013 | 2026 |
 | **Primary Implementation Language** | JavaScript & C++ | JavaScript / TypeScript | TypeScript & Rust |
 | **Graphics Engine** | WebGL / WebGPU | WebGL-native & WebGPU-adoptive | WebGPU-native |
+| **GPGPU** | Manual, low-level, high-boilerplate | Integrated, high-abstraction, scene-centric | Automated, kernel-driven, compute-optimized |
 | **Scene Graph Memory** | Not available | Object-oriented (AoS) | Data-oriented (SoA) |
 | **Math Execution** | JavaScript | JavaScript | WebAssembly |
 | **Transform Updates** | Not available | Recursive traversal | Linear iteration |
 | **Uniform Uploads** | Manual packing | Extraction & packing | Zero-copy views & no packing |
 | **Garbage Collection** | Manual & low/high pressure via JavaScript engine | Automatic & high pressure via JavaScript engine | Automatic & low pressure via WebAssembly driver |
 | **Instancing** | Manual | Manual | Automatic |
+| **Camera Controls** | Not available | Built-in | Built-in |
 | **Asset Importing** | Not available | glTF 2.0 | glTF 2.0 |
 | **Textures** | Manual | Managed objects | Managed objects |
 | **Animation System** | Not available | Executed in JavaScript | Executed in WebAssembly |
@@ -35,7 +37,10 @@
 | **Visibility Culling** | Not available | Frustum culling in JavaScript | Frustum culling in WebAssembly |
 | **Anti-aliasing** | Not available | MSAA | SMAA |
 | **Render State Caching** | Not available | State filtering | Pipeline caching |
+| **Vectorization** | Not available | Scalar | SIMD128 |
+| **Buildtime Optimization** | Not available | Transpilation, tree-shaking, minification | Transpilation & LLVM, tree-shaking & Binaryen, minification |
 | **Render Loop** | Run by JavaScript | Run by JavaScript | Run by JavaScript & WebAssembly |
+| **API Ergonomics** | Verbose | Streamlined | Streamlined |
 
 ## Getting Started
 
@@ -43,20 +48,22 @@ Basic examples:
 - [`./examples/esm.html`](https://zushah.github.io/WasmGPU/examples/esm.html)
 - [`./examples/iife.html`](https://zushah.github.io/WasmGPU/examples/iife.html)
 - [`./examples/gltf.html`](https://zushah.github.io/WasmGPU/examples/gltf.html)
+- [`./examples/compute.html`](https://zushah.github.io/WasmGPU/examples/compute.html)
 
 ```html
 <canvas></canvas>
 <script type="module">
     // Setup
-    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.4.0/dist/WasmGPU.min.js";
+    import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.5.0/dist/WasmGPU.min.js";
     const canvas = document.querySelector("canvas");
-    const wgpu = await WasmGPU.create(canvas);
+    const wgpu = await WasmGPU.create(canvas, { antialias: true});
 
-    // Scene and camera
+    // Scene, camera, and controls
     const scene = wgpu.createScene([0.05, 0.05, 0.1]);
     const camera = wgpu.createCamera.perspective({ fov: 60, near: 0.1, far: 1000 });
     camera.transform.setPosition(0, 4, 2);
     camera.lookAt(0, 0, 0);
+    const controls = wgpu.createControls.orbit(camera, canvas);
 
     // Lights
     scene.addLight(wgpu.createLight.ambient({
@@ -65,7 +72,7 @@ Basic examples:
     }));
     scene.addLight(wgpu.createLight.directional({
         direction: [1, -1, -1],
-        color: [1, 0.95, 0.9],
+        color: [1, 1, 1],
         intensity: 1.5
     }));
 
@@ -81,9 +88,10 @@ Basic examples:
 
     // Render
     wgpu.run((dt, time) => {
+        controls.update(dt);
         cube.transform.rotateY(dt * 0.8);
         cube.transform.rotateX(dt * 0.3);
-        cube.transform.setPosition(0, 0.8 + Math.sin(time * 2) * 0.15, 0);
+        cube.transform.setPosition(0, 0.1 * Math.sin(time * 2), 0);
         wgpu.render(scene, camera);
     });
 </script>
@@ -91,7 +99,7 @@ Basic examples:
 
 Using the IIFE bundle instead of the ESM bundle is exactly the same as above, except you must use a `script` tag instead of an `import` statement:
 ```html
-<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.4.0/dist/WasmGPU.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.5.0/dist/WasmGPU.iife.min.js"></script>
 ```
 
 ## Development
