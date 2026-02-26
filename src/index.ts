@@ -19,8 +19,8 @@ export type { Texture2DDescriptor, TextureColorSpace, TextureSamplerOptions, Tex
 export { initWebAssembly, wasm, frameArena, mat4, quat, vec3, cullf, frustumf } from "./wasm";
 export { Camera, PerspectiveCamera, OrthographicCamera } from "./world/camera";
 export type { CameraType, PerspectiveCameraDescriptor, OrthographicCameraDescriptor } from "./world/camera";
-export { OrbitControls } from "./world/controls";
-export type { OrbitControlsDescriptor, OrbitControlsMouseButtons } from "./world/controls";
+export { OrbitControls, TrackballControls } from "./world/controls";
+export type { OrbitControlsDescriptor, TrackballControlsDescriptor } from "./world/controls";
 export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light";
 export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
 export { Mesh } from "./world/mesh";

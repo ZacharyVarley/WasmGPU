@@ -7,7 +7,7 @@ import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
 import { frameArena, initWebAssembly } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
-import { OrbitControls, type OrbitControlsDescriptor } from "../world/controls";
+import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { Scene } from "../world/scene";
@@ -128,6 +128,9 @@ export class WasmGPU {
     readonly createControls = {
         orbit: (camera: Camera, domElement: HTMLCanvasElement, options?: OrbitControlsDescriptor): OrbitControls => {
             return new OrbitControls(camera, domElement, options);
+        },
+        trackball: (camera: Camera, domElement: HTMLCanvasElement, options?: TrackballControlsDescriptor): TrackballControls => {
+            return new TrackballControls(camera, domElement, options);
         }
     };
 
