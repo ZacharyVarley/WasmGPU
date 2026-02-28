@@ -1,6 +1,6 @@
 import { Renderer, RendererDescriptor } from "./renderer";
 import { PerformanceStats, type PerformanceStatsDescriptor } from "./stats";
-import { Compute } from "../compute";
+import { Compute, type ComputeDescriptor } from "../compute";
 import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
 import { Geometry } from "../graphics/geometry";
@@ -32,16 +32,16 @@ export class WasmGPU {
     private _frameCallback: FrameCallback | null = null;
     private _animationFrameId: number | null = null;
 
-    private constructor(renderer: Renderer) {
+    private constructor(renderer: Renderer, desc: WasmGPUDescriptor | ComputeDescriptor) {
         this.renderer = renderer;
         const gpu = renderer.gpu;
-        this.compute = new Compute(gpu.device, gpu.queue);
+        this.compute = new Compute(gpu.device, gpu.queue, desc as ComputeDescriptor);
     }
 
     static async create(canvas: HTMLCanvasElement, descriptor: WasmGPUDescriptor = {}): Promise<WasmGPU> {
         await initWebAssembly();
         const renderer = await Renderer.create(canvas, descriptor);
-        return new WasmGPU(renderer);
+        return new WasmGPU(renderer, descriptor);
     }
 
     run(callback: FrameCallback): void {

@@ -4,22 +4,29 @@ import { workgroups1D, workgroups2D, workgroups3D, type WorkgroupCounts } from "
 import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, validateWorkgroupsForDevice } from "./dispatch";
 import { ComputeKernels } from "./kernels";
 import { RGBA8BufferCanvasBlitter, type BlitRGBA8BufferToCanvasOptions, type RGBA8BufferSource } from "./blit";
+import { ReadbackRing, type ReadbackRingDescriptor } from "./readback";
 
 export type ComputeDispatchOptions = {
     submit?: boolean;
     validateLimits?: boolean;
 };
 
+export type ComputeDescriptor = {
+    readback?: ReadbackRingDescriptor;
+};
+
 export class Compute {
     readonly device: GPUDevice;
     readonly queue: GPUQueue;
     readonly kernels: ComputeKernels;
+    readonly readback: ReadbackRing;
     private _rgba8Blitter: RGBA8BufferCanvasBlitter | null = null;
 
-    constructor(device: GPUDevice, queue: GPUQueue) {
+    constructor(device: GPUDevice, queue: GPUQueue, desc: ComputeDescriptor = {}) {
         this.device = device;
         this.queue = queue;
         this.kernels = new ComputeKernels(device, queue);
+        this.readback = new ReadbackRing(device, queue, desc.readback);
     }
 
     createStorageBuffer(desc: StorageBufferDescriptor): StorageBuffer {
@@ -32,6 +39,10 @@ export class Compute {
 
     createPipeline(desc: ComputePipelineDescriptor): ComputePipeline {
         return new ComputePipeline(this.device, desc);
+    }
+
+    createReadbackRing(desc: ReadbackRingDescriptor = {}): ReadbackRing {
+        return new ReadbackRing(this.device, this.queue, desc);
     }
 
     encodeDispatch(encoder: GPUCommandEncoder, cmd: ComputeDispatchCommand, validateLimits: boolean = false): void {
@@ -95,6 +106,7 @@ export class Compute {
     destroy(): void {
         this._rgba8Blitter?.destroy();
         this._rgba8Blitter = null;
+        this.readback.destroy();
         this.kernels.destroy();
     }
 }
@@ -111,3 +123,5 @@ export { RGBA8BufferCanvasBlitter } from "./blit";
 export type { RGBA8BufferSource, BlitRGBA8BufferToCanvasOptions } from "./blit";
 export { ComputeKernels } from "./kernels";
 export type { KernelDispatchOptions, ReduceOptions, ScanOptions, HistogramOptions, CompactOptions, RadixSortOptions, ReduceOp, ArgReduceOp } from "./kernels";
+export { ReadbackRing } from "./readback";
+export type { ReadbackSource, ReadbackRingDescriptor } from "./readback";
