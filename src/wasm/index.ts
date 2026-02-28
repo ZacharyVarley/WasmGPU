@@ -45,8 +45,12 @@ export const wasm = {
     freeF32: (ptr: WasmPtr, len: number): void => ensure().wasmgpu_free_f32(ptr >>> 0, len >>> 0),
     allocU32: (len: number): WasmPtr => ensure().wasmgpu_alloc_u32(len >>> 0) >>> 0,
     freeU32: (ptr: WasmPtr, len: number): void => ensure().wasmgpu_free_u32(ptr >>> 0, len >>> 0),
+    allocBytes: (bytes: number): WasmPtr => ensure().wasmgpu_alloc(bytes >>> 0) >>> 0,
+    freeBytes: (ptr: WasmPtr, bytes: number): void => ensure().wasmgpu_free(ptr >>> 0, bytes >>> 0),
     f32view: (ptr: WasmPtr, len: number): Float32Array<ArrayBuffer> => ensure().f32view(ptr >>> 0, len >>> 0) as unknown as Float32Array<ArrayBuffer>,
     u32view: (ptr: WasmPtr, len: number): Uint32Array<ArrayBuffer> => ensure().u32view(ptr >>> 0, len >>> 0) as unknown as Uint32Array<ArrayBuffer>,
+    i32view: (ptr: WasmPtr, len: number): Int32Array<ArrayBuffer> => ensure().i32view(ptr >>> 0, len >>> 0) as unknown as Int32Array<ArrayBuffer>,
+    u8view: (ptr: WasmPtr, len: number): Uint8Array<ArrayBuffer> => ensure().u8view(ptr >>> 0, len >>> 0) as unknown as Uint8Array<ArrayBuffer>,
     writeF32: (ptr: WasmPtr, len: number, src: ArrayLike<number> | null | undefined): void => {
         const v = ensure().f32view(ptr >>> 0, len >>> 0);
         const n = Math.min(len >>> 0, src ? (src.length >>> 0) : 0);
@@ -188,6 +192,18 @@ export const mat4f = {
 export const meshf = {
     computeVertexNormals: (outNormalsPtr: WasmPtr, positionsPtr: WasmPtr, vertexCount: number, indicesPtr: WasmPtr, indexCount: number): void => {
         ensure().mesh_compute_vertex_normals(outNormalsPtr >>> 0, positionsPtr >>> 0, vertexCount >>> 0, indicesPtr >>> 0, indexCount >>> 0);
+    }
+};
+
+export const ndarrayf = {
+    numel: (shapePtr: WasmPtr, ndim: number): number => {
+        return ensure().ndarray_numel(shapePtr >>> 0, ndim >>> 0) >>> 0;
+    },
+    stridesRowMajorTo: (outStridesPtr: WasmPtr, shapePtr: WasmPtr, ndim: number, elemBytes: number): boolean => {
+        return !!ensure().ndarray_strides_row_major(outStridesPtr >>> 0, shapePtr >>> 0, ndim >>> 0, elemBytes >>> 0);
+    },
+    offsetBytes: (shapePtr: WasmPtr, stridesPtr: WasmPtr, indicesPtr: WasmPtr, ndim: number, baseOffsetBytes: number): number => {
+        return ensure().ndarray_offset_bytes(shapePtr >>> 0, stridesPtr >>> 0, indicesPtr >>> 0, ndim >>> 0, baseOffsetBytes >>> 0) >>> 0;
     }
 };
 

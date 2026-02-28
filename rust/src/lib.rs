@@ -13,3 +13,4 @@ mod transform;
 mod cull;
 mod mesh;
 mod anim;
+mod ndarray;

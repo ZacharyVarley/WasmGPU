@@ -482,6 +482,8 @@ export const wasmgpu_frame_arena_cap = wasm.wasmgpu_frame_arena_cap;
 
 export const f32view = (ptr, len) => new Float32Array(memory.buffer, ptr, len);
 export const u32view = (ptr, len) => new Uint32Array(memory.buffer, ptr, len);
+export const i32view = (ptr, len) => new Int32Array(memory.buffer, ptr, len);
+export const u8view = (ptr, len) => new Uint8Array(memory.buffer, ptr, len);
 
 export const transform_compose_local_many = wasm.transform_compose_local_many;
 export const transform_update_world_ordered = wasm.transform_update_world_ordered;
@@ -493,6 +495,10 @@ export const mesh_compute_vertex_normals = wasm.mesh_compute_vertex_normals;
 
 export const anim_sample_clip_trs = wasm.anim_sample_clip_trs;
 export const anim_compute_joint_matrices_to = wasm.anim_compute_joint_matrices_to;
+
+export const ndarray_numel = wasm.ndarray_numel;
+export const ndarray_strides_row_major = wasm.ndarray_strides_row_major;
+export const ndarray_offset_bytes = wasm.ndarray_offset_bytes;
 
 export const mat4_abs = wasm.mat4_abs;
 export const mat4_add = wasm.mat4_add;
@@ -744,6 +750,8 @@ export function wasmgpu_frame_arena_cap(): number;
 
 export function f32view(ptr: number, len: number): Float32Array;
 export function u32view(ptr: number, len: number): Uint32Array;
+export function i32view(ptr: number, len: number): Int32Array;
+export function u8view(ptr: number, len: number): Uint8Array;
 
 export function transform_compose_local_many(outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, count: number): number;
 export function transform_update_world_ordered(outWorldPtr: number, localPtr: number, parentPtr: number, orderPtr: number, count: number): number;
@@ -755,6 +763,10 @@ export function mesh_compute_vertex_normals(outNormalsPtr: number, positionsPtr:
 
 export function anim_sample_clip_trs(posPtr: number, rotPtr: number, sclPtr: number, transformCount: number, samplersPtr: number, samplerCount: number, channelsPtr: number, channelCount: number, time: number): number;
 export function anim_compute_joint_matrices_to(outPtr: number, jointIndicesPtr: number, jointCount: number, invBindPtr: number, worldBasePtr: number, meshWorldPtr: number): number;
+
+export function ndarray_numel(shapePtr: number, ndim: number): number;
+export function ndarray_strides_row_major(outStridesPtr: number, shapePtr: number, ndim: number, elemBytes: number): number;
+export function ndarray_offset_bytes(shapePtr: number, stridesPtr: number, indicesPtr: number, ndim: number, baseOffsetBytes: number): number;
 
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;

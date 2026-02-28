@@ -5,6 +5,7 @@ import { encodeDispatch, encodeDispatchBatch, type ComputeDispatchCommand, valid
 import { ComputeKernels } from "./kernels";
 import { RGBA8BufferCanvasBlitter, type BlitRGBA8BufferToCanvasOptions, type RGBA8BufferSource } from "./blit";
 import { ReadbackRing, type ReadbackRingDescriptor } from "./readback";
+import { Ndarray, CPUndarray, GPUndarray } from "./ndarray";
 
 export type ComputeDispatchOptions = {
     submit?: boolean;
@@ -20,6 +21,9 @@ export class Compute {
     readonly queue: GPUQueue;
     readonly kernels: ComputeKernels;
     readonly readback: ReadbackRing;
+    readonly ndarray = Ndarray;
+    readonly CPUndarray = CPUndarray;
+    readonly GPUndarray = GPUndarray;
     private _rgba8Blitter: RGBA8BufferCanvasBlitter | null = null;
 
     constructor(device: GPUDevice, queue: GPUQueue, desc: ComputeDescriptor = {}) {
@@ -125,3 +129,5 @@ export { ComputeKernels } from "./kernels";
 export type { KernelDispatchOptions, ReduceOptions, ScanOptions, HistogramOptions, CompactOptions, RadixSortOptions, ReduceOp, ArgReduceOp } from "./kernels";
 export { ReadbackRing } from "./readback";
 export type { ReadbackSource, ReadbackRingDescriptor } from "./readback";
+export { Ndarray, CPUndarray, GPUndarray, dtypeInfo } from "./ndarray";
+export type { DType, NdarrayResidency, NdLayoutDescriptor, DTypeInfo, NumberTypedArray, NumberTypedArrayConstructor } from "./ndarray";
