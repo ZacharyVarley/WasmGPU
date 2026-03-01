@@ -58,6 +58,58 @@ const compute = new Compute(device, device.queue);
 const kernels = compute.kernels ?? (ComputeKernels ? new ComputeKernels(device, device.queue) : null);
 assert.ok(kernels, "Kernels not available. Expected compute.kernels or exported ComputeKernels.");
 
+// Copy kernels u32 / f32
+{
+    assert.strictEqual(typeof kernels.copyU32, "function", "Missing kernel: copyU32");
+    assert.strictEqual(typeof kernels.copyF32, "function", "Missing kernel: copyF32");
+
+    // copyU32 (full)
+    {
+        const n = 8192 + 17;
+        const a = makeRandomU32Array(n, 0xFFFFFFFF >>> 0);
+        const bufA = compute.createStorageBuffer({ label: "copy:u32:in", data: a, copySrc: false });
+        const out = compute.createStorageBuffer({ label: "copy:u32:out", byteLength: n * 4, copySrc: true });
+        const outRef = kernels.copyU32(bufA, { out, count: n }) ?? out;
+        const got = await outRef.readAs(Uint32Array);
+        arraysEqualU32(got, a, "copyU32 mismatch");
+    }
+
+    // copyU32 (partial count)
+    {
+        const n = 4096 + 9;
+        const a = makeRandomU32Array(n, 1000);
+        const bufA = compute.createStorageBuffer({ label: "copy:u32:in_partial", data: a, copySrc: false });
+        const m = 1024 + 3;
+        const out = compute.createStorageBuffer({ label: "copy:u32:out_partial", byteLength: m * 4, copySrc: true });
+        const outRef = kernels.copyU32(bufA, { out, count: m }) ?? out;
+        const got = await outRef.readAs(Uint32Array);
+        arraysEqualU32(got, a.subarray(0, m), "copyU32 partial mismatch");
+    }
+
+    // copyF32 (full)
+    {
+        const n = 8192 + 7;
+        const a = makeRandomF32Array(n, -50, 50);
+        const bufA = compute.createStorageBuffer({ label: "copy:f32:in", data: a, copySrc: false });
+        const out = compute.createStorageBuffer({ label: "copy:f32:out", byteLength: n * 4, copySrc: true });
+        const outRef = kernels.copyF32(bufA, { out, count: n }) ?? out;
+        const got = await outRef.readAs(Float32Array);
+        arraysApproxEqualF32(got, a, 1e-5, "copyF32 mismatch");
+    }
+
+    // copyF32 (partial count)
+    {
+        const n = 4096 + 11;
+        const a = makeRandomF32Array(n, -5, 5);
+        const bufA = compute.createStorageBuffer({ label: "copy:f32:in_partial", data: a, copySrc: false });
+        const m = 777;
+        const out = compute.createStorageBuffer({ label: "copy:f32:out_partial", byteLength: m * 4, copySrc: true });
+        const outRef = kernels.copyF32(bufA, { out, count: m }) ?? out;
+        const got = await outRef.readAs(Float32Array);
+        arraysApproxEqualF32(got, a.subarray(0, m), 1e-5, "copyF32 partial mismatch");
+    }
+}
+
 // Reduction kernels u32
 {
     const n = 10000;
