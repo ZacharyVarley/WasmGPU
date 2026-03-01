@@ -5,7 +5,7 @@ import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
 import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
-import { frameArena, initWebAssembly } from "../wasm";
+import { frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
@@ -81,6 +81,30 @@ export class WasmGPU {
 
     get cullingStats(): { tested: number; visible: number } {
         return this.renderer.cullingStats;
+    }
+
+    static get interop() {
+        return wasmInterop;
+    }
+
+    get interop() {
+        return wasmInterop;
+    }
+
+    static createHeapArena(capBytes: number, align: number = 16): WasmHeapArena {
+        return wasmInterop.createHeapArena(capBytes, align);
+    }
+
+    createHeapArena(capBytes: number, align: number = 16): WasmHeapArena {
+        return wasmInterop.createHeapArena(capBytes, align);
+    }
+
+    static get frameArena() {
+        return frameArena;
+    }
+
+    get frameArena() {
+        return frameArena;
     }
 
     createPerformanceStats(desc: PerformanceStatsDescriptor = {}): PerformanceStats {

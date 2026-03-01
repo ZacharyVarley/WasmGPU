@@ -119,7 +119,7 @@ export class ReadbackRing {
         return job;
     }
 
-    async readAs<T extends ArrayBufferView>(ctor: TypedArrayConstructor<T>, src: ReadbackSource, srcOffsetBytes: number = 0, sizeBytes?: number, opts: { label?: string } = {}): Promise<T> {
+    async readAs<T extends ArrayBufferView<ArrayBuffer>>(ctor: TypedArrayConstructor<T>, src: ReadbackSource, srcOffsetBytes: number = 0, sizeBytes?: number, opts: { label?: string } = {}): Promise<T> {
         const bytes = await this.read(src, srcOffsetBytes, sizeBytes, opts);
         const bpe = ctor.BYTES_PER_ELEMENT;
         assert((bytes.byteLength % bpe) === 0, `readAs: byteLength (${bytes.byteLength}) is not divisible by BYTES_PER_ELEMENT (${bpe})`);

@@ -1,30 +1,23 @@
 import { alignTo, assert } from "../utils";
 
-export interface TypedArrayConstructor<T extends ArrayBufferView> {
+export interface TypedArrayConstructor<T extends ArrayBufferView<ArrayBuffer>> {
     readonly BYTES_PER_ELEMENT: number;
-    new(buffer: ArrayBufferLike, byteOffset?: number, length?: number): T;
+    new(buffer: ArrayBuffer, byteOffset?: number, length?: number): T;
 }
 
 const isArrayBufferView = (x: BufferSource): x is ArrayBufferView<ArrayBuffer> => {
-    return (x as ArrayBufferView).buffer !== undefined;
+    return ArrayBuffer.isView(x);
 };
 
-const resolveSourceRange = (data: BufferSource, srcOffsetBytes: number = 0, sizeBytes?: number): { buffer: ArrayBufferLike; offset: number; size: number } => {
-    assert(Number.isInteger(srcOffsetBytes) && srcOffsetBytes >= 0, `srcOffsetBytes must be an integer >= 0 (got ${srcOffsetBytes})`);
+const resolveSourceRange = (data: BufferSource, srcOffsetBytes: number = 0, sizeBytes?: number): { buffer: ArrayBuffer; offset: number; size: number } => {
     if (isArrayBufferView(data)) {
         const baseOffset = data.byteOffset + srcOffsetBytes;
-        const remaining = data.byteLength - srcOffsetBytes;
-        assert(remaining >= 0, `srcOffsetBytes (${srcOffsetBytes}) exceeds view byteLength (${data.byteLength})`);
-        const size = sizeBytes ?? remaining;
-        assert(Number.isInteger(size) && size >= 0, `sizeBytes must be an integer >= 0 (got ${size})`);
-        assert(size <= remaining, `sizeBytes (${size}) exceeds remaining bytes (${remaining})`);
-        return { buffer: data.buffer, offset: baseOffset, size };
+        const maxSize = data.byteLength - srcOffsetBytes;
+        const size = (sizeBytes === undefined) ? maxSize : Math.min(maxSize, sizeBytes);
+        return { buffer: data.buffer as unknown as ArrayBuffer, offset: baseOffset, size };
     }
-    const remaining = data.byteLength - srcOffsetBytes;
-    assert(remaining >= 0, `srcOffsetBytes (${srcOffsetBytes}) exceeds buffer byteLength (${data.byteLength})`);
-    const size = sizeBytes ?? remaining;
-    assert(Number.isInteger(size) && size >= 0, `sizeBytes must be an integer >= 0 (got ${size})`);
-    assert(size <= remaining, `sizeBytes (${size}) exceeds remaining bytes (${remaining})`);
+    const maxSize = data.byteLength - srcOffsetBytes;
+    const size = (sizeBytes === undefined) ? maxSize : Math.min(maxSize, sizeBytes);
     return { buffer: data, offset: srcOffsetBytes, size };
 };
 
@@ -35,7 +28,7 @@ const queueWriteBufferAligned = (queue: GPUQueue, dst: GPUBuffer, dstOffsetBytes
     assert((src.offset & 3) === 0, `srcOffsetBytes must be 4-byte aligned (got ${src.offset})`);
     const alignedSize = alignTo(src.size, 4);
     if (alignedSize === src.size) {
-        queue.writeBuffer(dst, dstOffsetBytes, src.buffer as ArrayBuffer, src.offset, src.size);
+        queue.writeBuffer(dst, dstOffsetBytes, data, srcOffsetBytes, src.size);
         return;
     }
     const tmp = new Uint8Array(alignedSize);
@@ -71,7 +64,8 @@ export abstract class GpuBuffer {
     }
 
     writeFromWasmMemory(mem: WebAssembly.Memory, srcPtrBytes: number, sizeBytes: number, dstOffsetBytes: number = 0): void {
-        this.write(mem.buffer as unknown as ArrayBuffer, dstOffsetBytes, srcPtrBytes, sizeBytes);
+        const view = new Uint8Array(mem.buffer as unknown as ArrayBuffer, srcPtrBytes >>> 0, sizeBytes >>> 0);
+        this.write(view, dstOffsetBytes, 0, sizeBytes);
     }
 }
 
@@ -140,7 +134,7 @@ export class StorageBuffer extends GpuBuffer {
         return out;
     }
 
-    async readAs<T extends ArrayBufferView>(ctor: TypedArrayConstructor<T>, srcOffsetBytes: number = 0, sizeBytes?: number): Promise<T> {
+    async readAs<T extends ArrayBufferView<ArrayBuffer>>(ctor: TypedArrayConstructor<T>, srcOffsetBytes: number = 0, sizeBytes?: number): Promise<T> {
         const bytes = await this.read(srcOffsetBytes, sizeBytes);
         const bpe = ctor.BYTES_PER_ELEMENT;
         assert((bytes.byteLength % bpe) === 0, `readAs: byteLength (${bytes.byteLength}) is not divisible by BYTES_PER_ELEMENT (${bpe})`);

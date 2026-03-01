@@ -5,11 +5,15 @@ use crate::shared::align_up;
 static mut FRAME_ARENA_BASE: usize = 0;
 static mut FRAME_ARENA_CAP: usize = 0;
 static mut FRAME_ARENA_HEAD: usize = 0;
+static mut FRAME_ARENA_EPOCH: u32 = 0;
 
 #[no_mangle]
 pub extern "C" fn wasmgpu_frame_arena_init(cap_bytes: u32) -> u32 {
     unsafe {
         if FRAME_ARENA_BASE != 0 {
+            if FRAME_ARENA_EPOCH == 0 {
+                FRAME_ARENA_EPOCH = 1;
+            }
             return FRAME_ARENA_BASE as u32;
         }
         if cap_bytes == 0 {
@@ -24,6 +28,7 @@ pub extern "C" fn wasmgpu_frame_arena_init(cap_bytes: u32) -> u32 {
         FRAME_ARENA_BASE = base as usize;
         FRAME_ARENA_CAP = cap_bytes as usize;
         FRAME_ARENA_HEAD = 0;
+        FRAME_ARENA_EPOCH = 1;
 
         base
     }
@@ -32,8 +37,20 @@ pub extern "C" fn wasmgpu_frame_arena_init(cap_bytes: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn wasmgpu_frame_arena_reset() {
     unsafe {
+        if FRAME_ARENA_BASE == 0 {
+            return;
+        }
         FRAME_ARENA_HEAD = 0;
+        FRAME_ARENA_EPOCH = FRAME_ARENA_EPOCH.wrapping_add(1);
+        if FRAME_ARENA_EPOCH == 0 {
+            FRAME_ARENA_EPOCH = 1;
+        }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn wasmgpu_frame_arena_epoch() -> u32 {
+    unsafe { FRAME_ARENA_EPOCH }
 }
 
 #[no_mangle]

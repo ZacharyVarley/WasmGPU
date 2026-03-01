@@ -5,7 +5,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
-import { animf, cullf, frameArena, frustumf, mat4f, transformf, wasm, WasmPtr } from "../wasm";
+import { animf, cullf, frameArena, frustumf, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import { createBuffer, createDepthTexture } from "../utils";
 
@@ -1036,6 +1036,7 @@ export class Renderer {
                     const modelSlot = this.modelBufferIndex++;
                     const modelBuffer = this.modelUniformBuffers[modelSlot];
                     const globalBindGroup = this.globalBindGroups[modelSlot];
+                    const bytes = wasmInterop.bytes();
                     const mesh = items[k].mesh;
                     const skin = first.skinned ? mesh.skin : null;
                     if (skin) {
@@ -1043,7 +1044,7 @@ export class Renderer {
                         const jointCount = skin.jointCount | 0;
                         const jointMatPtr = frameArena.allocF32(jointCount * 16) as WasmPtr;
                         animf.computeJointMatricesTo(jointMatPtr, skin.skin.jointIndicesPtr, jointCount, skin.skin.invBindPtr, TransformStore.global().worldPtr as WasmPtr, skin.bindMatrixPtr);
-                        this.queue.writeBuffer(skin.boneBuffer!, 0, wasm.memory().buffer as ArrayBuffer, jointMatPtr, jointCount * 64);
+                        this.queue.writeBuffer(skin.boneBuffer!, 0, bytes, jointMatPtr, jointCount * 64);
                         pass.setBindGroup(2, skin.bindGroup!);
                     }
                     const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
@@ -1051,9 +1052,8 @@ export class Renderer {
                     const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
                     mat4f.invert(invPtr, modelPtr);
                     mat4f.transpose(normalPtr, invPtr);
-                    const mem = wasm.memory().buffer as ArrayBuffer;
-                    this.queue.writeBuffer(modelBuffer, 0, mem, modelPtr, 16 * 4);
-                    this.queue.writeBuffer(modelBuffer, 16 * 4, mem, normalPtr, 16 * 4);
+                    this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+                    this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
                     pass.setBindGroup(0, globalBindGroup);
                     if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
                     else pass.draw(geometry.vertexCount);
@@ -1074,8 +1074,8 @@ export class Renderer {
         const dstOffset = this.instanceBufferOffset;
         const dstEnd = dstOffset + outBytes;
         this.ensureInstanceBuffer(dstEnd);
-        const mem = wasm.memory().buffer as ArrayBuffer;
-        this.queue.writeBuffer(this.instanceBuffer!, dstOffset, mem, outPtr, outBytes);
+        const bytes = wasmInterop.bytes();
+        this.queue.writeBuffer(this.instanceBuffer!, dstOffset, bytes, outPtr, outBytes);
         pass.setBindGroup(0, this.globalBindGroups[0]);
         pass.setVertexBuffer(3, this.instanceBuffer!, dstOffset, outBytes);
         if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);

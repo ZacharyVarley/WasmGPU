@@ -50,6 +50,16 @@ const envFlag = (name, defaultValue) => {
 };
 
 const ENABLE_SIMD = envFlag("WASMGPU_SIMD", true);
+const ENABLE_SHARED_MEMORY = envFlag("WASMGPU_SHARED_MEMORY", false);
+const SHARED_MEMORY_INITIAL_MB = (() => {
+    const raw = Number.parseInt(process.env.WASMGPU_SHARED_MEMORY_INITIAL_MB ?? "0", 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : 0;
+})();
+const SHARED_MEMORY_MAX_MB = (() => {
+    const raw = Number.parseInt(process.env.WASMGPU_SHARED_MEMORY_MAX_MB ?? "0", 10);
+    const v = Number.isFinite(raw) && raw > 0 ? raw : 1024;
+    return v;
+})();
 const ENABLE_WASM_OPT = envFlag("WASMGPU_WASM_OPT", true);
 const WASM_OPT_LEVEL = (process.env.WASMGPU_WASM_OPT_LEVEL ?? "O3").trim();
 const WASM_OPT_CONVERGE = envFlag("WASMGPU_WASM_OPT_CONVERGE", false);
@@ -349,6 +359,7 @@ mkdirSync(TOOLS_DIR, { recursive: true });
 console.log(
     `Rust/Wasm build config: ` +
     `SIMD=${ENABLE_SIMD ? "on" : "off"} ` +
+    `shared-memory=${ENABLE_SHARED_MEMORY ? "on" : "off"} ` +
     `wasm-opt=${ENABLE_WASM_OPT ? "on" : "off"} ` +
     `(level=${normalizeWasmOptLevel(WASM_OPT_LEVEL)} converge=${WASM_OPT_CONVERGE ? "on" : "off"})`
 );
@@ -357,6 +368,18 @@ const rustEnv = (() => {
     const base = (process.env.RUSTFLAGS ?? "").trim();
     const flags = [];
     if (ENABLE_SIMD && !base.includes("simd128")) flags.push("-C target-feature=+simd128");
+    if (ENABLE_SHARED_MEMORY) {
+        if (!base.includes("atomics")) flags.push("-C target-feature=+atomics,+bulk-memory,+mutable-globals");
+        const PAGE_BYTES = 65536;
+        const alignUp = (n, align) => Math.ceil(n / align) * align;
+        const initialBytes = (SHARED_MEMORY_INITIAL_MB > 0) ? alignUp(SHARED_MEMORY_INITIAL_MB * 1024 * 1024, PAGE_BYTES) : 0;
+        const maxBytes = alignUp(SHARED_MEMORY_MAX_MB * 1024 * 1024, PAGE_BYTES);
+        if (initialBytes > 0 && initialBytes > maxBytes) throw new Error(`WASMGPU_SHARED_MEMORY_INITIAL_MB (${SHARED_MEMORY_INITIAL_MB}) exceeds WASMGPU_SHARED_MEMORY_MAX_MB (${SHARED_MEMORY_MAX_MB})`);
+        flags.push("-C link-arg=--shared-memory");
+        flags.push("-C link-arg=--export-memory");
+        flags.push(`-C link-arg=--max-memory=${maxBytes}`);
+        if (initialBytes > 0) flags.push(`-C link-arg=--initial-memory=${initialBytes}`);
+    }
     const merged = [base, ...flags].filter((s) => s && s.length > 0).join(" ").trim();
     return merged.length > 0 ? { RUSTFLAGS: merged } : undefined;
 })();
@@ -475,6 +498,7 @@ export const wasmgpu_seed = wasm.wasmgpu_seed;
 
 export const wasmgpu_frame_arena_init = wasm.wasmgpu_frame_arena_init;
 export const wasmgpu_frame_arena_reset = wasm.wasmgpu_frame_arena_reset;
+export const wasmgpu_frame_arena_epoch = wasm.wasmgpu_frame_arena_epoch;
 export const wasmgpu_frame_alloc = wasm.wasmgpu_frame_alloc;
 export const wasmgpu_frame_alloc_f32 = wasm.wasmgpu_frame_alloc_f32;
 export const wasmgpu_frame_arena_used = wasm.wasmgpu_frame_arena_used;
@@ -743,6 +767,7 @@ export function wasmgpu_seed(seed: number): void;
 
 export function wasmgpu_frame_arena_init(capBytes: number): number;
 export function wasmgpu_frame_arena_reset(): void;
+export function wasmgpu_frame_arena_epoch(): number;
 export function wasmgpu_frame_alloc(bytes: number, align: number): number;
 export function wasmgpu_frame_alloc_f32(len: number): number;
 export function wasmgpu_frame_arena_used(): number;
