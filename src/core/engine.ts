@@ -11,6 +11,7 @@ import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type Tr
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { PointCloud, type PointCloudDescriptor } from "../world/pointcloud";
+import { GlyphField, type GlyphFieldDescriptor } from "../world/glyphfield";
 import { Scene } from "../world/scene";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
@@ -204,6 +205,10 @@ export class WasmGPU {
 
     createPointCloud(descriptor: PointCloudDescriptor = {}): PointCloud {
         return new PointCloud(descriptor);
+    }
+
+    createGlyphField(descriptor: GlyphFieldDescriptor = {}): GlyphField {
+        return new GlyphField(descriptor);
     }
 
     readonly createLight = {

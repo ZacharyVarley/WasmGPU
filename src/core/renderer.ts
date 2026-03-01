@@ -4,11 +4,13 @@ import { DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
+import { GlyphField } from "../world/glyphfield";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
 import { animf, cullf, frameArena, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
+import glyphFieldWGSL from "../wgsl/world/glyphfield.wgsl";
 import { createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -39,7 +41,17 @@ type PointCloudDrawItem = {
     sortKey: number;
 };
 
-type TransparentDrawItem = DrawItem | PointCloudDrawItem;
+type GlyphDrawItem = {
+    field: GlyphField;
+    geometry: Geometry;
+    pipeline: GPURenderPipeline;
+    pipelineId: number;
+    geometryId: number;
+    fieldId: number;
+    sortKey: number;
+};
+
+type TransparentDrawItem = DrawItem | PointCloudDrawItem | GlyphDrawItem;
 
 export class Renderer {
     readonly canvas: HTMLCanvasElement;
@@ -94,6 +106,13 @@ export class Renderer {
     private pointCloudDrawItemPoolUsed: number = 0;
     private opaquePointCloudDrawList: PointCloudDrawItem[] = [];
     private transparentPointCloudDrawList: PointCloudDrawItem[] = [];
+    private glyphFieldBindGroupLayout: GPUBindGroupLayout | null = null;
+    private glyphFieldDummyAttributesBuffer: GPUBuffer | null = null;
+    private glyphFieldDrawItemPool: GlyphDrawItem[] = [];
+    private glyphFieldDrawItemPoolUsed: number = 0;
+    private opaqueGlyphFieldDrawList: GlyphDrawItem[] = [];
+    private transparentGlyphFieldDrawList: GlyphDrawItem[] = [];
+    private cullGlyphFieldScratch: GlyphField[] = [];
     private transparentMergedDrawList: TransparentDrawItem[] = [];
     private cullPointCloudScratch: PointCloud[] = [];
     private objectIds: WeakMap<object, number> = new WeakMap();
@@ -325,6 +344,12 @@ export class Renderer {
         return item;
     }
 
+    private acquireGlyphFieldDrawItem(): GlyphDrawItem {
+        const idx = this.glyphFieldDrawItemPoolUsed++;
+        if (idx >= this.glyphFieldDrawItemPool.length) this.glyphFieldDrawItemPool.push({} as any);
+        return this.glyphFieldDrawItemPool[idx];
+    }
+
     private ensureCullingCapacity(count: number): void {
         if (count <= this.cullCapacity) return;
         let cap = Math.max(1, this.cullCapacity);
@@ -372,7 +397,9 @@ export class Renderer {
             });
             this.buildDrawLists(scene, camera);
             this.buildPointCloudDrawLists(scene, camera);
+            this.buildGlyphFieldDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
+            this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
             this.executeTransparentMergedDrawList(pass);
             pass.end();
@@ -404,7 +431,9 @@ export class Renderer {
             });
             this.buildDrawLists(scene, camera);
             this.buildPointCloudDrawLists(scene, camera);
+            this.buildGlyphFieldDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
+            this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
             this.executeTransparentMergedDrawList(pass);
             pass.end();
@@ -460,6 +489,9 @@ export class Renderer {
         this.pipelineCache.clear();
         this.shaderCache.clear();
         this.pointCloudBindGroupLayout = null;
+        this.glyphFieldBindGroupLayout = null;
+        this.glyphFieldDummyAttributesBuffer?.destroy();
+        this.glyphFieldDummyAttributesBuffer = null;
         this.gpuQuerySet?.destroy();
         this.gpuQuerySet = null;
         this.gpuResolveBuffer?.destroy();
@@ -1111,9 +1143,7 @@ export class Renderer {
                 for (let i = 0; i < numVisible; i++) visible.push(bounded[storeU32[outBase + i]]);
             }
             for (const pc of unbounded) visible.push(pc);
-        } else {
-            for (const pc of this.cullPointCloudScratch) visible.push(pc);
-        }
+        } else for (const pc of this.cullPointCloudScratch) visible.push(pc);
         for (const pc of visible) {
             const pipeline = this.getOrCreatePointCloudPipeline(pc);
             const pipelineId = this.getObjectId(pipeline);
@@ -1143,6 +1173,124 @@ export class Renderer {
         }
         this.opaquePointCloudDrawList.sort((a, b) => a.pipelineId - b.pipelineId || a.cloudId - b.cloudId);
         this.transparentPointCloudDrawList.sort((a, b) => b.sortKey - a.sortKey || a.pipelineId - b.pipelineId || a.cloudId - b.cloudId);
+    }
+
+    private buildGlyphFieldDrawLists(scene: Scene, camera: Camera): void {
+        this.glyphFieldDrawItemPoolUsed = 0;
+        this.opaqueGlyphFieldDrawList.length = 0;
+        this.transparentGlyphFieldDrawList.length = 0;
+        this.cullGlyphFieldScratch.length = 0;
+        for (const gf of scene.glyphFields) {
+            if (!gf.visible) continue;
+            if (gf.instanceCount <= 0) continue;
+            this.cullGlyphFieldScratch.push(gf);
+        }
+        if (this.cullGlyphFieldScratch.length === 0) return;
+        const store = TransformStore.global();
+        const f32 = store.f32();
+        const camX = camera.position[0];
+        const camY = camera.position[1];
+        const camZ = camera.position[2];
+        const visible: GlyphField[] = [];
+        if (this.frustumCullingEnabled) {
+            const bounded: GlyphField[] = [];
+            const unbounded: GlyphField[] = [];
+            for (const gf of this.cullGlyphFieldScratch) {
+                if (gf.boundsRadius > 0) bounded.push(gf);
+                else unbounded.push(gf);
+            }
+            if (bounded.length > 0) {
+                this.ensureCullingCapacity(bounded.length);
+                const centers = store.f32().subarray(this.cullCentersPtr >>> 2, (this.cullCentersPtr >>> 2) + bounded.length * 3);
+                const radii = store.f32().subarray(this.cullRadiiPtr >>> 2, (this.cullRadiiPtr >>> 2) + bounded.length);
+                for (let i = 0; i < bounded.length; i++) {
+                    const field = bounded[i];
+                    const ptr = field.transform.worldMatrixPtr >>> 2;
+                    const cx = field.boundsCenter[0];
+                    const cy = field.boundsCenter[1];
+                    const cz = field.boundsCenter[2];
+                    const tx = f32[ptr + 12];
+                    const ty = f32[ptr + 13];
+                    const tz = f32[ptr + 14];
+                    const wx = f32[ptr + 0] * cx + f32[ptr + 4] * cy + f32[ptr + 8] * cz + tx;
+                    const wy = f32[ptr + 1] * cx + f32[ptr + 5] * cy + f32[ptr + 9] * cz + ty;
+                    const wz = f32[ptr + 2] * cx + f32[ptr + 6] * cy + f32[ptr + 10] * cz + tz;
+                    centers[i * 3 + 0] = wx;
+                    centers[i * 3 + 1] = wy;
+                    centers[i * 3 + 2] = wz;
+                    const sx = Math.hypot(f32[ptr + 0], f32[ptr + 1], f32[ptr + 2]);
+                    const sy = Math.hypot(f32[ptr + 4], f32[ptr + 5], f32[ptr + 6]);
+                    const sz = Math.hypot(f32[ptr + 8], f32[ptr + 9], f32[ptr + 10]);
+                    const maxS = Math.max(sx, sy, sz);
+                    radii[i] = field.boundsRadius * maxS;
+                }
+                const m = this.cameraUniformStagingView;
+                const p = frameArena.allocF32(6 * 4) as WasmPtr;
+                const pv = store.f32().subarray(p >>> 2, (p >>> 2) + 24);
+                pv.set([
+                    m[3] + m[0], m[7] + m[4], m[11] + m[8], m[15] + m[12],
+                    m[3] - m[0], m[7] - m[4], m[11] - m[8], m[15] - m[12],
+                    m[3] + m[1], m[7] + m[5], m[11] + m[9], m[15] + m[13],
+                    m[3] - m[1], m[7] - m[5], m[11] - m[9], m[15] - m[13],
+                    m[3] + m[2], m[7] + m[6], m[11] + m[10], m[15] + m[14],
+                    m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]
+                ]);
+                const planesPtr = p;
+                const centersPtr = this.cullCentersPtr;
+                const radiiPtr = this.cullRadiiPtr;
+                const outPtr = frameArena.alloc(bounded.length, 4) as WasmPtr;
+                cullf.spheresFrustum(outPtr, centersPtr, radiiPtr, bounded.length, planesPtr);
+                const u32 = store.u32();
+                for (let i = 0; i < bounded.length; i++) if (u32[(outPtr >>> 2) + i] !== 0) visible.push(bounded[i]);
+                if (this.frustumCullingStatsEnabled) {
+                    this.cullingStats.tested += bounded.length;
+                    this.cullingStats.visible += visible.length;
+                }
+            }
+            for (const gf of unbounded) visible.push(gf);
+        } else for (const gf of this.cullGlyphFieldScratch) visible.push(gf);
+        for (const gf of visible) {
+            const geometry = gf.geometry;
+            const pipeline = this.getOrCreateGlyphFieldPipeline(gf);
+            const item = this.acquireGlyphFieldDrawItem();
+            item.field = gf;
+            item.geometry = geometry;
+            item.pipeline = pipeline;
+            item.pipelineId = this.getObjectId(pipeline);
+            item.geometryId = this.getObjectId(geometry);
+            item.fieldId = this.getObjectId(gf);
+            if (gf.blendMode === BlendMode.Opaque) {
+                item.sortKey = 0;
+                this.opaqueGlyphFieldDrawList.push(item);
+            } else {
+                const base = gf.transform.worldMatrixPtr >>> 2;
+                const dx = f32[base + 12] - camX;
+                const dy = f32[base + 13] - camY;
+                const dz = f32[base + 14] - camZ;
+                item.sortKey = dx * dx + dy * dy + dz * dz;
+                this.transparentGlyphFieldDrawList.push(item);
+            }
+        }
+        if (this.opaqueGlyphFieldDrawList.length > 0) {
+            this.opaqueGlyphFieldDrawList.sort((a, b) => {
+                const d0 = a.pipelineId - b.pipelineId;
+                if (d0 !== 0) return d0;
+                const d1 = a.geometryId - b.geometryId;
+                if (d1 !== 0) return d1;
+                return a.fieldId - b.fieldId;
+            });
+        }
+        if (this.transparentGlyphFieldDrawList.length > 0) {
+            this.transparentGlyphFieldDrawList.sort((a, b) => {
+                const d0 = b.sortKey - a.sortKey;
+                if (d0 !== 0) return d0;
+                const d1 = a.pipelineId - b.pipelineId;
+                if (d1 !== 0) return d1;
+                const d2 = a.geometryId - b.geometryId;
+                if (d2 !== 0) return d2;
+                return a.fieldId - b.fieldId;
+            });
+        }
     }
 
     private executeDrawList(pass: GPURenderPassEncoder, items: DrawItem[]): void {
@@ -1262,11 +1410,65 @@ export class Renderer {
         }
     }
 
+    private executeGlyphFieldDrawList(pass: GPURenderPassEncoder, list: GlyphDrawItem[]): void {
+        if (list.length === 0) return;
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastGeometry: Geometry | null = null;
+        let lastField: GlyphField | null = null;
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            const field = item.field;
+            const geometry = item.geometry;
+            if (!field.visible) continue;
+            if (field.instanceCount <= 0) continue;
+            this.ensureGlyphFieldBindGroup(field);
+            if (!field.bindGroup) continue;
+            if (item.pipeline !== lastPipeline) {
+                pass.setPipeline(item.pipeline);
+                lastPipeline = item.pipeline;
+                lastGeometry = null;
+                lastField = null;
+            }
+            if (geometry !== lastGeometry) {
+                geometry.upload(this.device);
+                pass.setVertexBuffer(0, geometry.positionBuffer);
+                pass.setVertexBuffer(1, geometry.normalBuffer);
+                if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
+                lastGeometry = geometry;
+            }
+            if (field !== lastField) {
+                pass.setBindGroup(1, field.bindGroup);
+                lastField = field;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const modelSlot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[modelSlot];
+            const globalBindGroup = this.globalBindGroups[modelSlot];
+            const modelPtr = field.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            pass.setBindGroup(0, globalBindGroup);
+            if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, field.instanceCount);
+            else pass.draw(geometry.vertexCount, field.instanceCount);
+        }
+    }
+
     private executeTransparentMergedDrawList(pass: GPURenderPassEncoder): void {
         this.transparentMergedDrawList.length = 0;
         for (const item of this.transparentDrawList) this.transparentMergedDrawList.push(item);
+        for (const item of this.transparentGlyphFieldDrawList) this.transparentMergedDrawList.push(item);
         for (const item of this.transparentPointCloudDrawList) this.transparentMergedDrawList.push(item);
         if (this.transparentMergedDrawList.length === 0) return;
+        const typeOrder = (x: TransparentDrawItem): number => {
+            if ("mesh" in x) return 0;
+            if ("field" in x) return 1;
+            return 2;
+        };
         this.transparentMergedDrawList.sort((a, b) => {
             const d0 = b.sortKey - a.sortKey;
             if (d0 !== 0) return d0;
@@ -1284,12 +1486,21 @@ export class Renderer {
                     ((am.skinned8 ? 1 : 0) - (bm.skinned8 ? 1 : 0))
                 );
             }
-            if (!aIsMesh && !bIsMesh) {
+            const aIsCloud = "cloud" in a;
+            const bIsCloud = "cloud" in b;
+            if (aIsCloud && bIsCloud) {
                 const ap = a as PointCloudDrawItem;
                 const bp = b as PointCloudDrawItem;
                 return ap.cloudId - bp.cloudId;
             }
-            return aIsMesh ? -1 : 1;
+            const aIsGlyph = "field" in a;
+            const bIsGlyph = "field" in b;
+            if (aIsGlyph && bIsGlyph) {
+                const ag = a as GlyphDrawItem;
+                const bg = b as GlyphDrawItem;
+                return (ag.geometryId - bg.geometryId) || (ag.fieldId - bg.fieldId);
+            }
+            return typeOrder(a) - typeOrder(b);
         });
         const bytes = wasmInterop.bytes();
         let lastPipeline: GPURenderPipeline | null = null;
@@ -1297,6 +1508,8 @@ export class Renderer {
         let lastGeometry: Geometry | null = null;
         let lastSkinned: boolean = false;
         let lastSkinned8: boolean = false;
+        let lastCloud: PointCloud | null = null;
+        let lastGlyph: GlyphField | null = null;
         for (let i = 0; i < this.transparentMergedDrawList.length; i++) {
             const item = this.transparentMergedDrawList[i];
             if ("mesh" in item) {
@@ -1311,6 +1524,8 @@ export class Renderer {
                     lastGeometry = null;
                     lastSkinned = false;
                     lastSkinned8 = false;
+                    lastCloud = null;
+                    lastGlyph = null;
                 }
                 if (geometry !== lastGeometry) geometry.upload(this.device);
                 if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
@@ -1367,13 +1582,16 @@ export class Renderer {
                 pass.setBindGroup(0, globalBindGroup);
                 if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
                 else pass.draw(geometry.vertexCount);
-            } else {
-                const drawItem = item as PointCloudDrawItem;
-                const cloud = drawItem.cloud;
-                if (!cloud.visible) continue;
-                if (cloud.pointCount <= 0) continue;
-                this.ensurePointCloudBindGroup(cloud);
-                if (!cloud.bindGroup) continue;
+                continue;
+            }
+            if ("field" in item) {
+                const drawItem = item as GlyphDrawItem;
+                const field = drawItem.field;
+                const geometry = drawItem.geometry;
+                if (!field.visible) continue;
+                if (field.instanceCount <= 0) continue;
+                this.ensureGlyphFieldBindGroup(field);
+                if (!field.bindGroup) continue;
                 if (drawItem.pipeline !== lastPipeline) {
                     pass.setPipeline(drawItem.pipeline);
                     lastPipeline = drawItem.pipeline;
@@ -1381,12 +1599,27 @@ export class Renderer {
                     lastGeometry = null;
                     lastSkinned = false;
                     lastSkinned8 = false;
+                    lastCloud = null;
+                    lastGlyph = null;
+                }
+                if (geometry !== lastGeometry) {
+                    geometry.upload(this.device);
+                    pass.setVertexBuffer(0, geometry.positionBuffer);
+                    pass.setVertexBuffer(1, geometry.normalBuffer);
+                    if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
+                    lastGeometry = geometry;
+                }
+                if (field !== lastGlyph) {
+                    pass.setBindGroup(1, field.bindGroup);
+                    lastGlyph = field;
+                    lastCloud = null;
+                    lastMaterial = null;
                 }
                 if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
                 const modelSlot = this.modelBufferIndex++;
                 const modelBuffer = this.modelUniformBuffers[modelSlot];
                 const globalBindGroup = this.globalBindGroups[modelSlot];
-                const modelPtr = cloud.transform.worldMatrixPtr as WasmPtr;
+                const modelPtr = field.transform.worldMatrixPtr as WasmPtr;
                 const invPtr = this.modelUniformStagingPtr;
                 const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
                 mat4f.invert(invPtr, modelPtr);
@@ -1394,9 +1627,45 @@ export class Renderer {
                 this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
                 this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
                 pass.setBindGroup(0, globalBindGroup);
-                pass.setBindGroup(1, cloud.bindGroup);
-                pass.draw(cloud.pointCount);
+                if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, field.instanceCount);
+                else pass.draw(geometry.vertexCount, field.instanceCount);
+                continue;
             }
+            const drawItem = item as PointCloudDrawItem;
+            const cloud = drawItem.cloud;
+            if (!cloud.visible) continue;
+            if (cloud.pointCount <= 0) continue;
+            this.ensurePointCloudBindGroup(cloud);
+            if (!cloud.bindGroup) continue;
+            if (drawItem.pipeline !== lastPipeline) {
+                pass.setPipeline(drawItem.pipeline);
+                lastPipeline = drawItem.pipeline;
+                lastMaterial = null;
+                lastGeometry = null;
+                lastSkinned = false;
+                lastSkinned8 = false;
+                lastCloud = null;
+                lastGlyph = null;
+            }
+            if (cloud !== lastCloud) {
+                pass.setBindGroup(1, cloud.bindGroup);
+                lastCloud = cloud;
+                lastGlyph = null;
+                lastMaterial = null;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const modelSlot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[modelSlot];
+            const globalBindGroup = this.globalBindGroups[modelSlot];
+            const modelPtr = cloud.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            pass.setBindGroup(0, globalBindGroup);
+            pass.draw(cloud.pointCount);
         }
     }
 
@@ -1578,112 +1847,6 @@ export class Renderer {
         return "custom";
     }
 
-    private getPointCloudBindGroupLayout(): GPUBindGroupLayout {
-        if (this.pointCloudBindGroupLayout) return this.pointCloudBindGroupLayout;
-        this.pointCloudBindGroupLayout = this.device.createBindGroupLayout({
-            entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-                    buffer: { type: "read-only-storage" }
-                },
-                {
-                    binding: 1,
-                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform", minBindingSize: 176 }
-                }
-            ]
-        });
-        return this.pointCloudBindGroupLayout;
-    }
-
-    private getPointCloudPipelineCacheKey(pointCloud: PointCloud): string {
-        return ["pointcloud", `blend=${pointCloud.blendMode}`, `depthTest=${pointCloud.depthTest ? 1 : 0}`, `depthWrite=${pointCloud.depthWrite ? 1 : 0}`, `fmt=${this.format}`].join("|");
-    }
-
-    private getOrCreatePointCloudPipeline(pointCloud: PointCloud): GPURenderPipeline {
-        const key = this.getPointCloudPipelineCacheKey(pointCloud);
-        const cached = this.pipelineCache.get(key);
-        if (cached) return cached;
-        let shaderModule = this.shaderCache.get(pointCloudWGSL);
-        if (!shaderModule) {
-            shaderModule = this.device.createShaderModule({ code: pointCloudWGSL });
-            this.shaderCache.set(pointCloudWGSL, shaderModule);
-        }
-        const bindGroupLayout = this.getPointCloudBindGroupLayout();
-        const pipelineLayout = this.device.createPipelineLayout({
-            bindGroupLayouts: [this.globalBindGroupLayout, bindGroupLayout]
-        });
-        const blend = this.getBlendState(pointCloud.blendMode);
-        const pipeline = this.device.createRenderPipeline({
-            label: key,
-            layout: pipelineLayout,
-            vertex: {
-                module: shaderModule,
-                entryPoint: "vs_main",
-                buffers: []
-            },
-            fragment: {
-                module: shaderModule,
-                entryPoint: "fs_main",
-                targets: [
-                    {
-                        format: this.format,
-                        blend
-                    }
-                ]
-            },
-            primitive: {
-                topology: "point-list",
-                cullMode: "none"
-            },
-            depthStencil: pointCloud.depthTest
-                ? {
-                    format: "depth24plus",
-                    depthWriteEnabled: pointCloud.depthWrite,
-                    depthCompare: "less"
-                }
-                : undefined
-        });
-        this.pipelineCache.set(key, pipeline);
-        return pipeline;
-    }
-
-    private getPointCloudBindGroupKey(pointCloud: PointCloud): string {
-        const points = pointCloud.pointsBuffer;
-        const uniforms = pointCloud.uniformBuffer;
-        return `pointcloud:${points ? this.getObjectId(points) : 0}:${uniforms ? this.getObjectId(uniforms) : 0}`;
-    }
-
-    private ensurePointCloudBindGroup(pointCloud: PointCloud): void {
-        pointCloud.upload(this.device, this.queue);
-        if (!pointCloud.pointsBuffer) return;
-        if (pointCloud.pointCount <= 0) return;
-        if (!pointCloud.uniformBuffer) {
-            pointCloud.uniformBuffer = this.device.createBuffer({
-                size: pointCloud.getUniformBufferSize(),
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-            });
-            pointCloud.bindGroupKey = null;
-        }
-        if (pointCloud.dirtyUniforms) {
-            const data = pointCloud.getUniformData();
-            this.queue.writeBuffer(pointCloud.uniformBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
-            pointCloud.markUniformsClean();
-        }
-        const key = this.getPointCloudBindGroupKey(pointCloud);
-        if (pointCloud.bindGroup && pointCloud.bindGroupKey === key) return;
-        const layout = this.getPointCloudBindGroupLayout();
-        pointCloud.bindGroup = this.device.createBindGroup({
-            layout,
-            entries: [
-                { binding: 0, resource: { buffer: pointCloud.pointsBuffer } },
-                { binding: 1, resource: { buffer: pointCloud.uniformBuffer } }
-            ]
-        });
-        pointCloud.bindGroupKey = key;
-    }
-
     private ensureMaterialBindGroup(material: Material): void {
         if (!material.uniformBuffer) {
             material.uniformBuffer = this.device.createBuffer({
@@ -1774,5 +1937,248 @@ export class Renderer {
             size: cap,
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
         });
+    }
+
+    private getPointCloudBindGroupLayout(): GPUBindGroupLayout {
+        if (this.pointCloudBindGroupLayout) return this.pointCloudBindGroupLayout;
+        this.pointCloudBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: { type: "uniform", minBindingSize: 176 }
+                }
+            ]
+        });
+        return this.pointCloudBindGroupLayout;
+    }
+
+    private getPointCloudPipelineCacheKey(cloud: PointCloud): string {
+        return ["pointcloud", `blend=${cloud.blendMode}`, `depthTest=${cloud.depthTest ? 1 : 0}`, `depthWrite=${cloud.depthWrite ? 1 : 0}`, `fmt=${this.format}`].join("|");
+    }
+
+    private getOrCreatePointCloudPipeline(cloud: PointCloud): GPURenderPipeline {
+        const key = this.getPointCloudPipelineCacheKey(cloud);
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        let shaderModule = this.shaderCache.get(pointCloudWGSL);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: pointCloudWGSL });
+            this.shaderCache.set(pointCloudWGSL, shaderModule);
+        }
+        const bindGroupLayout = this.getPointCloudBindGroupLayout();
+        const pipelineLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, bindGroupLayout]
+        });
+        const blend = this.getBlendState(cloud.blendMode);
+        const pipeline = this.device.createRenderPipeline({
+            label: key,
+            layout: pipelineLayout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: "vs_main",
+                buffers: []
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: "fs_main",
+                targets: [
+                    {
+                        format: this.format,
+                        blend
+                    }
+                ]
+            },
+            primitive: {
+                topology: "point-list",
+                cullMode: "none"
+            },
+            depthStencil: cloud.depthTest
+                ? {
+                    format: "depth24plus",
+                    depthWriteEnabled: cloud.depthWrite,
+                    depthCompare: "less"
+                }
+                : undefined
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getPointCloudBindGroupKey(cloud: PointCloud): string {
+        const points = cloud.pointsBuffer;
+        const uniforms = cloud.uniformBuffer;
+        return `pointcloud:${points ? this.getObjectId(points) : 0}:${uniforms ? this.getObjectId(uniforms) : 0}`;
+    }
+
+    private ensurePointCloudBindGroup(cloud: PointCloud): void {
+        cloud.upload(this.device, this.queue);
+        if (!cloud.pointsBuffer) return;
+        if (cloud.pointCount <= 0) return;
+        if (!cloud.uniformBuffer) {
+            cloud.uniformBuffer = this.device.createBuffer({
+                size: cloud.getUniformBufferSize(),
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+            cloud.bindGroupKey = null;
+        }
+        if (cloud.dirtyUniforms) {
+            const data = cloud.getUniformData();
+            this.queue.writeBuffer(cloud.uniformBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
+            cloud.markUniformsClean();
+        }
+        const key = this.getPointCloudBindGroupKey(cloud);
+        if (cloud.bindGroup && cloud.bindGroupKey === key) return;
+        const layout = this.getPointCloudBindGroupLayout();
+        cloud.bindGroup = this.device.createBindGroup({
+            layout,
+            entries: [
+                { binding: 0, resource: { buffer: cloud.pointsBuffer } },
+                { binding: 1, resource: { buffer: cloud.uniformBuffer } }
+            ]
+        });
+        cloud.bindGroupKey = key;
+    }
+
+    private getGlyphFieldBindGroupLayout(): GPUBindGroupLayout {
+        if (this.glyphFieldBindGroupLayout) return this.glyphFieldBindGroupLayout;
+        this.glyphFieldBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 2,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 3,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 4,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: { type: "uniform", minBindingSize: 176 }
+                }
+            ]
+        });
+        return this.glyphFieldBindGroupLayout;
+    }
+
+    private getOrCreateGlyphFieldPipeline(field: GlyphField): GPURenderPipeline {
+        const key = `glyphfield:${this.format}:${field.blendMode}:${field.depthWrite ? 1 : 0}:${field.depthTest ? 1 : 0}:${field.cullMode}`;
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        const shaderCode = glyphFieldWGSL;
+        let shaderModule = this.shaderCache.get(shaderCode);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: shaderCode });
+            this.shaderCache.set(shaderCode, shaderModule);
+        }
+        const layout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, this.getGlyphFieldBindGroupLayout()]
+        });
+        const pipeline = this.device.createRenderPipeline({
+            layout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: "vs_main",
+                buffers: [
+                    {
+                        arrayStride: 12,
+                        attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }]
+                    },
+                    {
+                        arrayStride: 12,
+                        attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }]
+                    }
+                ]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: "fs_main",
+                targets: [{ format: this.format, blend: this.getBlendState(field.blendMode) }]
+            },
+            primitive: {
+                topology: "triangle-list",
+                cullMode: this.getCullMode(field.cullMode)
+            },
+            depthStencil: (field.depthTest || field.depthWrite)
+                ? {
+                    format: "depth24plus",
+                    depthWriteEnabled: field.depthWrite,
+                    depthCompare: field.depthTest ? "less" : "always"
+                }
+                : undefined
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getGlyphFieldBindGroupKey(field: GlyphField): string {
+        const p = field.positionsBuffer;
+        const r = field.rotationsBuffer;
+        const s = field.scalesBuffer;
+        const a = field.attributesBuffer;
+        const u = field.uniformBuffer;
+        return `glyphfield:${p ? this.getObjectId(p) : 0}:${r ? this.getObjectId(r) : 0}:${s ? this.getObjectId(s) : 0}:${a ? this.getObjectId(a) : 0}:${u ? this.getObjectId(u) : 0}`;
+    }
+
+    private ensureGlyphFieldBindGroup(field: GlyphField): void {
+        field.upload(this.device, this.queue);
+        if (!field.positionsBuffer) return;
+        if (!field.rotationsBuffer) return;
+        if (!field.scalesBuffer) return;
+        if (field.instanceCount <= 0) return;
+        if (!field.uniformBuffer) {
+            field.uniformBuffer = this.device.createBuffer({
+                size: field.getUniformBufferSize(),
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+            field.bindGroupKey = null;
+        }
+        if (field.dirtyUniforms) {
+            const data = field.getUniformData();
+            this.queue.writeBuffer(field.uniformBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
+            field.markUniformsClean();
+        }
+        if (!field.attributesBuffer) {
+            if (!this.glyphFieldDummyAttributesBuffer) {
+                this.glyphFieldDummyAttributesBuffer = this.device.createBuffer({
+                    size: 16,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+                });
+            }
+            field.attributesBuffer = this.glyphFieldDummyAttributesBuffer;
+            field.bindGroupKey = null;
+        }
+        const key = this.getGlyphFieldBindGroupKey(field);
+        if (field.bindGroup && field.bindGroupKey === key) return;
+        const layout = this.getGlyphFieldBindGroupLayout();
+        field.bindGroup = this.device.createBindGroup({
+            layout,
+            entries: [
+                { binding: 0, resource: { buffer: field.positionsBuffer } },
+                { binding: 1, resource: { buffer: field.rotationsBuffer } },
+                { binding: 2, resource: { buffer: field.scalesBuffer } },
+                { binding: 3, resource: { buffer: field.attributesBuffer } },
+                { binding: 4, resource: { buffer: field.uniformBuffer } }
+            ]
+        });
+        field.bindGroupKey = key;
     }
 }

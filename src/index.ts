@@ -27,6 +27,8 @@ export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, Poi
 export { Mesh } from "./world/mesh";
 export { PointCloud } from "./world/pointcloud";
 export type { PointCloudDescriptor, PointCloudColormap } from "./world/pointcloud";
+export { GlyphField } from "./world/glyphfield";
+export type { GlyphFieldDescriptor, GlyphShape, GlyphColorMode, GlyphColormap } from "./world/glyphfield";
 export { Scene } from "./world/scene";
 export type { SceneDescriptor } from "./world/scene";
 export { WasmGPU as default } from "./core/engine";

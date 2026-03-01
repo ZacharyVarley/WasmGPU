@@ -1,5 +1,6 @@
 import { Mesh } from "./mesh";
 import { PointCloud } from "./pointcloud";
+import { GlyphField } from "./glyphfield";
 import { Color } from "../graphics/material";
 import { Light, AmbientLight } from "./light";
 
@@ -10,6 +11,7 @@ export type SceneDescriptor = {
 export class Scene {
     private _meshes: Mesh[] = [];
     private _pointClouds: PointCloud[] = [];
+    private _glyphFields: GlyphField[] = [];
     private _lights: Light[] = [];
     private _background: Color;
     static readonly MAX_LIGHTS = 8;
@@ -34,26 +36,37 @@ export class Scene {
         return this._pointClouds;
     }
 
+    get glyphFields(): readonly GlyphField[] {
+        return this._glyphFields;
+    }
+
     add(mesh: Mesh): this;
     add(pointCloud: PointCloud): this;
-    add(obj: Mesh | PointCloud): this {
+    add(glyphField: GlyphField): this;
+    add(obj: Mesh | PointCloud | GlyphField): this {
         if (obj instanceof Mesh) {
             if (!this._meshes.includes(obj)) this._meshes.push(obj);
-        } else {
+        } else if (obj instanceof PointCloud) {
             if (!this._pointClouds.includes(obj)) this._pointClouds.push(obj);
+        } else {
+            if (!this._glyphFields.includes(obj)) this._glyphFields.push(obj);
         }
         return this;
     }
 
     remove(mesh: Mesh): this;
     remove(pointCloud: PointCloud): this;
-    remove(obj: Mesh | PointCloud): this {
+    remove(glyphField: GlyphField): this;
+    remove(obj: Mesh | PointCloud | GlyphField): this {
         if (obj instanceof Mesh) {
             const idx = this._meshes.indexOf(obj);
             if (idx !== -1) this._meshes.splice(idx, 1);
-        } else {
+        } else if (obj instanceof PointCloud) {
             const idx = this._pointClouds.indexOf(obj);
             if (idx !== -1) this._pointClouds.splice(idx, 1);
+        } else {
+            const idx = this._glyphFields.indexOf(obj);
+            if (idx !== -1) this._glyphFields.splice(idx, 1);
         }
         return this;
     }
@@ -61,11 +74,17 @@ export class Scene {
     clear(): this {
         this._meshes = [];
         this._pointClouds = [];
+        this._glyphFields = [];
         return this;
     }
 
     clearPointClouds(): this {
         this._pointClouds = [];
+        return this;
+    }
+
+    clearGlyphFields(): this {
+        this._glyphFields = [];
         return this;
     }
 
@@ -108,12 +127,24 @@ export class Scene {
         return this._pointClouds.filter(p => p.name === name);
     }
 
+    findGlyphFieldByName(name: string): GlyphField | undefined {
+        return this._glyphFields.find(g => g.name === name);
+    }
+
+    findAllGlyphFieldsByName(name: string): GlyphField[] {
+        return this._glyphFields.filter(g => g.name === name);
+    }
+
     get visibleMeshes(): Mesh[] {
         return this._meshes.filter(m => m.visible);
     }
 
     get visiblePointClouds(): PointCloud[] {
         return this._pointClouds.filter(p => p.visible);
+    }
+
+    get visibleGlyphFields(): GlyphField[] {
+        return this._glyphFields.filter(g => g.visible);
     }
 
     get enabledLights(): Light[] {
@@ -154,11 +185,21 @@ export class Scene {
         for (const pc of this._pointClouds) if (pc.visible) callback(pc);
     }
 
+    traverseGlyphFields(callback: (g: GlyphField) => void): void {
+        for (const g of this._glyphFields) callback(g);
+    }
+
+    traverseVisibleGlyphFields(callback: (g: GlyphField) => void): void {
+        for (const g of this._glyphFields) if (g.visible) callback(g);
+    }
+
     destroy(): void {
         for (const mesh of this._meshes) mesh.destroy();
         for (const pc of this._pointClouds) pc.destroy();
+        for (const g of this._glyphFields) g.destroy();
         this._meshes = [];
         this._pointClouds = [];
+        this._glyphFields = [];
         this._lights = [];
     }
 }
