@@ -23,6 +23,7 @@ import compactF32WGSL from "../wgsl/compute/compact-f32.wgsl";
 import compactU32WGSL from "../wgsl/compute/compact-u32.wgsl";
 import sortRadixFlagsU32WGSL from "../wgsl/compute/sort-radix-flags-u32.wgsl";
 import sortRadixScatterU32WGSL from "../wgsl/compute/sort-radix-scatter-u32.wgsl";
+import copyF32WGSL from "../wgsl/compute/copy-f32.wgsl";
 import copyU32WGSL from "../wgsl/compute/copy-u32.wgsl";
 
 export type KernelDispatchOptions = {
@@ -65,6 +66,11 @@ export type RadixSortOptions = KernelDispatchOptions & {
     count?: number;
     out?: StorageBuffer;
     inPlace?: boolean;
+};
+
+export type CopyOptions = KernelDispatchOptions & {
+    count?: number;
+    out?: StorageBuffer;
 };
 
 export type CompactResult = {
@@ -493,6 +499,26 @@ export class ComputeKernels {
         });
     }
 
+    private getCopyF32Pipeline(): ComputePipeline {
+        const key = "kernels:copy:f32";
+        return this.getPipeline(key, () => {
+            return new ComputePipeline(this.device, {
+                label: key,
+                code: copyF32WGSL,
+                entryPoint: "main",
+                bindGroups: [
+                    {
+                        label: `${key}:bg0`,
+                        entries: [
+                            storageBufferLayout({ binding: 0, readOnly: true }),
+                            storageBufferLayout({ binding: 1, readOnly: false })
+                        ]
+                    }
+                ]
+            });
+        });
+    }
+
     private getCopyU32Pipeline(): ComputePipeline {
         const key = "kernels:copy:u32";
         return this.getPipeline(key, () => {
@@ -513,6 +539,22 @@ export class ComputeKernels {
         });
     }
 
+    private encodeCopyF32(commands: ComputeDispatchCommand[], src: BufferResource, count: number, dst: BufferResource, labelPrefix: string): void {
+        assert(Number.isInteger(count) && count >= 0, `encodeCopyF32: count must be an integer >= 0 (got ${count})`);
+        if (count === 0) return;
+        const pipeline = this.getCopyF32Pipeline();
+        const bg = pipeline.createBindGroup(0, {
+            0: this.bindSized(src, count * 4),
+            1: this.bindSized(dst, count * 4)
+        }, `${labelPrefix}:copy:bg`);
+        commands.push({
+            pipeline,
+            bindGroups: [bg],
+            workgroups: workgroups1D(count, 256),
+            label: `${labelPrefix}:copy`
+        });
+    }
+
     private encodeCopyU32(commands: ComputeDispatchCommand[], src: BufferResource, count: number, dst: BufferResource, labelPrefix: string): void {
         assert(Number.isInteger(count) && count >= 0, `encodeCopyU32: count must be an integer >= 0 (got ${count})`);
         if (count === 0) return;
@@ -527,6 +569,25 @@ export class ComputeKernels {
             workgroups: workgroups1D(count, 256),
             label: `${labelPrefix}:copy`
         });
+    }
+
+    copyU32(src: BufferResource, opts: CopyOptions = {}): StorageBuffer {
+        let count = opts.count;
+        if (count === undefined) {
+            if (src instanceof StorageBuffer) count = this.resolveCount(src, 4, undefined);
+            else assert(false, "copyU32: opts.count is required when src is not a StorageBuffer");
+        }
+        assert(Number.isInteger(count) && count >= 0, `copyU32: count must be an integer >= 0 (got ${count})`);
+        const out = opts.out ?? new StorageBuffer(this.device, this.queue, {
+            label: "copyU32:out",
+            byteLength: count * 4,
+            copySrc: true
+        });
+        assert(out.byteLength >= count * 4, "copyU32: out buffer is too small for requested count");
+        const commands: ComputeDispatchCommand[] = [];
+        this.encodeCopyU32(commands, src, count, out, "copyU32");
+        this.execute(commands, opts);
+        return out;
     }
 
     reduceU32(input: StorageBuffer, op: ReduceOp, opts: ReduceOptions = {}): StorageBuffer {
@@ -557,6 +618,25 @@ export class ComputeKernels {
 
     maxU32(input: StorageBuffer, opts: ReduceOptions = {}): StorageBuffer {
         return this.reduceU32(input, "max", opts);
+    }
+
+    copyF32(src: BufferResource, opts: CopyOptions = {}): StorageBuffer {
+        let count = opts.count;
+        if (count === undefined) {
+            if (src instanceof StorageBuffer) count = this.resolveCount(src, 4, undefined);
+            else assert(false, "copyF32: opts.count is required when src is not a StorageBuffer");
+        }
+        assert(Number.isInteger(count) && count >= 0, `copyF32: count must be an integer >= 0 (got ${count})`);
+        const out = opts.out ?? new StorageBuffer(this.device, this.queue, {
+            label: "copyF32:out",
+            byteLength: count * 4,
+            copySrc: true
+        });
+        assert(out.byteLength >= count * 4, "copyF32: out buffer is too small for requested count");
+        const commands: ComputeDispatchCommand[] = [];
+        this.encodeCopyF32(commands, src, count, out, "copyF32");
+        this.execute(commands, opts);
+        return out;
     }
 
     reduceF32(input: StorageBuffer, op: ReduceOp, opts: ReduceOptions = {}): StorageBuffer {
