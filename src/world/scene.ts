@@ -1,4 +1,5 @@
 import { Mesh } from "./mesh";
+import { PointCloud } from "./pointcloud";
 import { Color } from "../graphics/material";
 import { Light, AmbientLight } from "./light";
 
@@ -8,6 +9,7 @@ export type SceneDescriptor = {
 
 export class Scene {
     private _meshes: Mesh[] = [];
+    private _pointClouds: PointCloud[] = [];
     private _lights: Light[] = [];
     private _background: Color;
     static readonly MAX_LIGHTS = 8;
@@ -28,19 +30,42 @@ export class Scene {
         return this._meshes;
     }
 
-    add(mesh: Mesh): this {
-        if (!this._meshes.includes(mesh)) this._meshes.push(mesh);
+    get pointClouds(): readonly PointCloud[] {
+        return this._pointClouds;
+    }
+
+    add(mesh: Mesh): this;
+    add(pointCloud: PointCloud): this;
+    add(obj: Mesh | PointCloud): this {
+        if (obj instanceof Mesh) {
+            if (!this._meshes.includes(obj)) this._meshes.push(obj);
+        } else {
+            if (!this._pointClouds.includes(obj)) this._pointClouds.push(obj);
+        }
         return this;
     }
 
-    remove(mesh: Mesh): this {
-        const idx = this._meshes.indexOf(mesh);
-        if (idx !== -1) this._meshes.splice(idx, 1);
+    remove(mesh: Mesh): this;
+    remove(pointCloud: PointCloud): this;
+    remove(obj: Mesh | PointCloud): this {
+        if (obj instanceof Mesh) {
+            const idx = this._meshes.indexOf(obj);
+            if (idx !== -1) this._meshes.splice(idx, 1);
+        } else {
+            const idx = this._pointClouds.indexOf(obj);
+            if (idx !== -1) this._pointClouds.splice(idx, 1);
+        }
         return this;
     }
 
     clear(): this {
         this._meshes = [];
+        this._pointClouds = [];
+        return this;
+    }
+
+    clearPointClouds(): this {
+        this._pointClouds = [];
         return this;
     }
 
@@ -75,8 +100,20 @@ export class Scene {
         return this._meshes.filter(m => m.name === name);
     }
 
+    findPointCloudByName(name: string): PointCloud | undefined {
+        return this._pointClouds.find(p => p.name === name);
+    }
+
+    findAllPointCloudsByName(name: string): PointCloud[] {
+        return this._pointClouds.filter(p => p.name === name);
+    }
+
     get visibleMeshes(): Mesh[] {
         return this._meshes.filter(m => m.visible);
+    }
+
+    get visiblePointClouds(): PointCloud[] {
+        return this._pointClouds.filter(p => p.visible);
     }
 
     get enabledLights(): Light[] {
@@ -109,9 +146,19 @@ export class Scene {
         for (const mesh of this._meshes) if (mesh.visible) callback(mesh);
     }
 
+    traversePointClouds(callback: (pc: PointCloud) => void): void {
+        for (const pc of this._pointClouds) callback(pc);
+    }
+
+    traverseVisiblePointClouds(callback: (pc: PointCloud) => void): void {
+        for (const pc of this._pointClouds) if (pc.visible) callback(pc);
+    }
+
     destroy(): void {
         for (const mesh of this._meshes) mesh.destroy();
+        for (const pc of this._pointClouds) pc.destroy();
         this._meshes = [];
+        this._pointClouds = [];
         this._lights = [];
     }
 }

@@ -25,6 +25,8 @@ export type { OrbitControlsDescriptor, TrackballControlsDescriptor } from "./wor
 export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light";
 export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
 export { Mesh } from "./world/mesh";
+export { PointCloud } from "./world/pointcloud";
+export type { PointCloudDescriptor, PointCloudColormap } from "./world/pointcloud";
 export { Scene } from "./world/scene";
 export type { SceneDescriptor } from "./world/scene";
 export { WasmGPU as default } from "./core/engine";

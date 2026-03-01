@@ -10,6 +10,7 @@ import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
+import { PointCloud, type PointCloudDescriptor } from "../world/pointcloud";
 import { Scene } from "../world/scene";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
@@ -199,6 +200,10 @@ export class WasmGPU {
 
     createMesh(geometry: Geometry, material: Material): Mesh {
         return new Mesh(geometry, material);
+    }
+
+    createPointCloud(descriptor: PointCloudDescriptor = {}): PointCloud {
+        return new PointCloud(descriptor);
     }
 
     readonly createLight = {
