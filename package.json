@@ -33,8 +33,9 @@
     "test:kernels": "node ./test/kernels.test.js",
     "test:math": "node ./test/math.test.js",
     "test:ndarray": "node ./test/ndarray.test.js",
+    "test:pointcloud": "node ./test/pointcloud.test.js",
     "test:readback": "node ./test/readback.test.js",
-    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:kernels && npm run test:math && npm run test:ndarray && npm run test:readback",
+    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:kernels && npm run test:math && npm run test:ndarray && npm run test:pointcloud && npm run test:readback",
     "start": "npx serve ."
   },
   "repository": {
