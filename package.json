@@ -27,6 +27,7 @@
     "build:es": "node ./esbuild.config.js",
     "build": "npm run build:rs && npm run build:ts && npm run build:es",
     "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
+    "test:colormap": "node ./test/colormap.test.js",
     "test:compute": "node ./test/compute.test.js",
     "test:cull": "node ./test/cull.test.js",
     "test:gltf": "node ./test/gltf.test.js",
@@ -36,7 +37,7 @@
     "test:ndarray": "node ./test/ndarray.test.js",
     "test:pointcloud": "node ./test/pointcloud.test.js",
     "test:readback": "node ./test/readback.test.js",
-    "test": "npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:glyphfield && npm run test:kernels && npm run test:math && npm run test:ndarray && npm run test:pointcloud && npm run test:readback",
+    "test": "npm run test:colormap && npm run test:compute && npm run test:cull && npm run test:gltf && npm run test:glyphfield && npm run test:kernels && npm run test:math && npm run test:ndarray && npm run test:pointcloud && npm run test:readback",
     "start": "npx serve ."
   },
   "repository": {

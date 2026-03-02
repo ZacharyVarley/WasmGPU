@@ -1,8 +1,9 @@
 import { Transform } from "../core/transform";
 import { BlendMode, type Color4 } from "../graphics/material";
+import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { assert, createBuffer } from "../utils";
 
-export type PointCloudColormap = "grayscale" | "turbo" | "viridis" | "magma" | "plasma" | "custom";
+export type PointCloudColormap = BuiltinColormapName | "custom";
 
 export type PointCloudDescriptor = {
     data?: Float32Array;
@@ -22,7 +23,7 @@ export type PointCloudDescriptor = {
     opacity?: number;
     gamma?: number;
     invert?: boolean;
-    colormap?: PointCloudColormap;
+    colormap?: PointCloudColormap | Colormap;
     colormapStops?: Color4[];
     softness?: number;
     visible?: boolean;
@@ -64,7 +65,8 @@ function colormapId(name: PointCloudColormap): number {
         case "viridis": return 2;
         case "magma": return 3;
         case "plasma": return 4;
-        case "custom": return 5;
+        case "inferno": return 5;
+        case "custom": return 6;
     }
 }
 
@@ -86,7 +88,7 @@ export class PointCloud {
     private _opacity: number = 1.0;
     private _gamma: number = 1.0;
     private _invert: boolean = false;
-    private _colormap: PointCloudColormap = "viridis";
+    private _colormap: PointCloudColormap | Colormap = "viridis";
     private _colormapStops: Color4[] = [[0.26700, 0.00487, 0.32942, 1.0], [0.99325, 0.90616, 0.14394, 1.0]];
     private _softness: number = 0.15;
     private _CPUData: Float32Array | null = null;
@@ -227,14 +229,14 @@ export class PointCloud {
         this._uniformDirty = true;
     }
 
-    get colormap(): PointCloudColormap {
+    get colormap(): PointCloudColormap | Colormap {
         return this._colormap;
     }
 
-    set colormap(v: PointCloudColormap) {
-        if (v === this._colormap) return;
+    set colormap(v: PointCloudColormap | Colormap) {
         this._colormap = v;
         this._uniformDirty = true;
+        this.bindGroupKey = null;
     }
 
     get colormapStops(): ReadonlyArray<Color4> {
@@ -244,6 +246,18 @@ export class PointCloud {
     set colormapStops(stops: ReadonlyArray<Color4>) {
         this._colormapStops = normalizeStops(stops);
         this._uniformDirty = true;
+    }
+
+    getColormapKey(): string {
+        const c = this._colormap;
+        return (c instanceof Colormap) ? `cm:${c.id}` : `cm:${c}`;
+    }
+
+    getColormapForBinding(): Colormap {
+        const c = this._colormap;
+        if (c instanceof Colormap) return c;
+        if (c === "custom") return Colormap.builtin("grayscale");
+        return Colormap.builtin(c);
     }
 
     get softness(): number {
@@ -370,8 +384,8 @@ export class PointCloud {
         out[6] = clamp01(this._opacity);
         out[7] = clampMin(this._gamma, 1e-6);
         out[8] = this._invert ? 1.0 : 0.0;
-        out[9] = colormapId(this._colormap);
-        out[10] = this._colormap === "custom" ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
+        out[9] = (this._colormap instanceof Colormap) ? 0 : colormapId(this._colormap);
+        out[10] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
         out[11] = clamp01(this._softness);
         const stops = this._colormapStops;
         const nStops = Math.min(8, Math.max(2, stops.length));

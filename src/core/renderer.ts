@@ -1952,6 +1952,16 @@ export class Renderer {
                     binding: 1,
                     visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                     buffer: { type: "uniform", minBindingSize: 176 }
+                },
+                {
+                    binding: 2,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    sampler: { type: "filtering" }
+                },
+                {
+                    binding: 3,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    texture: { sampleType: "float", viewDimension: "1d" }
                 }
             ]
         });
@@ -2013,7 +2023,7 @@ export class Renderer {
     private getPointCloudBindGroupKey(cloud: PointCloud): string {
         const points = cloud.pointsBuffer;
         const uniforms = cloud.uniformBuffer;
-        return `pointcloud:${points ? this.getObjectId(points) : 0}:${uniforms ? this.getObjectId(uniforms) : 0}`;
+        return `pointcloud:${points ? this.getObjectId(points) : 0}:${uniforms ? this.getObjectId(uniforms) : 0}:${cloud.getColormapKey()}`;
     }
 
     private ensurePointCloudBindGroup(cloud: PointCloud): void {
@@ -2035,11 +2045,14 @@ export class Renderer {
         const key = this.getPointCloudBindGroupKey(cloud);
         if (cloud.bindGroup && cloud.bindGroupKey === key) return;
         const layout = this.getPointCloudBindGroupLayout();
+        const cmapGPU = cloud.getColormapForBinding().getGPUResources(this.device, this.queue);
         cloud.bindGroup = this.device.createBindGroup({
             layout,
             entries: [
                 { binding: 0, resource: { buffer: cloud.pointsBuffer } },
-                { binding: 1, resource: { buffer: cloud.uniformBuffer } }
+                { binding: 1, resource: { buffer: cloud.uniformBuffer } },
+                { binding: 2, resource: cmapGPU.sampler },
+                { binding: 3, resource: cmapGPU.view }
             ]
         });
         cloud.bindGroupKey = key;
@@ -2066,13 +2079,23 @@ export class Renderer {
                 },
                 {
                     binding: 3,
-                    visibility: GPUShaderStage.VERTEX,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                     buffer: { type: "read-only-storage" }
                 },
                 {
                     binding: 4,
                     visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                     buffer: { type: "uniform", minBindingSize: 176 }
+                },
+                {
+                    binding: 5,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    sampler: { type: "filtering" }
+                },
+                {
+                    binding: 6,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    texture: { sampleType: "float", viewDimension: "1d" }
                 }
             ]
         });
@@ -2135,7 +2158,7 @@ export class Renderer {
         const s = field.scalesBuffer;
         const a = field.attributesBuffer;
         const u = field.uniformBuffer;
-        return `glyphfield:${p ? this.getObjectId(p) : 0}:${r ? this.getObjectId(r) : 0}:${s ? this.getObjectId(s) : 0}:${a ? this.getObjectId(a) : 0}:${u ? this.getObjectId(u) : 0}`;
+        return `glyphfield:${p ? this.getObjectId(p) : 0}:${r ? this.getObjectId(r) : 0}:${s ? this.getObjectId(s) : 0}:${a ? this.getObjectId(a) : 0}:${u ? this.getObjectId(u) : 0}:${field.getColormapKey()}`;
     }
 
     private ensureGlyphFieldBindGroup(field: GlyphField): void {
@@ -2169,6 +2192,7 @@ export class Renderer {
         const key = this.getGlyphFieldBindGroupKey(field);
         if (field.bindGroup && field.bindGroupKey === key) return;
         const layout = this.getGlyphFieldBindGroupLayout();
+        const cmapGPU = field.getColormapForBinding().getGPUResources(this.device, this.queue);
         field.bindGroup = this.device.createBindGroup({
             layout,
             entries: [
@@ -2176,7 +2200,9 @@ export class Renderer {
                 { binding: 1, resource: { buffer: field.rotationsBuffer } },
                 { binding: 2, resource: { buffer: field.scalesBuffer } },
                 { binding: 3, resource: { buffer: field.attributesBuffer } },
-                { binding: 4, resource: { buffer: field.uniformBuffer } }
+                { binding: 4, resource: { buffer: field.uniformBuffer } },
+                { binding: 5, resource: cmapGPU.sampler },
+                { binding: 6, resource: cmapGPU.view }
             ]
         });
         field.bindGroupKey = key;

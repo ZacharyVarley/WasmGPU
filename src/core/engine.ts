@@ -5,6 +5,7 @@ import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
 import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
+import { Colormap, type BuiltinColormapName, type ColormapDescriptor, type ColormapStop } from "../graphics/colormap";
 import { frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
@@ -210,6 +211,36 @@ export class WasmGPU {
     createGlyphField(descriptor: GlyphFieldDescriptor = {}): GlyphField {
         return new GlyphField(descriptor);
     }
+
+    readonly colormap = {
+        builtin: (name: BuiltinColormapName): Colormap => {
+            return Colormap.builtin(name);
+        },
+        grayscale: (): Colormap => {
+            return Colormap.builtin("grayscale");
+        },
+        turbo: (): Colormap => {
+            return Colormap.builtin("turbo");
+        },
+        viridis: (): Colormap => {
+            return Colormap.builtin("viridis");
+        },
+        magma: (): Colormap => {
+            return Colormap.builtin("magma");
+        },
+        plasma: (): Colormap => {
+            return Colormap.builtin("plasma");
+        },
+        inferno: (): Colormap => {
+            return Colormap.builtin("inferno");
+        },
+        fromStops: (stops: ReadonlyArray<ColormapStop>, desc: ColormapDescriptor = {}): Colormap => {
+            return Colormap.fromStops(stops, desc);
+        },
+        fromPalette: (colors: ReadonlyArray<[number, number, number, number]>, desc: ColormapDescriptor = {}): Colormap => {
+            return Colormap.fromPalette(colors, desc);
+        }
+    };
 
     readonly createLight = {
         ambient: (options?: { color?: Color; intensity?: number; }): AmbientLight => {

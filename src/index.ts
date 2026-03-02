@@ -10,6 +10,8 @@ export type { ComputeDispatchOptions, ComputeDescriptor, ComputePipelineDescript
 export { readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32, parseGLB, loadGltf, importGltf } from "./gltf";
 export { AnimationClip, AnimationPlayer, Skin, SkinInstance } from "./graphics/animation";
 export type { AnimationClipDescriptor } from "./graphics/animation";
+export { Colormap } from "./graphics/colormap";
+export type { BuiltinColormapName, ColormapFilter, ColormapStop, ColormapDescriptor } from "./graphics/colormap";
 export { Geometry } from "./graphics/geometry";
 export type { GeometryDescriptor, GeometryAttribute } from "./graphics/geometry";
 export { Material, UnlitMaterial, StandardMaterial, CustomMaterial, BlendMode, CullMode } from "./graphics/material";

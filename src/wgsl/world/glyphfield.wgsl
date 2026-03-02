@@ -11,6 +11,8 @@ struct GlyphUniforms {
 };
 
 @group(1) @binding(4) var<uniform> glyph: GlyphUniforms;
+@group(1) @binding(5) var colormapSampler: sampler;
+@group(1) @binding(6) var colormapTex: texture_1d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -66,10 +68,6 @@ fn saturate(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
 }
 
-fn lerp(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
-    return a + t * (b - a);
-}
-
 fn rotateByQuat(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
     let u = q.xyz;
     let s = q.w;
@@ -77,77 +75,28 @@ fn rotateByQuat(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
     return v + s * t + cross(u, t);
 }
 
-const TURBO_STOPS: array<vec3<f32>, 8> = array<vec3<f32>, 8>(
-    vec3<f32>(0.18995, 0.07176, 0.23217),
-    vec3<f32>(0.25107, 0.25237, 0.63374),
-    vec3<f32>(0.27628, 0.41652, 0.94105),
-    vec3<f32>(0.20206, 0.65991, 0.98456),
-    vec3<f32>(0.12756, 0.81980, 0.55455),
-    vec3<f32>(0.47750, 0.95192, 0.14111),
-    vec3<f32>(0.88360, 0.82706, 0.04124),
-    vec3<f32>(0.98360, 0.48249, 0.27230)
-);
-
-const VIRIDIS_STOPS: array<vec3<f32>, 8> = array<vec3<f32>, 8>(
-    vec3<f32>(0.26700, 0.00487, 0.32942),
-    vec3<f32>(0.27495, 0.19938, 0.49704),
-    vec3<f32>(0.21240, 0.35968, 0.55217),
-    vec3<f32>(0.15336, 0.49700, 0.55772),
-    vec3<f32>(0.12231, 0.63315, 0.53040),
-    vec3<f32>(0.28892, 0.75839, 0.42843),
-    vec3<f32>(0.62658, 0.85465, 0.22335),
-    vec3<f32>(0.99325, 0.90616, 0.14394)
-);
-
-const MAGMA_STOPS: array<vec3<f32>, 8> = array<vec3<f32>, 8>(
-    vec3<f32>(0.00146, 0.00047, 0.01387),
-    vec3<f32>(0.13113, 0.05725, 0.35556),
-    vec3<f32>(0.31238, 0.06789, 0.54309),
-    vec3<f32>(0.50234, 0.09336, 0.59451),
-    vec3<f32>(0.70468, 0.21172, 0.51867),
-    vec3<f32>(0.86603, 0.42959, 0.38448),
-    vec3<f32>(0.96436, 0.66756, 0.24003),
-    vec3<f32>(0.98705, 0.99144, 0.74950)
-);
-
-const PLASMA_STOPS: array<vec3<f32>, 8> = array<vec3<f32>, 8>(
-    vec3<f32>(0.05038, 0.02980, 0.52798),
-    vec3<f32>(0.27259, 0.01296, 0.62272),
-    vec3<f32>(0.44771, 0.00266, 0.66034),
-    vec3<f32>(0.61067, 0.09020, 0.61995),
-    vec3<f32>(0.74014, 0.21342, 0.52422),
-    vec3<f32>(0.84679, 0.34255, 0.42058),
-    vec3<f32>(0.92833, 0.47297, 0.32607),
-    vec3<f32>(0.94002, 0.97516, 0.13133)
-);
-
-fn sampleStops(stops: array<vec3<f32>, 8>, t: f32) -> vec3<f32> {
-    let x = saturate(t) * 7.0;
-    let i0 = u32(floor(x));
-    let i1 = min(i0 + 1u, 7u);
-    let f = fract(x);
-    return lerp(stops[i0], stops[i1], f);
-}
-
-fn sampleCustomStops(t: f32) -> vec3<f32> {
-    let n = max(2.0, min(8.0, glyph.options.z));
-    let x = saturate(t) * (n - 1.0);
-    let i0 = u32(floor(x));
-    let i1 = min(i0 + 1u, u32(n - 1.0));
-    let f = fract(x);
-    return lerp(glyph.colors[i0].rgb, glyph.colors[i1].rgb, f);
-}
-
-fn colormap(t: f32) -> vec3<f32> {
-    let id = u32(round(glyph.options.y));
-    switch (id) {
-        case 0u: { return vec3<f32>(t, t, t); }
-        case 1u: { return sampleStops(TURBO_STOPS, t); }
-        case 2u: { return sampleStops(VIRIDIS_STOPS, t); }
-        case 3u: { return sampleStops(MAGMA_STOPS, t); }
-        case 4u: { return sampleStops(PLASMA_STOPS, t); }
-        default: { return sampleCustomStops(t); }
+fn sampleCustomStops(t: f32) -> vec4<f32> {
+    let count = u32(glyph.options.z + 0.5);
+    if (count <= 1u) {
+        return glyph.colors[0u];
     }
+    let n = min(count, 8u);
+    let x = saturate(t) * f32(n - 1u);
+    let i = u32(floor(x));
+    let f = x - f32(i);
+    if (i >= n - 1u) {
+        return glyph.colors[n - 1u];
+    }
+    return glyph.colors[i] + f * (glyph.colors[i + 1u] - glyph.colors[i]);
+}
+
+fn colormap(tIn: f32) -> vec4<f32> {
+    let t = saturate(tIn);
+    let stopCount = u32(glyph.options.z + 0.5);
+    if (stopCount >= 2u) {
+        return sampleCustomStops(t);
+    }
+    return textureSample(colormapTex, colormapSampler, t);
 }
 
 fn applyLighting(worldPos: vec3<f32>, N: vec3<f32>, baseColor: vec3<f32>) -> vec3<f32> {
@@ -218,8 +167,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var t = saturate((in.attrib.x - scalarMin) / denom);
         if (invert) { t = 1.0 - t; }
         t = pow(t, gamma);
-        baseColor = colormap(t);
-        alpha = 1.0;
+        let cmap = colormap(t);
+        baseColor = cmap.rgb;
+        alpha = cmap.a;
     } else {
         baseColor = glyph.lightingParams.yzw;
         alpha = 1.0;

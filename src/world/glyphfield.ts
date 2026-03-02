@@ -1,10 +1,11 @@
 import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
+import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
 import { assert } from "../utils";
 import { wasmInterop, type WasmPtr } from "../wasm";
 
-export type GlyphColormap = "grayscale" | "turbo" | "viridis" | "magma" | "plasma" | "custom";
+export type GlyphColormap = BuiltinColormapName | "custom";
 
 export type GlyphColorMode = "rgba" | "scalar" | "solid";
 
@@ -33,7 +34,7 @@ export type GlyphFieldDescriptor = {
     depthWrite?: boolean;
     depthTest?: boolean;
     colorMode?: GlyphColorMode;
-    colormap?: GlyphColormap;
+    colormap?: GlyphColormap | Colormap;
     colormapStops?: Color4[];
     scalarMin?: number;
     scalarMax?: number;
@@ -81,7 +82,8 @@ function colormapId(name: GlyphColormap): number {
         case "viridis": return 2;
         case "magma": return 3;
         case "plasma": return 4;
-        case "custom": return 5;
+        case "inferno": return 5;
+        case "custom": return 6;
     }
 }
 
@@ -319,7 +321,7 @@ export class GlyphField {
     private _dataDirty: boolean = true;
     private _uniformDirty: boolean = true;
     private _colorMode: GlyphColorMode = "rgba";
-    private _colormap: GlyphColormap = "viridis";
+    private _colormap: GlyphColormap | Colormap = "viridis";
     private _colormapStops: Color4[] = [[0.26700, 0.00487, 0.32942, 1.0], [0.99325, 0.90616, 0.14394, 1.0]];
     private _scalarMin: number = 0.0;
     private _scalarMax: number = 1.0;
@@ -395,14 +397,14 @@ export class GlyphField {
         this._uniformDirty = true;
     }
 
-    get colormap(): GlyphColormap {
+    get colormap(): GlyphColormap | Colormap {
         return this._colormap;
     }
 
-    set colormap(v: GlyphColormap) {
-        if (v === this._colormap) return;
+    set colormap(v: GlyphColormap | Colormap) {
         this._colormap = v;
         this._uniformDirty = true;
+        this.bindGroupKey = null;
     }
 
     get colormapStops(): Color4[] {
@@ -412,6 +414,18 @@ export class GlyphField {
     set colormapStops(v: Color4[]) {
         this._colormapStops = normalizeStops(v);
         this._uniformDirty = true;
+    }
+
+    getColormapKey(): string {
+        const c = this._colormap;
+        return (c instanceof Colormap) ? `cm:${c.id}` : `cm:${c}`;
+    }
+
+    getColormapForBinding(): Colormap {
+        const c = this._colormap;
+        if (c instanceof Colormap) return c;
+        if (c === "custom") return Colormap.builtin("grayscale");
+        return Colormap.builtin(c);
     }
 
     get scalarMin(): number {
@@ -613,8 +627,8 @@ export class GlyphField {
         out[2] = clamp01(this._opacity);
         out[3] = clampMin(this._gamma, 1e-6);
         out[4] = this._invert ? 1.0 : 0.0;
-        out[5] = colormapId(this._colormap);
-        out[6] = this._colormap === "custom" ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
+        out[5] = (this._colormap instanceof Colormap) ? 0 : colormapId(this._colormap);
+        out[6] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
         out[7] = colorModeId(this._colorMode);
         out[8] = this._lit ? 1.0 : 0.0;
         out[9] = this._solidColor[0];
