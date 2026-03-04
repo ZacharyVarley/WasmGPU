@@ -6,7 +6,7 @@ import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
 import { Geometry } from "../graphics/geometry";
-import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial } from "../graphics/material";
+import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
 import { animf, cullf, frameArena, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
@@ -149,6 +149,7 @@ export class Renderer {
     private gpuResultBuffer: GPUBuffer | null = null;
     private gpuResultPending: boolean = false;
     private _gpuTimeNs: number | null = null;
+    private dataMaterialDummyDataBuffer: GPUBuffer | null = null;
 
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -500,6 +501,8 @@ export class Renderer {
         this.gpuResultBuffer = null;
         this.gpuResultPending = false;
         this._gpuTimeNs = null;
+        this.dataMaterialDummyDataBuffer?.destroy();
+        this.dataMaterialDummyDataBuffer = null;
     }
 
     private createGlobalBindGroupLayout(): void {
@@ -1785,7 +1788,7 @@ export class Renderer {
 
     private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean): string {
         const ctorId = this.getObjectId(material.constructor as unknown as object);
-        const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial;
+        const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial || material.constructor === DataMaterial;
         const matKey = isBuiltin ? `${ctorId}` : `${ctorId}_${this.getObjectId(material)}`;
         return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
     }
@@ -1833,8 +1836,8 @@ export class Renderer {
 
     private getMaterialBindGroupKey(material: Material): string {
         if (material instanceof UnlitMaterial) {
-            const t = material.baseColorTexture;
-            return `unlit:${t?.id ?? 0}:${t?.revision ?? 0}`;
+            const bc = material.baseColorTexture;
+            return `unlit:${bc?.id ?? 0}:${bc?.revision ?? 0}`;
         }
         if (material instanceof StandardMaterial) {
             const bc = material.baseColorTexture;
@@ -1843,6 +1846,10 @@ export class Renderer {
             const o = material.occlusionTexture;
             const e = material.emissiveTexture;
             return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}`;
+        }
+        if (material instanceof DataMaterial) {
+            const bufId = material.dataBuffer ? this.getObjectId(material.dataBuffer) : 0;
+            return `data:${bufId}:${material.getColormapKey()}`;
         }
         return "custom";
     }
@@ -1858,6 +1865,9 @@ export class Renderer {
             const data = material.getUniformData();
             this.queue.writeBuffer(material.uniformBuffer!, 0, data.buffer, data.byteOffset, data.byteLength);
             material.markClean();
+        }
+        if (material instanceof DataMaterial) {
+            material.upload(this.device, this.queue);
         }
         const key = this.getMaterialBindGroupKey(material);
         if (material.bindGroup && material.bindGroupKey === key) return;
@@ -1883,30 +1893,42 @@ export class Renderer {
             const n = material.normalTexture;
             const o = material.occlusionTexture;
             const e = material.emissiveTexture;
-            const bcSampler = bc ? bc.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
-            const bcView = bc ? bc.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb;
-            const mrSampler = mr ? mr.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
-            const mrView = mr ? mr.getView(this.device, this.queue, "linear", this.fallbackMRViewLinear) : this.fallbackMRViewLinear;
-            const nSampler = n ? n.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
-            const nView = n ? n.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear;
-            const oSampler = o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
-            const oView = o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear;
-            const eSampler = e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler;
-            const eView = e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb;
             material.bindGroup = this.device.createBindGroup({
                 layout,
                 entries: [
                     { binding: 0, resource: { buffer: material.uniformBuffer } },
-                    { binding: 1, resource: bcSampler },
-                    { binding: 2, resource: bcView },
-                    { binding: 3, resource: mrSampler },
-                    { binding: 4, resource: mrView },
-                    { binding: 5, resource: nSampler },
-                    { binding: 6, resource: nView },
-                    { binding: 7, resource: oSampler },
-                    { binding: 8, resource: oView },
-                    { binding: 9, resource: eSampler },
-                    { binding: 10, resource: eView }
+                    { binding: 1, resource: bc ? bc.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 2, resource: bc ? bc.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                    { binding: 3, resource: mr ? mr.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 4, resource: mr ? mr.getView(this.device, this.queue, "linear", this.fallbackMRViewLinear) : this.fallbackMRViewLinear },
+                    { binding: 5, resource: n ? n.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 6, resource: n ? n.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
+                    { binding: 7, resource: o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 8, resource: o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear },
+                    { binding: 9, resource: e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 10, resource: e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb }
+                ]
+            });
+            material.bindGroupKey = key;
+            return;
+        }
+        if (material instanceof DataMaterial) {
+            if (!this.dataMaterialDummyDataBuffer) {
+                this.dataMaterialDummyDataBuffer = this.device.createBuffer({
+                    size: 4,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+                });
+                this.queue.writeBuffer(this.dataMaterialDummyDataBuffer, 0, new Uint8Array(4));
+            }
+            const dataBuffer = material.dataBuffer ?? this.dataMaterialDummyDataBuffer;
+            const cmap = material.getColormapForBinding().getGPUResources(this.device, this.queue);
+            material.bindGroup = this.device.createBindGroup({
+                layout,
+                entries: [
+                    { binding: 0, resource: { buffer: material.uniformBuffer } },
+                    { binding: 1, resource: { buffer: dataBuffer } },
+                    { binding: 2, resource: cmap.sampler },
+                    { binding: 3, resource: cmap.view }
                 ]
             });
             material.bindGroupKey = key;

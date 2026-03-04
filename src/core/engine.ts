@@ -4,7 +4,8 @@ import { Compute, type ComputeDescriptor } from "../compute";
 import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
 import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
 import { Geometry } from "../graphics/geometry";
-import { Material, UnlitMaterial, StandardMaterial, CustomMaterial, Color } from "../graphics/material";
+import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial, Color } from "../graphics/material";
+import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
 import { Colormap, type BuiltinColormapName, type ColormapDescriptor, type ColormapStop } from "../graphics/colormap";
 import { frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
@@ -189,13 +190,16 @@ export class WasmGPU {
     };
 
     readonly material = {
-        unlit: (options?: { color?: Color; opacity?: number; }): UnlitMaterial => {
+        unlit: (options?: UnlitMaterialDescriptor): UnlitMaterial => {
             return new UnlitMaterial(options);
         },
-        standard: (options?: { color?: Color; opacity?: number; metallic?: number; roughness?: number; emissive?: Color; emissiveIntensity?: number; }): StandardMaterial => {
+        standard: (options?: StandardMaterialDescriptor): StandardMaterial => {
             return new StandardMaterial(options);
         },
-        custom: (options: { vertexShader?: string; fragmentShader: string; uniforms?: Record<string, { type: "f32" | "vec2f" | "vec3f" | "vec4f" | "mat4x4f"; value: number | number[] }>; }): CustomMaterial => {
+        data: (options?: DataMaterialDescriptor): DataMaterial => {
+            return new DataMaterial(options);
+        },
+        custom: (options: CustomMaterialDescriptor): CustomMaterial => {
             return new CustomMaterial(options);
         }
     };
