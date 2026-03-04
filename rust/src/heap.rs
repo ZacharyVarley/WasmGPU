@@ -55,7 +55,7 @@ pub(crate) unsafe fn alloc_raw(bytes: usize, align: usize) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn wasmgpu_alloc(bytes: u32) -> u32 {
-    unsafe { alloc_raw(bytes as usize, 8) }
+    unsafe { alloc_raw(bytes as usize, 16) }
 }
 
 #[no_mangle]
