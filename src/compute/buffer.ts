@@ -28,7 +28,7 @@ const queueWriteBufferAligned = (queue: GPUQueue, dst: GPUBuffer, dstOffsetBytes
     assert((src.offset & 3) === 0, `srcOffsetBytes must be 4-byte aligned (got ${src.offset})`);
     const alignedSize = alignTo(src.size, 4);
     if (alignedSize === src.size) {
-        queue.writeBuffer(dst, dstOffsetBytes, data, srcOffsetBytes, src.size);
+        queue.writeBuffer(dst, dstOffsetBytes, src.buffer, src.offset, src.size);
         return;
     }
     const tmp = new Uint8Array(alignedSize);
