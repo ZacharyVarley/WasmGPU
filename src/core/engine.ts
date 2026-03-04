@@ -7,6 +7,7 @@ import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial, Color } from "../graphics/material";
 import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
 import { Colormap, type BuiltinColormapName, type ColormapDescriptor, type ColormapStop } from "../graphics/colormap";
+import { pythonInterop } from "../python";
 import { frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
@@ -93,6 +94,14 @@ export class WasmGPU {
 
     get interop() {
         return wasmInterop;
+    }
+
+    static get python() {
+        return pythonInterop;
+    }
+
+    get python() {
+        return pythonInterop;
     }
 
     static createHeapArena(capBytes: number, align: number = 16): WasmHeapArena {

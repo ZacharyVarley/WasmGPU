@@ -18,6 +18,8 @@ export { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial
 export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
 export { Texture2D } from "./graphics/texture";
 export type { Texture2DDescriptor, TextureColorSpace, TextureSamplerOptions, TextureSource } from "./graphics/texture";
+export { pythonInterop } from "./python";
+export type { NdarrayTransfer, PyBufferLike, PyProxyLike, PythonArraySource, ReceiveNdarrayOptions, SendNdarrayOptions, WasmNdarrayHandle } from "./python";
 export { initWebAssembly, wasm, frameArena, wasmInterop, WasmSlice, WasmHeapArena, mat4, quat, vec3, cullf, frustumf, ndarrayf } from "./wasm";
 export type { WasmSliceHandle, WasmSliceKind, WasmSliceDType, WasmTypedArrayConstructor } from "./wasm";
 export { Camera, PerspectiveCamera, OrthographicCamera } from "./world/camera";
