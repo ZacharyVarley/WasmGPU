@@ -1409,7 +1409,7 @@ export class Renderer {
             this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
             pass.setBindGroup(0, globalBindGroup);
             pass.setBindGroup(1, cloud.bindGroup);
-            pass.draw(cloud.pointCount);
+            pass.draw(6, cloud.pointCount);
         }
     }
 
@@ -1668,7 +1668,7 @@ export class Renderer {
             this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
             this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
             pass.setBindGroup(0, globalBindGroup);
-            pass.draw(cloud.pointCount);
+            pass.draw(6, cloud.pointCount);
         }
     }
 
@@ -2027,7 +2027,7 @@ export class Renderer {
                 ]
             },
             primitive: {
-                topology: "point-list",
+                topology: "triangle-list",
                 cullMode: "none"
             },
             depthStencil: cloud.depthTest

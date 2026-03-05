@@ -18,8 +18,8 @@ struct PointCloudUniforms {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @builtin(point_size) pointSize: f32,
-    @location(0) t: f32
+    @location(0) t: f32,
+    @location(1) pointCoord: vec2<f32>
 };
 
 struct CameraUniforms {
@@ -73,8 +73,8 @@ fn colormap(tIn: f32) -> vec4<f32> {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-    let p = points[vertexIndex];
+fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
+    let p = points[instanceIndex];
     let worldPos = model.model * vec4<f32>(p.position, 1.0);
     let clip = camera.viewProj * worldPos;
     let dist = distance(camera.position, worldPos.xyz);
@@ -87,22 +87,39 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
         sizePx = baseSize * (atten / max(dist, 1e-6));
     }
     sizePx = clamp(sizePx, minSize, maxSize);
+    var uv = vec2<f32>(0.0);
+    if (vertexIndex == 0u) {
+        uv = vec2<f32>(0.0, 0.0);
+    } else if (vertexIndex == 1u) {
+        uv = vec2<f32>(1.0, 0.0);
+    } else if (vertexIndex == 2u) {
+        uv = vec2<f32>(0.0, 1.0);
+    } else if (vertexIndex == 3u) {
+        uv = vec2<f32>(1.0, 0.0);
+    } else if (vertexIndex == 4u) {
+        uv = vec2<f32>(1.0, 1.0);
+    } else if (vertexIndex == 5u) {
+        uv = vec2<f32>(0.0, 1.0);
+    }
+    let ndcSize = sizePx / 800.0;
+    let aspect = abs(camera.viewProj[1][1] / max(abs(camera.viewProj[0][0]), 1e-6));
+    let offsetX = (uv.x - 0.5) * ndcSize / aspect * clip.w;
+    let offsetY = -(uv.y - 0.5) * ndcSize * clip.w;
+    var out: VertexOutput;
+    out.position = clip + vec4<f32>(offsetX, offsetY, 0.0, 0.0);
+    out.pointCoord = uv;
     let denom = max(pc.scalarParams.y - pc.scalarParams.x, 1e-6);
     var t = (p.scalar - pc.scalarParams.x) / denom;
     if (pc.options.x > 0.5) {
         t = 1.0 - t;
     }
-    t = pow(saturate(t), pc.scalarParams.w);
-    var out: VertexOutput;
-    out.position = clip;
-    out.pointSize = sizePx;
-    out.t = t;
+    out.t = pow(saturate(t), pc.scalarParams.w);
     return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput, @builtin(point_coord) pointCoord: vec2<f32>) -> @location(0) vec4<f32> {
-    let uv = pointCoord * 2.0 - vec2<f32>(1.0, 1.0);
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = in.pointCoord * 2.0 - vec2<f32>(1.0, 1.0);
     let r2 = dot(uv, uv);
     if (r2 > 1.0) {
         discard;
@@ -115,6 +132,6 @@ fn fs_main(in: VertexOutput, @builtin(point_coord) pointCoord: vec2<f32>) -> @lo
     }
     var c = colormap(in.t);
     c.a = c.a * pc.scalarParams.z * alpha;
-    c.rgb = srgbFromLinear(c.rgb);
+    c = vec4<f32>(srgbFromLinear(c.rgb), c.a);
     return c;
 }
