@@ -1,11 +1,18 @@
 <p align="center">
     <a href="https://www.github.com/Zushah/WasmGPU">
         <picture>
-            <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-darkmode.png">
-            <img alt="WasmGPU logo" src="./assets/logo-lightmode.png" width="50%">
+            <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Zushah/WasmGPU/main/assets/logo-darkmode.png">
+            <img alt="WasmGPU logo" src="https://raw.githubusercontent.com/Zushah/WasmGPU/main/assets/logo-lightmode.png" width="50%">
         </picture>
     </a>
 </p>
+<p align="center">
+    <a href="https://www.github.com/Zushah/WasmGPU/releases/tag/v0.5.0"><img src="https://img.shields.io/badge/release-v0.5.0-005a9c?logo=github&logoColor=white" alt="Latest release"></a>
+    <a href="https://raw.githubusercontent.com/Zushah/WasmGPU/v0.5.0/dist/WasmGPU.js"><img src="https://img.shields.io/badge/minified-218.72_kB-654ff0?logo=javascript&logoColor=white" alt="218.72 kilobytes minified size"></a>
+    <a href="https://www.npmjs.com/~zushah"><img src="https://img.shields.io/badge/downloads-coming_soon-9b8df5?logo=npm&logoColor=white" alt="npm package coming soon"></a>
+    <a href="https://www.jsdelivr.com/package/gh/Zushah/WasmGPU"><img src="https://img.shields.io/jsdelivr/gh/hm/Zushah/WasmGPU?color=654ff0&logo=jsdelivr&logoColor=white" alt="jsDelivr requests per month"></a>
+    <a href="https://www.github.com/Zushah/WasmGPU/blob/main/LICENSE.md"><img src="https://img.shields.io/badge/license-MPL--2.0-005a9c?logo=gitbook&logoColor=white" alt="Mozilla Public License 2.0"></a>
+</p><br>
 
 ## Status
 
