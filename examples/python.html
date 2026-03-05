@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WasmGPU Python Example</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #000; overflow: hidden; }
+            canvas { display: block; width: 100vw; height: 100vh; }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+        <script src="../dist/WasmGPU.iife.min.js"></script>
+        <script type="module">
+            const canvas = document.querySelector("canvas");
+            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
+            const scene = wgpu.createScene([0.02, 0.02, 0.03, 1.0]);
+            const camera = wgpu.createCamera.perspective({ fov: 60, near: 0.05, far: 200 });
+            camera.transform.setPosition(0, 5.0, 10.0);
+            const controls = wgpu.createControls.trackball(camera, canvas, { target: [0, 0, 0], enableDamping: true, dampingFactor: 0.1 });
+            const points = 250000;
+            const py = `
+            import numpy as np
+            def generate_galaxy(n):
+                rng = np.random.default_rng(1)
+                radius = 15.0
+                r = rng.exponential(scale=radius/2, size=n)
+                r = np.clip(r, 0.05, radius * 4.0)
+                theta = rng.uniform(0, 2*np.pi, size=n)
+                gaussian = 0.5 * np.exp(-(r / (radius * 0.2))**2)
+                thickness = 0.2 * (1.0 + r/radius)
+                y = rng.normal(0, gaussian + thickness, size=n)
+                coord = np.empty((n, 4), dtype=np.float32)
+                coord[:, 0] = theta
+                coord[:, 1] = r
+                coord[:, 2] = y
+                coord[:, 3] = np.clip(r / radius, 0, 1)
+                return coord`;
+            const wgsl = `
+            struct Star { theta_0: f32, r: f32, y: f32, scalar: f32 };
+            struct PointData { position: vec3<f32>, scalar: f32 };
+            @group(0) @binding(0) var<storage, read> in_coord: array<Star>;
+            @group(0) @binding(1) var<storage, read_write> out_points: array<PointData>;
+            @group(0) @binding(2) var<uniform> time: f32;
+            @compute @workgroup_size(256)
+            fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+                let idx = global_id.x;
+                if (idx >= arrayLength(&in_coord)) { return; }
+                let star = in_coord[idx];
+                let r = max(star.r, 0.1);
+                let star_omega = 1.8 / r;
+                let theta_base = star.theta_0 + star_omega * time;
+                let phase = 2.0 * (theta_base - 0.2 * time) + r * 1.35;
+                let edge_fade = smoothstep(14.0, 8.0, r);
+                let theta_actual = theta_base - (0.35 * edge_fade) * sin(phase);
+                var out: PointData;
+                out.position = vec3<f32>(r * cos(theta_actual), star.y, r * sin(theta_actual));
+                let density_boost = (1.0 + cos(phase)) * 0.15 * edge_fade;
+                out.scalar = clamp(star.scalar + density_boost, 0.0, 1.0);
+                out_points[idx] = out;
+            }`;
+            const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/" });
+            await pyodide.loadPackage("numpy");
+            pyodide.runPython(py);
+            const outpy = pyodide.globals.get("generate_galaxy")(points);
+            const handle = wgpu.python.sendNdarray(outpy);
+            const inBuffer = wgpu.compute.createStorageBuffer({ byteLength: handle.byteLength, data: wgpu.python.bytes(handle) });
+            const outBuffer = wgpu.compute.createStorageBuffer({ byteLength: handle.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX });
+            wgpu.python.free(handle);
+            outpy.destroy();
+            scene.add(wgpu.createPointCloud({
+                pointsBuffer: outBuffer, pointCount: points,
+                basePointSize: 3.0, sizeAttenuation: 2.0, minPointSize: 1.0, maxPointSize: 10.0,
+                softness: 0.5, opacity: 1.0, gamma: 0.7, boundsRadius: 50.0,
+                colormap: "custom",
+                colormapStops: [[1.0, 1.0, 1.0, 1.0], [1.0, 0.9, 0.6, 1.0], [0.4, 0.7, 1.0, 1.0], [0.1, 0.3, 0.9, 0.6], [0.0, 0.0, 0.2, 0.0]]
+            }));
+            scene.add(wgpu.createPointCloud({
+                pointsBuffer: outBuffer, pointCount: points,
+                basePointSize: 75.0, sizeAttenuation: 2.0, minPointSize: 10.0, maxPointSize: 300.0,
+                softness: 0.99, opacity: 0.05, gamma: 0.9, boundsRadius: 50.0,
+                colormap: "custom",
+                colormapStops: [[1.0, 0.5, 0.3, 1.0], [0.6, 0.2, 0.6, 0.8], [0.1, 0.2, 0.5, 0.6], [0.0, 0.0, 0.0, 0.0]]
+            }));
+            const computePipeline = wgpu.compute.createPipeline({ code: wgsl, entryPoint: "main" });
+            const uniform = wgpu.compute.createUniformBuffer({ byteLength: 16, copyDst: true });
+            const bindGroup = computePipeline.createBindGroup(0, { 0: inBuffer, 1: outBuffer, 2: uniform });
+            wgpu.createPerformanceStats();
+            wgpu.run((dt, time) => {
+                controls.update(dt);
+                uniform.write(new Float32Array([time * 0.25]));
+                wgpu.compute.dispatchBatch([{ pipeline: computePipeline, bindGroups: [bindGroup], workgroups: wgpu.compute.workgroups1D(points, 256) }]);
+                wgpu.render(scene, camera);
+            });
+        </script>
+    </body>
+</html>
