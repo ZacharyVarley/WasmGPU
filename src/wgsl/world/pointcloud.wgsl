@@ -101,8 +101,10 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
     } else if (vertexIndex == 5u) {
         uv = vec2<f32>(0.0, 1.0);
     }
-    let ndcSize = sizePx / 800.0;
-    let aspect = abs(camera.viewProj[1][1] / max(abs(camera.viewProj[0][0]), 1e-6));
+    let row0 = vec3<f32>(camera.viewProj[0][0], camera.viewProj[1][0], camera.viewProj[2][0]);
+    let row1 = vec3<f32>(camera.viewProj[0][1], camera.viewProj[1][1], camera.viewProj[2][1]);
+    let aspect = length(row1) / max(length(row0), 1e-6);
+    let ndcSize = (sizePx * 2.0) / 800.0;
     let offsetX = (uv.x - 0.5) * ndcSize / aspect * clip.w;
     let offsetY = -(uv.y - 0.5) * ndcSize * clip.w;
     var out: VertexOutput;
