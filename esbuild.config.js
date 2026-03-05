@@ -1,14 +1,26 @@
 import esbuild from "esbuild";
 import fs from "node:fs";
+const wgslMinify = {
+  name: "wgsl-minify",
+  setup(build) {
+    build.onLoad({ filter: /\.wgsl$/ }, async (args) => {
+      let text = await fs.promises.readFile(args.path, "utf8");
+      text = text
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return { contents: text, loader: "text" };
+    });
+  }
+};
 const common = {
   bundle: true,
   platform: "browser",
   target: ["es2023"],
   external: ["node:*"],
-  loader: {
-    ".wasm": "file",
-    ".wgsl": "text"
-  },
+  loader: { ".wasm": "file" },
+  plugins: [wgslMinify],
   assetNames: "[name]",
   logLevel: "info"
 };
