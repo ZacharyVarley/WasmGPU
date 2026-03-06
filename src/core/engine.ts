@@ -1,20 +1,31 @@
 import { Renderer, RendererDescriptor } from "./renderer";
-import { PerformanceStats, type PerformanceStatsDescriptor } from "./stats";
-import { Compute, type ComputeDescriptor } from "../compute";
-import { loadGltf, type LoadGltfOptions } from "../gltf/loader";
-import { importGltf, type ImportGltfOptions, type GltfImportResult } from "../gltf/import";
+import { PerformanceStats } from "./stats";
+import type { PerformanceStatsDescriptor } from "./stats";
+import { Transform } from "./transform";
+import { Compute} from "../compute";
+import type { ComputeDescriptor } from "../compute";
+import { loadGltf, importGltf, parseGLB, readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32 } from "../gltf";
+import type { GltfDocument, LoadGltfOptions, ImportGltfOptions, GltfImportResult, ParsedGLB, AccessorView } from "../gltf";
+import { AnimationClip, AnimationPlayer, Skin } from "../graphics/animation";
+import type { AnimationClipDescriptor } from "../graphics/animation";
+import { Colormap } from "../graphics/colormap";
+import type { BuiltinColormapName, ColormapDescriptor, ColormapStop } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial, Color } from "../graphics/material";
 import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
-import { Colormap, type BuiltinColormapName, type ColormapDescriptor, type ColormapStop } from "../graphics/colormap";
+import { Texture2D } from "../graphics/texture";
+import type { Texture2DDescriptor } from "../graphics/texture";
 import { pythonInterop } from "../python";
-import { frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
+import { mat4, vec3, quat, frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
-import { OrbitControls, TrackballControls, type OrbitControlsDescriptor, type TrackballControlsDescriptor } from "../world/controls";
+import { OrbitControls, TrackballControls } from "../world/controls";
+import type { OrbitControlsDescriptor, TrackballControlsDescriptor } from "../world/controls";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
-import { PointCloud, type PointCloudDescriptor } from "../world/pointcloud";
-import { GlyphField, type GlyphFieldDescriptor } from "../world/glyphfield";
+import { PointCloud } from "../world/pointcloud";
+import type { PointCloudDescriptor } from "../world/pointcloud";
+import { GlyphField } from "../world/glyphfield";
+import type { GlyphFieldDescriptor } from "../world/glyphfield";
 import { Scene } from "../world/scene";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
@@ -102,6 +113,14 @@ export class WasmGPU {
 
     get python() {
         return pythonInterop;
+    }
+
+    static get math() {
+        return { mat4, quat, vec3 };
+    }
+
+    get math() {
+        return { mat4, quat, vec3 };
     }
 
     static createHeapArena(capBytes: number, align: number = 16): WasmHeapArena {
@@ -213,6 +232,16 @@ export class WasmGPU {
         }
     };
 
+    readonly texture = {
+        create2D: (descriptor: Texture2DDescriptor): Texture2D => {
+            return Texture2D.createFrom(descriptor);
+        }
+    };
+
+    createTransform(): Transform {
+        return new Transform();
+    }
+
     createMesh(geometry: Geometry, material: Material): Mesh {
         return new Mesh(geometry, material);
     }
@@ -267,10 +296,45 @@ export class WasmGPU {
         }
     };
 
-    async loadGLTF(source: string | ArrayBuffer, options: GltfOptions = {}): Promise<GltfImportResult> {
-        const doc = await loadGltf(source, options.load);
-        return importGltf(doc, options.import);
-    }
+    readonly gltf = {
+        load: async (source: string | ArrayBuffer, options?: LoadGltfOptions) => {
+            return loadGltf(source, options);
+        },
+        import: async (doc: GltfDocument, options?: ImportGltfOptions): Promise<GltfImportResult> => {
+            return importGltf(doc, options);
+        },
+        loadAndImport: async (source: string | ArrayBuffer, options: GltfOptions = {}): Promise<GltfImportResult> => {
+            const doc = await loadGltf(source, options.load);
+            return importGltf(doc, options.import);
+        },
+        parseGLB: (glb: ArrayBuffer): ParsedGLB => {
+            return parseGLB(glb);
+        },
+        readAccessor: (doc: GltfDocument, accessorIndex: number): AccessorView => {
+            return readAccessor(doc, accessorIndex);
+        },
+        readAccessorAsFloat32: (doc: GltfDocument, accessorIndex: number): Float32Array => {
+            return readAccessorAsFloat32(doc, accessorIndex);
+        },
+        readAccessorAsUint16: (doc: GltfDocument, accessorIndex: number): Uint16Array => {
+            return readAccessorAsUint16(doc, accessorIndex);
+        },
+        readIndicesAsUint32: (doc: GltfDocument, accessorIndex: number): Uint32Array => {
+            return readIndicesAsUint32(doc, accessorIndex);
+        }
+    };
+
+    readonly animation = {
+        createClip: (descriptor: AnimationClipDescriptor): AnimationClip => {
+            return new AnimationClip(descriptor);
+        },
+        createPlayer: (clip: AnimationClip, options?: Partial<Pick<AnimationPlayer, "speed" | "loop" | "playing">>): AnimationPlayer => {
+            return new AnimationPlayer(clip, options);
+        },
+        createSkin: (name: string, joints: Transform[], inverseBindMatrices: Float32Array | null): Skin => {
+            return new Skin(name, joints, inverseBindMatrices);
+        }
+    };
 
     destroy(): void {
         this.stop();
