@@ -53,6 +53,16 @@ struct LightingUniforms {
 @group(0) @binding(1) var<uniform> model: ModelUniforms;
 @group(0) @binding(2) var<uniform> lighting: LightingUniforms;
 
+fn isNan(val: f32) -> bool {
+    let u = bitcast<u32>(val);
+    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u;
+}
+
+fn isInf(val: f32) -> bool {
+    let u = bitcast<u32>(val);
+    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) == 0u;
+}
+
 fn clamp01(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
 }
@@ -189,10 +199,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             lightFactor += lum * attenuation * ndotl;
         }
         let shadedRgb = cmap.rgb * lightFactor;
-        cmap.rgb = mix(cmap.rgb, shadedRgb, shading);
+        cmap = vec4f(mix(cmap.rgb, shadedRgb, shading), cmap.a);
     }
     let opacity = clamp01(material.colorParams.x);
-    cmap.a = cmap.a * opacity;
-    cmap.rgb = clamp(cmap.rgb, vec3f(0.0), vec3f(1.0));
+    let finalA = cmap.a * opacity;
+    let finalRgb = clamp(cmap.rgb, vec3f(0.0), vec3f(1.0));
+    cmap = vec4f(finalRgb, finalA);
     return vec4f(srgbFromLinear(cmap.rgb), cmap.a);
 }
