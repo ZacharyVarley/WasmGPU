@@ -627,7 +627,7 @@ export class GlyphField {
         out[2] = clamp01(this._opacity);
         out[3] = clampMin(this._gamma, 1e-6);
         out[4] = this._invert ? 1.0 : 0.0;
-        out[5] = (this._colormap instanceof Colormap) ? 0 : colormapId(this._colormap);
+        out[5] = this._solidColor[3];
         out[6] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
         out[7] = colorModeId(this._colorMode);
         out[8] = this._lit ? 1.0 : 0.0;

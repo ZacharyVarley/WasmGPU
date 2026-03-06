@@ -172,7 +172,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         alpha = cmap.a;
     } else {
         baseColor = glyph.lightingParams.yzw;
-        alpha = 1.0;
+        alpha = glyph.options.y;
     }
     baseColor = max(baseColor, vec3<f32>(0.0));
     alpha = saturate(alpha) * opacity;

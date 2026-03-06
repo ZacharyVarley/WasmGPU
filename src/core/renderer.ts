@@ -1241,10 +1241,11 @@ export class Renderer {
                 const planesPtr = p;
                 const centersPtr = this.cullCentersPtr;
                 const radiiPtr = this.cullRadiiPtr;
-                const outPtr = frameArena.alloc(bounded.length, 4) as WasmPtr;
-                cullf.spheresFrustum(outPtr, centersPtr, radiiPtr, bounded.length, planesPtr);
+                const outPtr = frameArena.alloc(bounded.length * 4, 4) as WasmPtr;
+                const numVisible = cullf.spheresFrustum(outPtr, centersPtr, radiiPtr, bounded.length, planesPtr);
                 const u32 = store.u32();
-                for (let i = 0; i < bounded.length; i++) if (u32[(outPtr >>> 2) + i] !== 0) visible.push(bounded[i]);
+                const outBase = outPtr >>> 2;
+                for (let i = 0; i < numVisible; i++) visible.push(bounded[u32[outBase + i]]);
                 if (this.frustumCullingStatsEnabled) {
                     this.cullingStats.tested += bounded.length;
                     this.cullingStats.visible += visible.length;
