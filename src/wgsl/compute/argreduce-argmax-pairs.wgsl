@@ -11,13 +11,18 @@ struct Pair {
 
 var<workgroup> share: array<Pair, 256>;
 
+fn isNan(val: f32) -> bool {
+    let u = bitcast<u32>(val);
+    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u;
+}
+
 fn invalidPair() -> Pair {
     return Pair(-0x1.fffffep+127f, 0xFFFFFFFFu);
 }
 
 fn better(a: Pair, b: Pair) -> Pair {
-    let aNan = a.value != a.value;
-    let bNan = b.value != b.value;
+    let aNan = isNan(a.value);
+    let bNan = isNan(b.value);
     if (aNan && bNan) {
         if (a.index <= b.index) { return a; }
         return b;
