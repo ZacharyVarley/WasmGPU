@@ -8,7 +8,7 @@
   "includeVersion": true,
   "sidebarLinks": {
     "Source code": "https://raw.githubusercontent.com/Zushah/WasmGPU/main/dist/WasmGPU.js",
-    "Examples (ESM)": "https://zushah.github.io/WasmGPU/examples/"
+    "Examples": "https://zushah.github.io/WasmGPU/examples/"
   },
   "plugin": ["typedoc-github-theme"]
 }

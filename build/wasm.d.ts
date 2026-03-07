@@ -12,6 +12,7 @@ export function wasmgpu_seed(seed: number): void;
 
 export function wasmgpu_frame_arena_init(capBytes: number): number;
 export function wasmgpu_frame_arena_reset(): void;
+export function wasmgpu_frame_arena_epoch(): number;
 export function wasmgpu_frame_alloc(bytes: number, align: number): number;
 export function wasmgpu_frame_alloc_f32(len: number): number;
 export function wasmgpu_frame_arena_used(): number;
@@ -19,6 +20,8 @@ export function wasmgpu_frame_arena_cap(): number;
 
 export function f32view(ptr: number, len: number): Float32Array;
 export function u32view(ptr: number, len: number): Uint32Array;
+export function i32view(ptr: number, len: number): Int32Array;
+export function u8view(ptr: number, len: number): Uint8Array;
 
 export function transform_compose_local_many(outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, count: number): number;
 export function transform_update_world_ordered(outWorldPtr: number, localPtr: number, parentPtr: number, orderPtr: number, count: number): number;
@@ -30,6 +33,10 @@ export function mesh_compute_vertex_normals(outNormalsPtr: number, positionsPtr:
 
 export function anim_sample_clip_trs(posPtr: number, rotPtr: number, sclPtr: number, transformCount: number, samplersPtr: number, samplerCount: number, channelsPtr: number, channelCount: number, time: number): number;
 export function anim_compute_joint_matrices_to(outPtr: number, jointIndicesPtr: number, jointCount: number, invBindPtr: number, worldBasePtr: number, meshWorldPtr: number): number;
+
+export function ndarray_numel(shapePtr: number, ndim: number): number;
+export function ndarray_strides_row_major(outStridesPtr: number, shapePtr: number, ndim: number, elemBytes: number): number;
+export function ndarray_offset_bytes(shapePtr: number, stridesPtr: number, indicesPtr: number, ndim: number, baseOffsetBytes: number): number;
 
 export function mat4_abs(outPtr: number, mPtr: number): number;
 export function mat4_add(outPtr: number, m1Ptr: number, m2Ptr: number): number;

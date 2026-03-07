@@ -837,7 +837,7 @@ export class Renderer {
         this.cameraUniformStagingView[16] = storeF32[base + 12];
         this.cameraUniformStagingView[17] = storeF32[base + 13];
         this.cameraUniformStagingView[18] = storeF32[base + 14];
-        this.cameraUniformStagingView[19] = 0.0;
+        this.cameraUniformStagingView[19] = this.height;
         this.queue.writeBuffer(this.cameraUniformBuffer, 0, this.cameraUniformStagingView);
     }
 
