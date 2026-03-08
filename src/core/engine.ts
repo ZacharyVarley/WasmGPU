@@ -11,6 +11,7 @@ import type { AnimationClipDescriptor } from "../graphics/animation";
 import { Colormap } from "../graphics/colormap";
 import type { BuiltinColormapName, ColormapDescriptor, ColormapStop } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
+import type { GeometryDescriptor, CartesianCurveDescriptor, CartesianSurfaceDescriptor, ParametricCurveDescriptor, ParametricSurfaceDescriptor } from "../graphics/geometry";
 import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial, Color } from "../graphics/material";
 import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
@@ -191,6 +192,9 @@ export class WasmGPU {
     };
 
     readonly geometry = {
+        custom: (descriptor: GeometryDescriptor): Geometry => {
+            return new Geometry(descriptor);
+        },
         box: (width?: number, height?: number, depth?: number): Geometry => {
             return Geometry.box(width, height, depth);
         },
@@ -212,8 +216,17 @@ export class WasmGPU {
         prism: (radius?: number, height?: number, sides?: number): Geometry => {
             return Geometry.prism(radius, height, sides);
         },
-        custom: (descriptor: { positions: Float32Array; normals?: Float32Array; uvs?: Float32Array; indices?: Uint32Array; }): Geometry => {
-            return new Geometry(descriptor);
+        cartesianCurve: (descriptor: CartesianCurveDescriptor): Geometry => {
+            return Geometry.cartesianCurve(descriptor);
+        },
+        cartesianSurface: (descriptor: CartesianSurfaceDescriptor): Geometry => {
+            return Geometry.cartesianSurface(descriptor);
+        },
+        parametricCurve: (descriptor: ParametricCurveDescriptor): Geometry => {
+            return Geometry.parametricCurve(descriptor);
+        },
+        parametricSurface: (descriptor: ParametricSurfaceDescriptor): Geometry => {
+            return Geometry.parametricSurface(descriptor);
         }
     };
 

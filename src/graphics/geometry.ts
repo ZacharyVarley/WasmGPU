@@ -16,6 +16,58 @@ export type GeometryDescriptor = {
     indices?: Uint32Array;
 };
 
+export type CartesianCurveDescriptor = {
+    f: (x: number) => number;
+    xMin?: number;
+    xMax?: number;
+    segments?: number;
+    radius?: number;
+    radialSegments?: number;
+    closed?: boolean;
+    plane?: "xy" | "xz" | "yz";
+    up?: [number, number, number];
+    breakOnInvalid?: boolean;
+};
+
+export type CartesianSurfaceDescriptor = {
+    f: (x: number, z: number) => number;
+    xMin?: number;
+    xMax?: number;
+    zMin?: number;
+    zMax?: number;
+    xSegments?: number;
+    zSegments?: number;
+    plane?: "xy" | "xz" | "yz";
+    skipInvalid?: boolean;
+    doubleSided?: boolean;
+};
+
+export type ParametricCurveDescriptor = {
+    f: (t: number) => [number, number] | [number, number, number];
+    tMin?: number;
+    tMax?: number;
+    segments?: number;
+    radius?: number;
+    radialSegments?: number;
+    closed?: boolean;
+    plane?: "xy" | "xz" | "yz";
+    up?: [number, number, number];
+    breakOnInvalid?: boolean;
+};
+
+export type ParametricSurfaceDescriptor = {
+    f: (u: number, v: number) => [number, number, number];
+    uMin?: number;
+    uMax?: number;
+    vMin?: number;
+    vMax?: number;
+    uSegments?: number;
+    vSegments?: number;
+    plane?: "xy" | "xz" | "yz";
+    skipInvalid?: boolean;
+    doubleSided?: boolean;
+};
+
 export class Geometry {
     readonly positions: Float32Array;
     readonly normals: Float32Array;
@@ -569,5 +621,646 @@ export class Geometry {
             uvs: new Float32Array(uvs),
             indices: new Uint32Array(indices)
         });
+    }
+
+    static cartesianCurve(descriptor: CartesianCurveDescriptor): Geometry {
+        const f = descriptor.f;
+        const xMin = descriptor.xMin ?? -1;
+        const xMax = descriptor.xMax ?? 1;
+        const segments = Math.max(2, Math.floor(descriptor.segments ?? 256));
+        const radius = descriptor.radius ?? 0.01;
+        const radialSegments = Math.max(3, Math.floor(descriptor.radialSegments ?? 8));
+        const closed = descriptor.closed ?? false;
+        const plane: "xy" | "xz" | "yz" = descriptor.plane ?? "xy";
+        const upLocal: [number, number, number] = descriptor.up ?? [0, 0, 1];
+        let up: [number, number, number];
+        switch (plane) {
+            case "xy":
+                up = upLocal;
+                break;
+            case "xz":
+                up = [upLocal[0], upLocal[2], upLocal[1]];
+                break;
+            case "yz":
+                up = [upLocal[2], upLocal[0], upLocal[1]];
+                break;
+        }
+        const breakOnInvalid = descriptor.breakOnInvalid ?? true;
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        let vertexOffset = 0;
+        const sampleCount = closed ? segments : segments + 1;
+        let segmentPoints: number[] = [];
+        let anyInvalid = false;
+        const flushSegment = (close: boolean) => {
+            const pointCount = segmentPoints.length / 3;
+            if (pointCount >= 2) {
+                vertexOffset = Geometry._appendTubeSegment(new Float32Array(segmentPoints), radius, radialSegments, close, up, positions, normals, uvs, indices, vertexOffset);
+            }
+            segmentPoints = [];
+        };
+        const range = xMax - xMin;
+        for (let i = 0; i < sampleCount; i++) {
+            const u = segments > 0 ? (i / segments) : 0;
+            const x = xMin + range * u;
+            const y = f(x);
+            if (!Number.isFinite(y)) {
+                anyInvalid = true;
+                if (breakOnInvalid) flushSegment(false);
+                continue;
+            }
+            let wx: number;
+            let wy: number;
+            let wz: number;
+            switch (plane) {
+                case "xy":
+                    wx = x;
+                    wy = y;
+                    wz = 0;
+                    break;
+                case "xz":
+                    wx = x;
+                    wy = 0;
+                    wz = y;
+                    break;
+                case "yz":
+                    wx = 0;
+                    wy = x;
+                    wz = y;
+                    break;
+            }
+            segmentPoints.push(wx, wy, wz);
+        }
+        flushSegment(closed && !anyInvalid);
+        if (positions.length === 0) return new Geometry({ positions: new Float32Array(0) });
+        return new Geometry({
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        });
+    }
+
+    static cartesianSurface(descriptor: CartesianSurfaceDescriptor): Geometry {
+        const f = descriptor.f;
+        const xMin = descriptor.xMin ?? -1;
+        const xMax = descriptor.xMax ?? 1;
+        const zMin = descriptor.zMin ?? -1;
+        const zMax = descriptor.zMax ?? 1;
+        const xSegments = Math.max(1, Math.floor(descriptor.xSegments ?? 128));
+        const zSegments = Math.max(1, Math.floor(descriptor.zSegments ?? 128));
+        const skipInvalid = descriptor.skipInvalid ?? true;
+        const doubleSided = descriptor.doubleSided ?? false;
+        const plane: "xy" | "xz" | "yz" = descriptor.plane ?? "xz";
+        const gridX = xSegments;
+        const gridZ = zSegments;
+        const gridX1 = gridX + 1;
+        const gridZ1 = gridZ + 1;
+        const positions = new Float32Array(gridX1 * gridZ1 * 3);
+        const normals = new Float32Array(gridX1 * gridZ1 * 3);
+        const uvs = new Float32Array(gridX1 * gridZ1 * 2);
+        const valid = new Uint8Array(gridX1 * gridZ1);
+        const xRange = xMax - xMin;
+        const zRange = zMax - zMin;
+        for (let iz = 0; iz < gridZ1; iz++) {
+            const vz = gridZ > 0 ? (iz / gridZ) : 0;
+            const z = zMin + zRange * vz;
+            for (let ix = 0; ix < gridX1; ix++) {
+                const ux = gridX > 0 ? (ix / gridX) : 0;
+                const x = xMin + xRange * ux;
+                const i = ix + gridX1 * iz;
+                const y = f(x, z);
+                const ok = Number.isFinite(y);
+                valid[i] = ok ? 1 : 0;
+                const p = i * 3;
+                const height = ok ? y : 0;
+                let wx: number;
+                let wy: number;
+                let wz: number;
+                switch (plane) {
+                    case "xy":
+                        wx = x;
+                        wy = z;
+                        wz = height;
+                        break;
+                    case "xz":
+                        wx = x;
+                        wy = height;
+                        wz = z;
+                        break;
+                    case "yz":
+                        wx = height;
+                        wy = x;
+                        wz = z;
+                        break;
+                }
+                positions[p + 0] = wx;
+                positions[p + 1] = wy;
+                positions[p + 2] = wz;
+                const t = i * 2;
+                uvs[t + 0] = ux;
+                uvs[t + 1] = 1 - vz;
+            }
+        }
+        Geometry._computeGridNormals(positions, valid, gridX, gridZ, normals);
+        const indices: number[] = [];
+        for (let iz = 0; iz < gridZ; iz++) {
+            for (let ix = 0; ix < gridX; ix++) {
+                const a = ix + gridX1 * iz;
+                const b = ix + gridX1 * (iz + 1);
+                const c = (ix + 1) + gridX1 * (iz + 1);
+                const d = (ix + 1) + gridX1 * iz;
+                if (skipInvalid && (!valid[a] || !valid[b] || !valid[c] || !valid[d])) continue;
+                indices.push(a, b, d, b, c, d);
+            }
+        }
+        if (indices.length === 0) return new Geometry({ positions: new Float32Array(0) });
+        const base: GeometryDescriptor = {
+            positions,
+            normals,
+            uvs,
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    static parametricCurve(descriptor: ParametricCurveDescriptor): Geometry {
+        const f = descriptor.f;
+        const tMin = descriptor.tMin ?? 0;
+        const tMax = descriptor.tMax ?? 1;
+        const segments = Math.max(2, Math.floor(descriptor.segments ?? 256));
+        const radius = descriptor.radius ?? 0.01;
+        const radialSegments = Math.max(3, Math.floor(descriptor.radialSegments ?? 8));
+        const closed = descriptor.closed ?? false;
+        const breakOnInvalid = descriptor.breakOnInvalid ?? true;
+        const plane: "xy" | "xz" | "yz" = descriptor.plane ?? "xy";
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        let vertexOffset = 0;
+        const sampleCount = closed ? segments : segments + 1;
+        let segmentPoints: number[] = [];
+        let anyInvalid = false;
+        let upLocal: [number, number, number] | null = descriptor.up ?? null;
+        let upWorld: [number, number, number] | null = null;
+        if (upLocal) {
+            switch (plane) {
+                case "xy":
+                    upWorld = upLocal;
+                    break;
+                case "xz":
+                    upWorld = [upLocal[0], upLocal[2], upLocal[1]];
+                    break;
+                case "yz":
+                    upWorld = [upLocal[2], upLocal[0], upLocal[1]];
+                    break;
+            }
+        }
+        const flushSegment = (close: boolean) => {
+            const pointCount = segmentPoints.length / 3;
+            if (pointCount >= 2) {
+                const upVec: [number, number, number] = upWorld ?? [0, 1, 0];
+                vertexOffset = Geometry._appendTubeSegment(new Float32Array(segmentPoints), radius, radialSegments, close, upVec, positions, normals, uvs, indices, vertexOffset);
+            }
+            segmentPoints = [];
+        };
+        const range = tMax - tMin;
+        for (let i = 0; i < sampleCount; i++) {
+            const s = segments > 0 ? (i / segments) : 0;
+            const t = tMin + range * s;
+            const p = f(t);
+            let x: number;
+            let y: number;
+            let z: number;
+            if (p.length === 2) {
+                x = p[0];
+                y = p[1];
+                z = 0;
+                if (!upLocal) {
+                    upLocal = [0, 0, 1];
+                    switch (plane) {
+                        case "xy":
+                            upWorld = upLocal;
+                            break;
+                        case "xz":
+                            upWorld = [upLocal[0], upLocal[2], upLocal[1]];
+                            break;
+                        case "yz":
+                            upWorld = [upLocal[2], upLocal[0], upLocal[1]];
+                            break;
+                    }
+                }
+            } else {
+                x = p[0];
+                y = p[1];
+                z = p[2];
+                if (!upLocal) {
+                    upLocal = [0, 1, 0];
+                    switch (plane) {
+                        case "xy":
+                            upWorld = upLocal;
+                            break;
+                        case "xz":
+                            upWorld = [upLocal[0], upLocal[2], upLocal[1]];
+                            break;
+                        case "yz":
+                            upWorld = [upLocal[2], upLocal[0], upLocal[1]];
+                            break;
+                    }
+                }
+            }
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+                anyInvalid = true;
+                if (breakOnInvalid) flushSegment(false);
+                continue;
+            }
+            let wx: number;
+            let wy: number;
+            let wz: number;
+            switch (plane) {
+                case "xy":
+                    wx = x;
+                    wy = y;
+                    wz = z;
+                    break;
+                case "xz":
+                    wx = x;
+                    wy = z;
+                    wz = y;
+                    break;
+                case "yz":
+                    wx = z;
+                    wy = x;
+                    wz = y;
+                    break;
+            }
+            segmentPoints.push(wx, wy, wz);
+        }
+        flushSegment(closed && !anyInvalid);
+        if (positions.length === 0) return new Geometry({ positions: new Float32Array(0) });
+        return new Geometry({
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        });
+    }
+
+    static parametricSurface(descriptor: ParametricSurfaceDescriptor): Geometry {
+        const f = descriptor.f;
+        const uMin = descriptor.uMin ?? 0;
+        const uMax = descriptor.uMax ?? 1;
+        const vMin = descriptor.vMin ?? 0;
+        const vMax = descriptor.vMax ?? 1;
+        const uSegments = Math.max(1, Math.floor(descriptor.uSegments ?? 128));
+        const vSegments = Math.max(1, Math.floor(descriptor.vSegments ?? 128));
+        const skipInvalid = descriptor.skipInvalid ?? true;
+        const doubleSided = descriptor.doubleSided ?? false;
+        const plane: "xy" | "xz" | "yz" = descriptor.plane ?? "xy";
+        const gridU = uSegments;
+        const gridV = vSegments;
+        const gridU1 = gridU + 1;
+        const gridV1 = gridV + 1;
+        const positions = new Float32Array(gridU1 * gridV1 * 3);
+        const normals = new Float32Array(gridU1 * gridV1 * 3);
+        const uvs = new Float32Array(gridU1 * gridV1 * 2);
+        const valid = new Uint8Array(gridU1 * gridV1);
+        const uRange = uMax - uMin;
+        const vRange = vMax - vMin;
+        for (let iv = 0; iv < gridV1; iv++) {
+            const vv = gridV > 0 ? (iv / gridV) : 0;
+            const v = vMin + vRange * vv;
+            for (let iu = 0; iu < gridU1; iu++) {
+                const uu = gridU > 0 ? (iu / gridU) : 0;
+                const u = uMin + uRange * uu;
+                const i = iu + gridU1 * iv;
+                const p = f(u, v);
+                const x = p[0];
+                const y = p[1];
+                const z = p[2];
+                const ok = Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
+                valid[i] = ok ? 1 : 0;
+                const o = i * 3;
+                if (ok) {
+                    let wx: number;
+                    let wy: number;
+                    let wz: number;
+                    switch (plane) {
+                        case "xy":
+                            wx = x;
+                            wy = y;
+                            wz = z;
+                            break;
+                        case "xz":
+                            wx = x;
+                            wy = z;
+                            wz = y;
+                            break;
+                        case "yz":
+                            wx = z;
+                            wy = x;
+                            wz = y;
+                            break;
+                    }
+                    positions[o + 0] = wx;
+                    positions[o + 1] = wy;
+                    positions[o + 2] = wz;
+                } else {
+                    positions[o + 0] = 0;
+                    positions[o + 1] = 0;
+                    positions[o + 2] = 0;
+                }
+                const t = i * 2;
+                uvs[t + 0] = uu;
+                uvs[t + 1] = 1 - vv;
+            }
+        }
+        Geometry._computeGridNormals(positions, valid, gridU, gridV, normals);
+        const indices: number[] = [];
+        for (let iv = 0; iv < gridV; iv++) {
+            for (let iu = 0; iu < gridU; iu++) {
+                const a = iu + gridU1 * iv;
+                const b = iu + gridU1 * (iv + 1);
+                const c = (iu + 1) + gridU1 * (iv + 1);
+                const d = (iu + 1) + gridU1 * iv;
+                if (skipInvalid && (!valid[a] || !valid[b] || !valid[c] || !valid[d])) continue;
+                indices.push(a, b, d, b, c, d);
+            }
+        }
+        if (indices.length === 0) return new Geometry({ positions: new Float32Array(0) });
+        const base: GeometryDescriptor = {
+            positions,
+            normals,
+            uvs,
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    private static _appendTubeSegment(points: Float32Array, radius: number, radialSegments: number, closed: boolean, up: [number, number, number], outPositions: number[], outNormals: number[], outUvs: number[], outIndices: number[], vertexOffset: number): number {
+        const pointCount = points.length / 3;
+        if (pointCount < 2) return vertexOffset;
+        const tangents = new Float32Array(pointCount * 3);
+        for (let i = 0; i < pointCount; i++) {
+            const prev = closed ? (i - 1 + pointCount) % pointCount : Math.max(i - 1, 0);
+            const next = closed ? (i + 1) % pointCount : Math.min(i + 1, pointCount - 1);
+            let tx = points[next * 3 + 0] - points[prev * 3 + 0];
+            let ty = points[next * 3 + 1] - points[prev * 3 + 1];
+            let tz = points[next * 3 + 2] - points[prev * 3 + 2];
+            const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz);
+            if (tLen > 1e-12) {
+                tx /= tLen;
+                ty /= tLen;
+                tz /= tLen;
+            } else {
+                tx = 0;
+                ty = 1;
+                tz = 0;
+            }
+            tangents[i * 3 + 0] = tx;
+            tangents[i * 3 + 1] = ty;
+            tangents[i * 3 + 2] = tz;
+        }
+        const normals = new Float32Array(pointCount * 3);
+        const binormals = new Float32Array(pointCount * 3);
+        let upX = up[0], upY = up[1], upZ = up[2];
+        const t0x = tangents[0], t0y = tangents[1], t0z = tangents[2];
+        let n0x = t0y * upZ - t0z * upY;
+        let n0y = t0z * upX - t0x * upZ;
+        let n0z = t0x * upY - t0y * upX;
+        let n0Len = Math.sqrt(n0x * n0x + n0y * n0y + n0z * n0z);
+        if (n0Len < 1e-6) {
+            if (Math.abs(t0x) < 0.9) { upX = 1; upY = 0; upZ = 0; }
+            else { upX = 0; upY = 1; upZ = 0; }
+            n0x = t0y * upZ - t0z * upY;
+            n0y = t0z * upX - t0x * upZ;
+            n0z = t0x * upY - t0y * upX;
+            n0Len = Math.sqrt(n0x * n0x + n0y * n0y + n0z * n0z);
+        }
+        if (n0Len > 1e-12) {
+            n0x /= n0Len;
+            n0y /= n0Len;
+            n0z /= n0Len;
+        } else {
+            n0x = 1;
+            n0y = 0;
+            n0z = 0;
+        }
+        normals[0] = n0x;
+        normals[1] = n0y;
+        normals[2] = n0z;
+        let b0x = t0y * n0z - t0z * n0y;
+        let b0y = t0z * n0x - t0x * n0z;
+        let b0z = t0x * n0y - t0y * n0x;
+        const b0Len = Math.sqrt(b0x * b0x + b0y * b0y + b0z * b0z);
+        if (b0Len > 1e-12) {
+            b0x /= b0Len;
+            b0y /= b0Len;
+            b0z /= b0Len;
+        }
+        binormals[0] = b0x;
+        binormals[1] = b0y;
+        binormals[2] = b0z;
+        for (let i = 1; i < pointCount; i++) {
+            const tPrevX = tangents[(i - 1) * 3 + 0];
+            const tPrevY = tangents[(i - 1) * 3 + 1];
+            const tPrevZ = tangents[(i - 1) * 3 + 2];
+            const tCurX = tangents[i * 3 + 0];
+            const tCurY = tangents[i * 3 + 1];
+            const tCurZ = tangents[i * 3 + 2];
+            let ax = tPrevY * tCurZ - tPrevZ * tCurY;
+            let ay = tPrevZ * tCurX - tPrevX * tCurZ;
+            let az = tPrevX * tCurY - tPrevY * tCurX;
+            const aLen = Math.sqrt(ax * ax + ay * ay + az * az);
+            let nx = normals[(i - 1) * 3 + 0];
+            let ny = normals[(i - 1) * 3 + 1];
+            let nz = normals[(i - 1) * 3 + 2];
+            if (aLen > 1e-6) {
+                ax /= aLen;
+                ay /= aLen;
+                az /= aLen;
+                const dot = Math.max(-1, Math.min(1, tPrevX * tCurX + tPrevY * tCurY + tPrevZ * tCurZ));
+                const angle = Math.acos(dot);
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                const oneMinusC = 1 - c;
+                const crossX = ay * nz - az * ny;
+                const crossY = az * nx - ax * nz;
+                const crossZ = ax * ny - ay * nx;
+                const aDotN = ax * nx + ay * ny + az * nz;
+                const rx = nx * c + crossX * s + ax * aDotN * oneMinusC;
+                const ry = ny * c + crossY * s + ay * aDotN * oneMinusC;
+                const rz = nz * c + crossZ * s + az * aDotN * oneMinusC;
+                nx = rx;
+                ny = ry;
+                nz = rz;
+            }
+            const nDotT = nx * tCurX + ny * tCurY + nz * tCurZ;
+            nx -= tCurX * nDotT;
+            ny -= tCurY * nDotT;
+            nz -= tCurZ * nDotT;
+            const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (nLen > 1e-12) {
+                nx /= nLen;
+                ny /= nLen;
+                nz /= nLen;
+            } else {
+                nx = normals[0];
+                ny = normals[1];
+                nz = normals[2];
+            }
+            normals[i * 3 + 0] = nx;
+            normals[i * 3 + 1] = ny;
+            normals[i * 3 + 2] = nz;
+            let bx = tCurY * nz - tCurZ * ny;
+            let by = tCurZ * nx - tCurX * nz;
+            let bz = tCurX * ny - tCurY * nx;
+            const bLen = Math.sqrt(bx * bx + by * by + bz * bz);
+            if (bLen > 1e-12) {
+                bx /= bLen;
+                by /= bLen;
+                bz /= bLen;
+            }
+            binormals[i * 3 + 0] = bx;
+            binormals[i * 3 + 1] = by;
+            binormals[i * 3 + 2] = bz;
+        }
+        const ring = radialSegments + 1;
+        const denomU = closed ? pointCount : (pointCount - 1);
+        for (let i = 0; i < pointCount; i++) {
+            const u = denomU > 0 ? (i / denomU) : 0;
+            const px = points[i * 3 + 0];
+            const py = points[i * 3 + 1];
+            const pz = points[i * 3 + 2];
+            const nx0 = normals[i * 3 + 0];
+            const ny0 = normals[i * 3 + 1];
+            const nz0 = normals[i * 3 + 2];
+            const bx0 = binormals[i * 3 + 0];
+            const by0 = binormals[i * 3 + 1];
+            const bz0 = binormals[i * 3 + 2];
+            for (let j = 0; j <= radialSegments; j++) {
+                const v = radialSegments > 0 ? (j / radialSegments) : 0;
+                const theta = v * Math.PI * 2;
+                const cosT = Math.cos(theta);
+                const sinT = Math.sin(theta);
+                const rx = cosT * nx0 + sinT * bx0;
+                const ry = cosT * ny0 + sinT * by0;
+                const rz = cosT * nz0 + sinT * bz0;
+                outPositions.push(px + radius * rx, py + radius * ry, pz + radius * rz);
+                outNormals.push(rx, ry, rz);
+                outUvs.push(u, v);
+            }
+        }
+        const segmentCount = closed ? pointCount : (pointCount - 1);
+        for (let i = 0; i < segmentCount; i++) {
+            const next = closed ? ((i + 1) % pointCount) : (i + 1);
+            for (let j = 0; j < radialSegments; j++) {
+                const a = vertexOffset + ring * i + j;
+                const b = vertexOffset + ring * next + j;
+                const c = vertexOffset + ring * next + j + 1;
+                const d = vertexOffset + ring * i + j + 1;
+                outIndices.push(a, d, b, b, d, c);
+            }
+        }
+        return vertexOffset + ring * pointCount;
+    }
+
+    private static _computeGridNormals(positions: Float32Array, valid: Uint8Array, gridX: number, gridY: number, outNormals: Float32Array): void {
+        const gridX1 = gridX + 1;
+        const gridY1 = gridY + 1;
+        for (let iy = 0; iy < gridY1; iy++) {
+            for (let ix = 0; ix < gridX1; ix++) {
+                const i = ix + gridX1 * iy;
+                const o = i * 3;
+                if (!valid[i]) {
+                    outNormals[o + 0] = 0;
+                    outNormals[o + 1] = 0;
+                    outNormals[o + 2] = 0;
+                    continue;
+                }
+                const iL = ix > 0 ? (i - 1) : i;
+                const iR = ix < gridX ? (i + 1) : i;
+                const iD = iy > 0 ? (i - gridX1) : i;
+                const iU = iy < gridY ? (i + gridX1) : i;
+                const lx = valid[iL] ? positions[iL * 3 + 0] : positions[o + 0];
+                const ly = valid[iL] ? positions[iL * 3 + 1] : positions[o + 1];
+                const lz = valid[iL] ? positions[iL * 3 + 2] : positions[o + 2];
+                const rx = valid[iR] ? positions[iR * 3 + 0] : positions[o + 0];
+                const ry = valid[iR] ? positions[iR * 3 + 1] : positions[o + 1];
+                const rz = valid[iR] ? positions[iR * 3 + 2] : positions[o + 2];
+                const dx = valid[iD] ? positions[iD * 3 + 0] : positions[o + 0];
+                const dy = valid[iD] ? positions[iD * 3 + 1] : positions[o + 1];
+                const dz = valid[iD] ? positions[iD * 3 + 2] : positions[o + 2];
+                const ux = valid[iU] ? positions[iU * 3 + 0] : positions[o + 0];
+                const uy = valid[iU] ? positions[iU * 3 + 1] : positions[o + 1];
+                const uz = valid[iU] ? positions[iU * 3 + 2] : positions[o + 2];
+                const pux = rx - lx;
+                const puy = ry - ly;
+                const puz = rz - lz;
+                const pvx = ux - dx;
+                const pvy = uy - dy;
+                const pvz = uz - dz;
+                let nx = pvy * puz - pvz * puy;
+                let ny = pvz * pux - pvx * puz;
+                let nz = pvx * puy - pvy * pux;
+                const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                if (nLen > 1e-12) {
+                    nx /= nLen;
+                    ny /= nLen;
+                    nz /= nLen;
+                } else {
+                    nx = 0;
+                    ny = 1;
+                    nz = 0;
+                }
+                outNormals[o + 0] = nx;
+                outNormals[o + 1] = ny;
+                outNormals[o + 2] = nz;
+            }
+        }
+    }
+
+    private static _makeDoubleSided(descriptor: GeometryDescriptor): GeometryDescriptor {
+        const positions = descriptor.positions;
+        const normals = descriptor.normals ?? new Float32Array((positions.length / 3) * 3);
+        const uvs = descriptor.uvs ?? new Float32Array((positions.length / 3) * 2);
+        const indices = descriptor.indices;
+        if (!indices) return descriptor;
+        const baseVertexCount = positions.length / 3;
+        const outPositions = new Float32Array(positions.length * 2);
+        outPositions.set(positions, 0);
+        outPositions.set(positions, positions.length);
+        const outNormals = new Float32Array(normals.length * 2);
+        outNormals.set(normals, 0);
+        for (let i = 0; i < baseVertexCount; i++) {
+            const o = i * 3;
+            outNormals[normals.length + o + 0] = -normals[o + 0];
+            outNormals[normals.length + o + 1] = -normals[o + 1];
+            outNormals[normals.length + o + 2] = -normals[o + 2];
+        }
+        const outUvs = new Float32Array(uvs.length * 2);
+        outUvs.set(uvs, 0);
+        outUvs.set(uvs, uvs.length);
+        const outIndices = new Uint32Array(indices.length * 2);
+        outIndices.set(indices, 0);
+        for (let i = 0; i < indices.length; i += 3) {
+            const i0 = indices[i + 0];
+            const i1 = indices[i + 1];
+            const i2 = indices[i + 2];
+            const o = indices.length + i;
+            outIndices[o + 0] = baseVertexCount + i0;
+            outIndices[o + 1] = baseVertexCount + i2;
+            outIndices[o + 2] = baseVertexCount + i1;
+        }
+        return {
+            ...descriptor,
+            positions: outPositions,
+            normals: outNormals,
+            uvs: outUvs,
+            indices: outIndices
+        };
     }
 }
