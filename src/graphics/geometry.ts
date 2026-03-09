@@ -257,41 +257,12 @@ export class Geometry {
         this._device = null;
     }
 
-    static box(width = 1, height = 1, depth = 1): Geometry {
-        const w = width / 2, h = height / 2, d = depth / 2;
-        const positions = new Float32Array([
-            -w, -h,  d,   w, -h,  d,   w,  h,  d,  -w,  h,  d,
-             w, -h, -d,  -w, -h, -d,  -w,  h, -d,   w,  h, -d,
-            -w,  h,  d,   w,  h,  d,   w,  h, -d,  -w,  h, -d,
-            -w, -h, -d,   w, -h, -d,   w, -h,  d,  -w, -h,  d,
-             w, -h,  d,   w, -h, -d,   w,  h, -d,   w,  h,  d,
-            -w, -h, -d,  -w, -h,  d,  -w,  h,  d,  -w,  h, -d,
-        ]);
-        const normals = new Float32Array([
-            0, 0, 1,  0, 0, 1,  0, 0, 1,  0, 0, 1,
-            0, 0, -1,  0, 0, -1,  0, 0, -1,  0, 0, -1,
-            0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
-            0, -1, 0,  0, -1, 0,  0, -1, 0,  0, -1, 0,
-            1, 0, 0,  1, 0, 0,  1, 0, 0,  1, 0, 0,
-            -1, 0, 0,  -1, 0, 0,  -1, 0, 0,  -1, 0, 0,
-        ]);
-        const uvs = new Float32Array([
-            0, 1,  1, 1,  1, 0,  0, 0,
-            0, 1,  1, 1,  1, 0,  0, 0,
-            0, 1,  1, 1,  1, 0,  0, 0,
-            0, 1,  1, 1,  1, 0,  0, 0,
-            0, 1,  1, 1,  1, 0,  0, 0,
-            0, 1,  1, 1,  1, 0,  0, 0,
-        ]);
-        const indices = new Uint32Array([
-            0,  1,  2,   0,  2,  3,
-            4,  5,  6,   4,  6,  7,
-            8,  9, 10,   8, 10, 11,
-           12, 13, 14,  12, 14, 15,
-           16, 17, 18,  16, 18, 19,
-           20, 21, 22,  20, 22, 23,
-        ]);
-        return new Geometry({ positions, normals, uvs, indices });
+    static point(size = 1, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        return Geometry.rectangle(size, size, plane, doubleSided);
+    }
+
+    static line(length = 1, thickness = 0.01, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        return Geometry.rectangle(length, thickness, plane, doubleSided);
     }
 
     static plane(width = 1, height = 1, widthSegments = 1, heightSegments = 1): Geometry {
@@ -328,6 +299,277 @@ export class Geometry {
             uvs: new Float32Array(uvs),
             indices: new Uint32Array(indices)
         });
+    }
+
+    static triangle(width = 1, height = 1, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        const w = width / 2;
+        const h = height / 2;
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        const flipWinding = plane === "xz";
+        let nx = 0, ny = 0, nz = 0;
+        switch (plane) {
+            case "xy":
+                nz = 1;
+                break;
+            case "xz":
+                ny = 1;
+                break;
+            case "yz":
+                nx = 1;
+                break;
+        }
+        const uFor = (x: number) => (width !== 0 ? (x / width) + 0.5 : 0.5);
+        const vFor = (y: number) => (height !== 0 ? (-y / height) + 0.5 : 0.5);
+        const pushVertex = (x: number, y: number) => {
+            switch (plane) {
+                case "xy":
+                    positions.push(x, y, 0);
+                    break;
+                case "xz":
+                    positions.push(x, 0, y);
+                    break;
+                case "yz":
+                    positions.push(0, x, y);
+                    break;
+            }
+            normals.push(nx, ny, nz);
+            uvs.push(uFor(x), vFor(y));
+        };
+        pushVertex(-w, -h);
+        pushVertex( w, -h);
+        pushVertex( 0,  h);
+        if (flipWinding) {
+            indices.push(0, 2, 1);
+        } else {
+            indices.push(0, 1, 2);
+        }
+        const base: GeometryDescriptor = {
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    static rectangle(width = 1, height = 1, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        const w = width / 2;
+        const h = height / 2;
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        const flipWinding = plane === "xz";
+        let nx = 0, ny = 0, nz = 0;
+        switch (plane) {
+            case "xy":
+                nz = 1;
+                break;
+            case "xz":
+                ny = 1;
+                break;
+            case "yz":
+                nx = 1;
+                break;
+        }
+        const pushVertex = (x: number, y: number, u: number, v: number) => {
+            switch (plane) {
+                case "xy":
+                    positions.push(x, y, 0);
+                    break;
+                case "xz":
+                    positions.push(x, 0, y);
+                    break;
+                case "yz":
+                    positions.push(0, x, y);
+                    break;
+            }
+            normals.push(nx, ny, nz);
+            uvs.push(u, v);
+        };
+        pushVertex(-w, -h, 0, 1);
+        pushVertex( w, -h, 1, 1);
+        pushVertex( w,  h, 1, 0);
+        pushVertex(-w,  h, 0, 0);
+        if (flipWinding) {
+            indices.push(0, 2, 1, 0, 3, 2);
+        } else {
+            indices.push(0, 1, 2, 0, 2, 3);
+        }
+        const base: GeometryDescriptor = {
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    static circle(radius = 0.5, segments = 64, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        const seg = Math.max(3, Math.floor(segments));
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        const flipWinding = plane === "xz";
+        let nx = 0, ny = 0, nz = 0;
+        switch (plane) {
+            case "xy":
+                nz = 1;
+                break;
+            case "xz":
+                ny = 1;
+                break;
+            case "yz":
+                nx = 1;
+                break;
+        }
+        const inv2r = radius !== 0 ? (1 / (2 * radius)) : 0;
+        const pushVertex = (x: number, y: number) => {
+            switch (plane) {
+                case "xy":
+                    positions.push(x, y, 0);
+                    break;
+                case "xz":
+                    positions.push(x, 0, y);
+                    break;
+                case "yz":
+                    positions.push(0, x, y);
+                    break;
+            }
+            normals.push(nx, ny, nz);
+            const u = radius !== 0 ? (0.5 + x * inv2r) : 0.5;
+            const v = radius !== 0 ? (0.5 - y * inv2r) : 0.5;
+            uvs.push(u, v);
+        };
+        pushVertex(0, 0);
+        for (let i = 0; i < seg; i++) {
+            const t = (i / seg) * Math.PI * 2;
+            const x = Math.cos(t) * radius;
+            const y = Math.sin(t) * radius;
+            pushVertex(x, y);
+        }
+        for (let i = 0; i < seg; i++) {
+            const a = 0;
+            const b = 1 + i;
+            const c = 1 + ((i + 1) % seg);
+            if (flipWinding) {
+                indices.push(a, c, b);
+            } else {
+                indices.push(a, b, c);
+            }
+        }
+        const base: GeometryDescriptor = {
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    static ellipse(radiusX = 0.5, radiusY = 0.5, segments = 64, plane: "xy" | "xz" | "yz" = "xy", doubleSided: boolean = false): Geometry {
+        const seg = Math.max(3, Math.floor(segments));
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        const flipWinding = plane === "xz";
+        let nx = 0, ny = 0, nz = 0;
+        switch (plane) {
+            case "xy":
+                nz = 1;
+                break;
+            case "xz":
+                ny = 1;
+                break;
+            case "yz":
+                nx = 1;
+                break;
+        }
+        const inv2rx = radiusX !== 0 ? (1 / (2 * radiusX)) : 0;
+        const inv2ry = radiusY !== 0 ? (1 / (2 * radiusY)) : 0;
+        const pushVertex = (x: number, y: number) => {
+            switch (plane) {
+                case "xy":
+                    positions.push(x, y, 0);
+                    break;
+                case "xz":
+                    positions.push(x, 0, y);
+                    break;
+                case "yz":
+                    positions.push(0, x, y);
+                    break;
+            }
+            normals.push(nx, ny, nz);
+            const u = radiusX !== 0 ? (0.5 + x * inv2rx) : 0.5;
+            const v = radiusY !== 0 ? (0.5 - y * inv2ry) : 0.5;
+            uvs.push(u, v);
+        };
+        pushVertex(0, 0);
+        for (let i = 0; i < seg; i++) {
+            const t = (i / seg) * Math.PI * 2;
+            const x = Math.cos(t) * radiusX;
+            const y = Math.sin(t) * radiusY;
+            pushVertex(x, y);
+        }
+        for (let i = 0; i < seg; i++) {
+            const a = 0;
+            const b = 1 + i;
+            const c = 1 + ((i + 1) % seg);
+            if (flipWinding) {
+                indices.push(a, c, b);
+            } else {
+                indices.push(a, b, c);
+            }
+        }
+        const base: GeometryDescriptor = {
+            positions: new Float32Array(positions),
+            normals: new Float32Array(normals),
+            uvs: new Float32Array(uvs),
+            indices: new Uint32Array(indices)
+        };
+        return new Geometry(doubleSided ? Geometry._makeDoubleSided(base) : base);
+    }
+
+    static box(width = 1, height = 1, depth = 1): Geometry {
+        const w = width / 2, h = height / 2, d = depth / 2;
+        const positions = new Float32Array([
+            -w, -h,  d,   w, -h,  d,   w,  h,  d,  -w,  h,  d,
+             w, -h, -d,  -w, -h, -d,  -w,  h, -d,   w,  h, -d,
+            -w,  h,  d,   w,  h,  d,   w,  h, -d,  -w,  h, -d,
+            -w, -h, -d,   w, -h, -d,   w, -h,  d,  -w, -h,  d,
+             w, -h,  d,   w, -h, -d,   w,  h, -d,   w,  h,  d,
+            -w, -h, -d,  -w, -h,  d,  -w,  h,  d,  -w,  h, -d,
+        ]);
+        const normals = new Float32Array([
+            0, 0, 1,  0, 0, 1,  0, 0, 1,  0, 0, 1,
+            0, 0, -1,  0, 0, -1,  0, 0, -1,  0, 0, -1,
+            0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
+            0, -1, 0,  0, -1, 0,  0, -1, 0,  0, -1, 0,
+            1, 0, 0,  1, 0, 0,  1, 0, 0,  1, 0, 0,
+            -1, 0, 0,  -1, 0, 0,  -1, 0, 0,  -1, 0, 0,
+        ]);
+        const uvs = new Float32Array([
+            0, 1,  1, 1,  1, 0,  0, 0,
+            0, 1,  1, 1,  1, 0,  0, 0,
+            0, 1,  1, 1,  1, 0,  0, 0,
+            0, 1,  1, 1,  1, 0,  0, 0,
+            0, 1,  1, 1,  1, 0,  0, 0,
+            0, 1,  1, 1,  1, 0,  0, 0,
+        ]);
+        const indices = new Uint32Array([
+            0,  1,  2,   0,  2,  3,
+            4,  5,  6,   4,  6,  7,
+            8,  9, 10,   8, 10, 11,
+           12, 13, 14,  12, 14, 15,
+           16, 17, 18,  16, 18, 19,
+           20, 21, 22,  20, 22, 23,
+        ]);
+        return new Geometry({ positions, normals, uvs, indices });
     }
 
     static sphere(radius = 0.5, widthSegments = 32, heightSegments = 16): Geometry {

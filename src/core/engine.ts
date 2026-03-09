@@ -195,14 +195,32 @@ export class WasmGPU {
         custom: (descriptor: GeometryDescriptor): Geometry => {
             return new Geometry(descriptor);
         },
+        point: (size?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.point(size, plane, doubleSided);
+        },
+        line: (length?: number, thickness?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.line(length, thickness, plane, doubleSided);
+        },
+        plane: (width?: number, height?: number, widthSegments?: number, heightSegments?: number): Geometry => {
+            return Geometry.plane(width, height, widthSegments, heightSegments);
+        },
+        triangle: (width?: number, height?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.triangle(width, height, plane, doubleSided);
+        },
+        rectangle: (width?: number, height?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.rectangle(width, height, plane, doubleSided);
+        },
+        circle: (radius?: number, segments?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.circle(radius, segments, plane, doubleSided);
+        },
+        ellipse: (radiusX?: number, radiusY?: number, segments?: number, plane?: "xy" | "xz" | "yz", doubleSided?: boolean): Geometry => {
+            return Geometry.ellipse(radiusX, radiusY, segments, plane, doubleSided);
+        },
         box: (width?: number, height?: number, depth?: number): Geometry => {
             return Geometry.box(width, height, depth);
         },
         sphere: (radius?: number, widthSegments?: number, heightSegments?: number): Geometry => {
             return Geometry.sphere(radius, widthSegments, heightSegments);
-        },
-        plane: (width?: number, height?: number, widthSegments?: number, heightSegments?: number): Geometry => {
-            return Geometry.plane(width, height, widthSegments, heightSegments);
         },
         cylinder: (radiusTop?: number, radiusBottom?: number, height?: number, radialSegments?: number, heightSegments?: number, openEnded?: boolean): Geometry => {
             return Geometry.cylinder(radiusTop, radiusBottom, height, radialSegments, heightSegments, openEnded);
