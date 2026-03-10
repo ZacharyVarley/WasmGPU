@@ -929,14 +929,21 @@ export class NavigationControls {
         distance = Math.max(distance, sourceBounds.sphereRadius, minNear ?? 0.01);
         const minDepth = Math.min(...zs.map((z) => distance + z));
         const maxDepth = Math.max(...zs.map((z) => distance + z));
+        const nearFloor = minNear ?? 0.01;
         const depthPadding = Math.max(sourceBounds.sphereRadius * 0.05, 0.01);
+        const stableRadius = Math.max(working.sphereRadius, sourceBounds.sphereRadius, 0.01);
+        const stablePadding = Math.max(stableRadius * 0.1, depthPadding);
+        const stableNear = distance - stableRadius - stablePadding;
+        const stableFar = distance + stableRadius + stablePadding;
+        const near = Math.max(nearFloor, Math.min(minDepth - depthPadding, stableNear));
+        const far = Math.max(near + 0.01, Math.max(maxDepth + depthPadding, stableFar));
         return {
             position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
             target, up: basis.up,
             projection: {
                 type: "perspective",
-                near: Math.max(minNear ?? 0.01, minDepth - depthPadding),
-                far: Math.max((minNear ?? 0.01) + 0.01, maxDepth + depthPadding)
+                near,
+                far
             }
         };
     }
@@ -961,7 +968,12 @@ export class NavigationControls {
         else halfHeight = Math.max(halfHeight, halfWidth / Math.max(aspect, EPSILON));
         const halfDepth = Math.max(Math.abs(minZ), Math.abs(maxZ), sourceBounds.sphereRadius);
         const distance = Math.max(halfDepth * 2 + Math.max(halfWidth, halfHeight), sourceBounds.sphereRadius * 2, 0.1);
+        const nearFloor = minNear ?? 0.01;
         const depthPadding = Math.max(sourceBounds.sphereRadius * 0.05, 0.01);
+        const stableRadius = Math.max(working.sphereRadius, sourceBounds.sphereRadius, 0.01);
+        const stablePadding = Math.max(stableRadius * 0.1, depthPadding);
+        const near = Math.max(nearFloor, Math.min(distance + minZ - depthPadding, distance - stableRadius - stablePadding));
+        const far = Math.max(near + 0.01, Math.max(distance + maxZ + depthPadding, distance + stableRadius + stablePadding));
         return {
             position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
             target, up: basis.up,
@@ -971,8 +983,8 @@ export class NavigationControls {
                 right: Math.max(halfWidth, 0.01),
                 bottom: -Math.max(halfHeight, 0.01),
                 top: Math.max(halfHeight, 0.01),
-                near: Math.max(minNear ?? 0.01, distance + minZ - depthPadding),
-                far: Math.max((minNear ?? 0.01) + 0.01, distance + maxZ + depthPadding)
+                near,
+                far
             }
         };
     }
