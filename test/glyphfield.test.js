@@ -397,5 +397,3 @@ assert.ok(compute.kernels && typeof compute.kernels.copyF32 === "function", "Mis
 
 compute.destroy();
 device.destroy();
-
-console.log("Glyph field tests passed.");

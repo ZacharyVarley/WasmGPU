@@ -178,4 +178,3 @@ assert.ok(Colormap, "Missing export: Colormap");
 }
 
 device.destroy();
-console.log("Colormap tests passed.");

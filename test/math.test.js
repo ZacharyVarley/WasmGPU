@@ -243,5 +243,3 @@ const assertAllInRange = (arr, min, max) => {
 
     assert.doesNotThrow(() => vec3.print([1, 2, 3]), "vec3.print threw an error");
 }
-
-console.log("Math tests passed.");

@@ -247,5 +247,3 @@ const occ = create1x1(device.queue, [255, 0, 0, 255], false);
     });
     assert.ok(bg, "Expected CustomMaterial bind group to be created");
 }
-
-console.log("Materials tests passed.");

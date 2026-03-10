@@ -119,5 +119,3 @@ await initWebAssembly(new URL("../dist/", import.meta.url).toString());
     assert.ok(geom.normals.some((v) => Math.abs(v) > 1e-6));
     res.destroy();
 }
-
-console.log("glTF tests passed.");

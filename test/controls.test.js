@@ -224,5 +224,3 @@ assert.ok(AxisConventions && AxisConventions.Y_UP_RH, "Missing export: AxisConve
 }
 
 device.destroy();
-
-console.log("Controls tests passed.");

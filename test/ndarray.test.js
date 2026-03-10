@@ -117,5 +117,3 @@ const compute = new Compute(device, device.queue);
 }
 
 compute.destroy();
-
-console.log("Ndarray tests passed.");

@@ -245,5 +245,3 @@ assert.ok(kernels, "Kernels not available. Expected compute.kernels or exported 
     const expected = Array.from(keys, (x) => x >>> 0).sort((a, b) => a - b);
     for (let i = 0; i < n; i++) assert.strictEqual(got[i] >>> 0, expected[i] >>> 0, `radixSortKeysU32 mismatch at index ${i}`);
 }
-
-console.log("Compute kernels tests passed.");

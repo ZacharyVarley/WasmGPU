@@ -80,5 +80,3 @@ const approxArray = (a, b, tol = 1e-6) => {
     assert.strictEqual(visibleCount, 3, "Expected 3 visible spheres");
     assert.deepStrictEqual(Array.from(out), [0, 4, 5], "Visible indices mismatch");
 }
-
-console.log("Frustum culling tests passed.");

@@ -168,5 +168,3 @@ for (const n of sizes) {
 
 compute.destroy();
 device.destroy();
-
-console.log("Compute tests passed.");
