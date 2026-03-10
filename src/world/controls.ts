@@ -1,13 +1,70 @@
 import { Camera, PerspectiveCamera, OrthographicCamera } from "./camera";
+import type { Bounds3, BoundsLike, Vec3 } from "./bounds";
+import { boundsFromSphere, expandBounds, getBoundsCenter, getBoundsCorners, normalizeBounds } from "./bounds";
+import type { Scene } from "./scene";
 
-export type OrbitControlsMouseButtons = {
+export type NavigationMode = "orbit" | "trackball";
+export type InspectionView = "front" | "back" | "left" | "right" | "top" | "bottom";
+
+export type NavigationControlsMouseButtons = {
     rotate?: number;
     pan?: number;
     zoom?: number;
 };
 
-export type OrbitControlsDescriptor = {
-    target?: [number, number, number];
+export type AxisConventionDescriptor = {
+    right?: Vec3;
+    up: Vec3;
+    forward: Vec3;
+};
+
+export type AxisConventionPreset = "y-up-rh" | "z-up-rh" | "x-up-rh";
+export type AxisConventionInput = AxisConventionPreset | AxisConventionDescriptor;
+
+export const AxisConventions = {
+    Y_UP_RH: { right: [1, 0, 0] as Vec3, up: [0, 1, 0] as Vec3, forward: [0, 0, 1] as Vec3 },
+    Z_UP_RH: { right: [1, 0, 0] as Vec3, up: [0, 0, 1] as Vec3, forward: [0, -1, 0] as Vec3 },
+    X_UP_RH: { right: [0, 0, 1] as Vec3, up: [1, 0, 0] as Vec3, forward: [0, 1, 0] as Vec3 }
+} as const;
+
+type AxisConventionResolved = {
+    right: Vec3;
+    up: Vec3;
+    forward: Vec3;
+};
+
+type ProjectionState = { type: "perspective"; near: number; far: number; } | { type: "orthographic"; left: number; right: number; top: number; bottom: number; near: number; far: number; };
+
+type TransitionState = {
+    elapsed: number;
+    duration: number;
+    fromPosition: Vec3;
+    toPosition: Vec3;
+    fromTarget: Vec3;
+    toTarget: Vec3;
+    fromUp: Vec3;
+    toUp: Vec3;
+    fromProjection: ProjectionState;
+    toProjection: ProjectionState;
+};
+
+type Basis3 = {
+    right: Vec3;
+    up: Vec3;
+    forward: Vec3;
+};
+
+type FitSolveResult = {
+    position: Vec3;
+    target: Vec3;
+    up: Vec3;
+    projection: ProjectionState;
+};
+
+export type NavigationControlsDescriptor = {
+    mode?: NavigationMode;
+    axisConvention?: AxisConventionInput;
+    target?: Vec3;
     enabled?: boolean;
     enableRotate?: boolean;
     enablePan?: boolean;
@@ -26,13 +83,120 @@ export type OrbitControlsDescriptor = {
     maxPolarAngle?: number;
     minAzimuthAngle?: number;
     maxAzimuthAngle?: number;
-    mouseButtons?: OrbitControlsMouseButtons;
+    mouseButtons?: NavigationControlsMouseButtons;
 };
 
-export class OrbitControls {
-    readonly camera: Camera;
+export type OrbitControlsMouseButtons = NavigationControlsMouseButtons;
+export type TrackballControlsMouseButtons = NavigationControlsMouseButtons;
+export type OrbitControlsDescriptor = NavigationControlsDescriptor;
+export type TrackballControlsDescriptor = NavigationControlsDescriptor;
+
+export type SetViewOptions = {
+    target?: Vec3;
+    distance?: number;
+    up?: Vec3;
+    animate?: boolean;
+    duration?: number;
+    orthographic?: boolean;
+};
+
+export type FitToBoundsOptions = {
+    padding?: number;
+    boundsMode?: "box" | "sphere";
+    aspect?: number;
+    minNear?: number;
+    animate?: boolean;
+    duration?: number;
+    view?: InspectionView;
+    eyeDirection?: Vec3;
+    up?: Vec3;
+};
+
+const EPSILON = 1e-6;
+const DEFAULT_TRANSITION_SECONDS = 0.35;
+const clamp = (x: number, min: number, max: number): number => Math.max(min, Math.min(max, x));
+const clamp01 = (x: number): number => clamp(x, 0, 1);
+const lerp = (a: number, b: number, t: number): number => a + ((b - a) * t);
+const easeInOutCubic = (t: number): number => t < 0.5 ? 4 * t * t * t : 1 - (Math.pow(-2 * t + 2, 3) * 0.5);
+const vec3clone = (v: readonly number[]): Vec3 => [v[0] ?? 0, v[1] ?? 0, v[2] ?? 0];
+const vec3add = (a: readonly number[], b: readonly number[]): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const vec3sub = (a: readonly number[], b: readonly number[]): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const vec3scl = (v: readonly number[], s: number): Vec3 => [v[0] * s, v[1] * s, v[2] * s];
+const vec3dot = (a: readonly number[], b: readonly number[]): number => (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
+const vec3cross = (a: readonly number[], b: readonly number[]): Vec3 => [(a[1] * b[2]) - (a[2] * b[1]), (a[2] * b[0]) - (a[0] * b[2]), (a[0] * b[1]) - (a[1] * b[0])];
+const vec3mag = (v: readonly number[]): number => Math.hypot(v[0], v[1], v[2]);
+const vec3normalize = (v: readonly number[], fallback: readonly number[] = [0, 0, 1]): Vec3 => {
+    const len = vec3mag(v);
+    if (len <= EPSILON) return vec3clone(fallback);
+    const inv = 1 / len;
+    return [v[0] * inv, v[1] * inv, v[2] * inv];
+};
+const vec3lerp = (a: readonly number[], b: readonly number[], t: number): Vec3 => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const quatmul = (ax: number, ay: number, az: number, aw: number, bx: number, by: number, bz: number, bw: number): [number, number, number, number] => {
+    return [
+        (aw * bx) + (ax * bw) + (ay * bz) - (az * by),
+        (aw * by) - (ax * bz) + (ay * bw) + (az * bx),
+        (aw * bz) + (ax * by) - (ay * bx) + (az * bw),
+        (aw * bw) - (ax * bx) - (ay * by) - (az * bz)
+    ];
+};
+const quatinvert = (x: number, y: number, z: number, w: number): [number, number, number, number] => [-x, -y, -z, w];
+const quatnormalize = (x: number, y: number, z: number, w: number): [number, number, number, number] => {
+    const len = Math.hypot(x, y, z, w);
+    if (len <= EPSILON) return [0, 0, 0, 1];
+    const inv = 1 / len;
+    return [x * inv, y * inv, z * inv, w * inv];
+};
+const quatrotvec = (vx: number, vy: number, vz: number, qx: number, qy: number, qz: number, qw: number): Vec3 => {
+    const tx = 2 * ((qy * vz) - (qz * vy));
+    const ty = 2 * ((qz * vx) - (qx * vz));
+    const tz = 2 * ((qx * vy) - (qy * vx));
+    return [
+        vx + (qw * tx) + ((qy * tz) - (qz * ty)),
+        vy + (qw * ty) + ((qz * tx) - (qx * tz)),
+        vz + (qw * tz) + ((qx * ty) - (qy * tx))
+    ];
+};
+const quatisid = (x: number, y: number, z: number, w: number): boolean => Math.abs(x) < EPSILON && Math.abs(y) < EPSILON && Math.abs(z) < EPSILON && Math.abs(1 - w) < EPSILON;
+const quatslerpid = (x: number, y: number, z: number, w: number, t: number): [number, number, number, number] => {
+    const tt = clamp01(t);
+    let cosHalfTheta = clamp(w, -1, 1);
+    let qx = x;
+    let qy = y;
+    let qz = z;
+    let qw = w;
+    if (cosHalfTheta < 0) {
+        cosHalfTheta = -cosHalfTheta;
+        qx = -qx;
+        qy = -qy;
+        qz = -qz;
+        qw = -qw;
+    }
+    if (cosHalfTheta >= 0.9995) return quatnormalize(qx * tt, qy * tt, qz * tt, (1 - tt) + (qw * tt));
+    const halfTheta = Math.acos(cosHalfTheta);
+    const sinHalfTheta = Math.sqrt(1 - (cosHalfTheta * cosHalfTheta));
+    if (sinHalfTheta <= EPSILON) return [0, 0, 0, 1];
+    const a = Math.sin((1 - tt) * halfTheta) / sinHalfTheta;
+    const b = Math.sin(tt * halfTheta) / sinHalfTheta;
+    return [qx * b, qy * b, qz * b, a + (qw * b)];
+};
+const resolveAxisConvention = (input: AxisConventionInput | undefined): AxisConventionResolved => {
+    if (!input || input === "y-up-rh") return { right: [1, 0, 0], up: [0, 1, 0], forward: [0, 0, 1] };
+    if (input === "z-up-rh") return { right: [1, 0, 0], up: [0, 0, 1], forward: [0, -1, 0] };
+    if (input === "x-up-rh") return { right: [0, 0, 1], up: [1, 0, 0], forward: [0, 1, 0] };
+    const rightHint = input.right ?? vec3cross(input.up, input.forward);
+    const right = vec3normalize(rightHint, [1, 0, 0]);
+    const up = vec3normalize(input.up, [0, 1, 0]);
+    const forward = vec3normalize(vec3cross(right, up), input.forward);
+    const correctedRight = vec3normalize(vec3cross(up, forward), right);
+    const correctedUp = vec3normalize(vec3cross(forward, correctedRight), up);
+    return { right: correctedRight, up: correctedUp, forward };
+};
+
+export class NavigationControls {
+    camera: Camera;
     readonly domElement: HTMLCanvasElement;
-    target: [number, number, number];
+    target: Vec3;
     enabled: boolean = true;
     enableRotate: boolean = true;
     enablePan: boolean = true;
@@ -51,40 +215,45 @@ export class OrbitControls {
     maxPolarAngle: number = Math.PI;
     minAzimuthAngle: number = -Infinity;
     maxAzimuthAngle: number = Infinity;
-    mouseButtons: Required<OrbitControlsMouseButtons> = { rotate: 0, zoom: 1, pan: 2 };
+    mouseButtons: Required<NavigationControlsMouseButtons> = { rotate: 0, zoom: 1, pan: 2 };
+    private _mode: NavigationMode;
+    private _axisConvention: AxisConventionResolved = resolveAxisConvention(undefined);
     private _state: "none" | "rotate" | "pan" | "zoom" = "none";
     private _pointerId: number | null = null;
     private _pointerX: number = 0;
     private _pointerY: number = 0;
-    private _theta: number = 0;
-    private _phi: number = Math.PI * 0.5;
-    private _radius: number = 1.0;
-    private _zoom: number = 1.0;
     private _zoomCursorClientX: number = 0;
     private _zoomCursorClientY: number = 0;
     private _zoomCursorValid: boolean = false;
+    private _transition: TransitionState | null = null;
+    private _theta: number = 0;
+    private _phi: number = Math.PI * 0.5;
     private _thetaDelta: number = 0;
     private _phiDelta: number = 0;
+    private _trackballRotateStart: Vec3 = [0, 0, 1];
+    private _trackballRotationDelta: [number, number, number, number] = [0, 0, 0, 1];
+    private _trackballEye: Vec3 = [0, 0, 1];
+    private _trackballUp: Vec3 = [0, 1, 0];
+    private _radius: number = 1.0;
+    private _zoom: number = 1.0;
     private _dollyDelta: number = 0;
-    private _panOffsetX: number = 0;
-    private _panOffsetY: number = 0;
-    private _panOffsetZ: number = 0;
+    private _panOffset: Vec3 = [0, 0, 0];
     private _orthoBaseLeft: number = -1;
     private _orthoBaseRight: number = 1;
     private _orthoBaseTop: number = 1;
     private _orthoBaseBottom: number = -1;
-    private _savedTarget: [number, number, number] = [0, 0, 0];
-    private _savedTheta: number = 0;
-    private _savedPhi: number = Math.PI * 0.5;
-    private _savedRadius: number = 1.0;
-    private _savedZoom: number = 1.0;
-
+    private _savedTarget: Vec3 = [0, 0, 0];
+    private _savedPosition: Vec3 = [0, 0, 1];
+    private _savedUp: Vec3 = [0, 1, 0];
+    private _savedProjection: ProjectionState = { type: "perspective", near: 0.1, far: 1000 };
     private readonly _wheelListenerOptions: AddEventListenerOptions = { passive: false };
 
-    constructor(camera: Camera, domElement: HTMLCanvasElement, desc: OrbitControlsDescriptor = {}) {
+    constructor(camera: Camera, domElement: HTMLCanvasElement, desc: NavigationControlsDescriptor = {}) {
         this.camera = camera;
         this.domElement = domElement;
-        this.target = desc.target ? [desc.target[0], desc.target[1], desc.target[2]] : [0, 0, 0];
+        this.target = desc.target ? vec3clone(desc.target) : [0, 0, 0];
+        this._mode = desc.mode ?? "orbit";
+        this.axisConvention = desc.axisConvention ?? "y-up-rh";
         if (desc.enabled !== undefined) this.enabled = desc.enabled;
         if (desc.enableRotate !== undefined) this.enableRotate = desc.enableRotate;
         if (desc.enablePan !== undefined) this.enablePan = desc.enablePan;
@@ -120,6 +289,7 @@ export class OrbitControls {
     }
 
     dispose(): void {
+        this.cancelTransition();
         this.domElement.removeEventListener("pointerdown", this.onPointerDown);
         this.domElement.removeEventListener("pointermove", this.onPointerMove);
         this.domElement.removeEventListener("pointerup", this.onPointerUp);
@@ -128,54 +298,25 @@ export class OrbitControls {
         this.domElement.removeEventListener("contextmenu", this.onContextMenu);
     }
 
-    syncFromCamera(): void {
-        const p = this.camera.transform.position;
-        const ox = p[0] - this.target[0];
-        const oy = p[1] - this.target[1];
-        const oz = p[2] - this.target[2];
-        const r = Math.sqrt(ox * ox + oy * oy + oz * oz);
-        this._radius = Math.max(1e-9, r);
-        this._theta = Math.atan2(ox, oz);
-        const y = oy / this._radius;
-        this._phi = Math.acos(this.clamp(y, -1, 1));
-        this._thetaDelta = 0;
-        this._phiDelta = 0;
-        this._dollyDelta = 0;
-        this._panOffsetX = 0;
-        this._panOffsetY = 0;
-        this._panOffsetZ = 0;
-        if (this.camera.type === "orthographic") {
-            const c = this.camera as OrthographicCamera;
-            this._orthoBaseLeft = c.left;
-            this._orthoBaseRight = c.right;
-            this._orthoBaseTop = c.top;
-            this._orthoBaseBottom = c.bottom;
-            this._zoom = 1.0;
-        }
+    get mode(): NavigationMode {
+        return this._mode;
     }
 
-    saveState(): void {
-        this._savedTarget = [this.target[0], this.target[1], this.target[2]];
-        this._savedTheta = this._theta;
-        this._savedPhi = this._phi;
-        this._savedRadius = this._radius;
-        this._savedZoom = this._zoom;
+    set mode(value: NavigationMode) {
+        this.setMode(value);
     }
 
-    reset(): void {
-        this.target[0] = this._savedTarget[0];
-        this.target[1] = this._savedTarget[1];
-        this.target[2] = this._savedTarget[2];
-        this._theta = this._savedTheta;
-        this._phi = this._savedPhi;
-        this._radius = this._savedRadius;
-        this._zoom = this._savedZoom;
-        this._thetaDelta = 0;
-        this._phiDelta = 0;
-        this._dollyDelta = 0;
-        this._panOffsetX = 0;
-        this._panOffsetY = 0;
-        this._panOffsetZ = 0;
+    get axisConvention(): AxisConventionDescriptor {
+        return {
+            right: vec3clone(this._axisConvention.right),
+            up: vec3clone(this._axisConvention.up),
+            forward: vec3clone(this._axisConvention.forward)
+        };
+    }
+
+    set axisConvention(value: AxisConventionInput) {
+        this._axisConvention = resolveAxisConvention(value);
+        this.syncFromCamera();
     }
 
     get azimuthAngle(): number {
@@ -199,7 +340,12 @@ export class OrbitControls {
     }
 
     set distance(value: number) {
-        this._radius = value;
+        const next = Math.max(EPSILON, value);
+        this._radius = next;
+        if (this._mode === "trackball") {
+            const eye = vec3normalize(this._trackballEye, this._axisConvention.forward);
+            this._trackballEye = vec3scl(eye, next);
+        }
     }
 
     get zoom(): number {
@@ -207,28 +353,299 @@ export class OrbitControls {
     }
 
     set zoom(value: number) {
-        this._zoom = value;
+        this._zoom = clamp(value, this.minZoom, this.maxZoom);
+    }
+
+    get hasActiveTransition(): boolean {
+        return this._transition !== null;
+    }
+
+    setCamera(camera: Camera): this {
+        this.camera = camera;
+        this.cancelTransition();
+        this.syncFromCamera();
+        return this;
+    }
+
+    setMode(mode: NavigationMode): this {
+        if (mode === this._mode) return this;
+        this.syncFromCamera();
+        this._mode = mode;
+        this.syncFromCamera();
+        return this;
+    }
+
+    syncFromCamera(): void {
+        const position = vec3clone(this.camera.position);
+        const offset = vec3sub(position, this.target);
+        this._radius = Math.max(EPSILON, vec3mag(offset));
+        if (this.camera.type === "orthographic") {
+            const ortho = this.camera as OrthographicCamera;
+            this._orthoBaseLeft = ortho.left;
+            this._orthoBaseRight = ortho.right;
+            this._orthoBaseTop = ortho.top;
+            this._orthoBaseBottom = ortho.bottom;
+            this._zoom = 1.0;
+        }
+        const spherical = this.offsetToSpherical(offset);
+        this._theta = spherical.theta;
+        this._phi = spherical.phi;
+        this._thetaDelta = 0;
+        this._phiDelta = 0;
+        this._dollyDelta = 0;
+        this._panOffset = [0, 0, 0];
+        this._trackballEye = offset;
+        this._trackballUp = vec3normalize(this.camera.up, this._axisConvention.up);
+        this._trackballRotateStart = [0, 0, 1];
+        this._trackballRotationDelta = [0, 0, 0, 1];
+    }
+
+    saveState(): void {
+        this._savedTarget = vec3clone(this.target);
+        this._savedPosition = vec3clone(this.camera.position);
+        this._savedUp = vec3normalize(this.camera.up, this._axisConvention.up);
+        this._savedProjection = this.captureProjectionState();
+    }
+
+    reset(): void {
+        this.cancelTransition();
+        this.applyPose(this._savedPosition, this._savedTarget, this._savedUp);
+        this.applyProjectionState(this._savedProjection);
+        this.syncFromCamera();
     }
 
     setTarget(x: number, y: number, z: number): this;
-    setTarget(target: [number, number, number]): this;
-    setTarget(xOrTarget: number | [number, number, number], y?: number, z?: number): this {
-        if (typeof xOrTarget === "number") {
-            this.target[0] = xOrTarget;
-            this.target[1] = y!;
-            this.target[2] = z!;
-        } else {
-            this.target[0] = xOrTarget[0];
-            this.target[1] = xOrTarget[1];
-            this.target[2] = xOrTarget[2];
-        }
+    setTarget(target: Vec3): this;
+    setTarget(xOrTarget: number | Vec3, y?: number, z?: number): this {
+        if (typeof xOrTarget === "number") this.target = [xOrTarget, y ?? 0, z ?? 0];
+        else this.target = vec3clone(xOrTarget);
+        return this;
+    }
+
+    cancelTransition(): this {
+        this._transition = null;
         return this;
     }
 
     update(dtSeconds: number = 0): void {
         if (!this.enabled) return;
-        const dt = (dtSeconds > 0) ? dtSeconds : (1 / 60);
-        const damping = this.enableDamping ? (1 - Math.pow(1 - this.clamp(this.dampingFactor, 0, 1), dt * 60)) : 1;
+        const dt = dtSeconds > 0 ? dtSeconds : (1 / 60);
+        if (this._transition) {
+            this.updateTransition(dt);
+            return;
+        }
+        if (this._mode === "orbit") this.updateOrbit(dt);
+        else this.updateTrackball(dt);
+    }
+
+    setView(view: InspectionView, options: SetViewOptions = {}): this {
+        const direction = this.getInspectionViewDirection(view);
+        const up = options.up ? vec3normalize(options.up, this._axisConvention.up) : this.getInspectionViewUp(view);
+        const target = options.target ? vec3clone(options.target) : vec3clone(this.target);
+        const distance = Math.max(EPSILON, options.distance ?? this._radius);
+        const position = vec3add(target, vec3scl(direction, distance));
+        this.applyPoseOrTransition(position, target, up, this.captureProjectionState(), options.animate, options.duration);
+        return this;
+    }
+
+    fitScene(scene: Scene, options: FitToBoundsOptions = {}): Bounds3 {
+        return this.fitToBounds(scene.getBounds(), options);
+    }
+
+    viewBounds(view: InspectionView, source: BoundsLike | Scene, options: FitToBoundsOptions = {}): Bounds3 {
+        return this.fitToBounds(source, { ...options, view });
+    }
+
+    fitToBounds(source: BoundsLike | Scene, options: FitToBoundsOptions = {}): Bounds3 {
+        const bounds = this.resolveBounds(source);
+        if (bounds.empty) return bounds;
+        const result = this.solveFit(bounds, options);
+        this.applyPoseOrTransition(result.position, result.target, result.up, result.projection, options.animate, options.duration);
+        return bounds;
+    }
+
+    private updateTransition(dt: number): void {
+        const transition = this._transition;
+        if (!transition) return;
+        transition.elapsed += dt;
+        const rawT = clamp01(transition.elapsed / Math.max(EPSILON, transition.duration));
+        const t = easeInOutCubic(rawT);
+        const position = vec3lerp(transition.fromPosition, transition.toPosition, t);
+        const target = vec3lerp(transition.fromTarget, transition.toTarget, t);
+        const up = vec3normalize(vec3lerp(transition.fromUp, transition.toUp, t), transition.toUp);
+        this.applyPose(position, target, up);
+        this.applyProjectionState(this.lerpProjectionState(transition.fromProjection, transition.toProjection, t));
+        if (rawT >= 1) {
+            this._transition = null;
+            this.syncFromCamera();
+        }
+    }
+
+    private onPointerDown = (event: PointerEvent): void => {
+        if (!this.enabled || this._pointerId !== null) return;
+        this.cancelTransition();
+        this._pointerId = event.pointerId;
+        this.domElement.setPointerCapture(this._pointerId);
+        this._pointerX = event.clientX;
+        this._pointerY = event.clientY;
+        this._zoomCursorClientX = event.clientX;
+        this._zoomCursorClientY = event.clientY;
+        this._zoomCursorValid = true;
+        if (event.button === this.mouseButtons.rotate) this._state = "rotate";
+        else if (event.button === this.mouseButtons.pan) this._state = "pan";
+        else if (event.button === this.mouseButtons.zoom) this._state = "zoom";
+        else this._state = "none";
+        if (this._state === "rotate" && this._mode === "trackball") this._trackballRotateStart = this.getTrackballVector(event.clientX, event.clientY);
+        event.preventDefault();
+    };
+
+    private onPointerMove = (event: PointerEvent): void => {
+        if (!this.enabled || this._pointerId === null || event.pointerId !== this._pointerId) return;
+        const dx = event.clientX - this._pointerX;
+        const dy = event.clientY - this._pointerY;
+        this._pointerX = event.clientX;
+        this._pointerY = event.clientY;
+        this._zoomCursorClientX = event.clientX;
+        this._zoomCursorClientY = event.clientY;
+        this._zoomCursorValid = true;
+        if (dx === 0 && dy === 0) return;
+        if (this._state === "rotate" && this.enableRotate) {
+            if (this._mode === "orbit") {
+                const h = Math.max(1, this.getViewportHeight());
+                const s = (2 * Math.PI) / h;
+                this._thetaDelta += (-dx * s) * this.rotateSpeed;
+                this._phiDelta += (-dy * s) * this.rotateSpeed;
+            } else {
+                const v = this.getTrackballVector(event.clientX, event.clientY);
+                const q = this.rotationFromTrackballDrag(this._trackballRotateStart, v);
+                if (q) this._trackballRotationDelta = quatnormalize(...quatmul(q[0], q[1], q[2], q[3], this._trackballRotationDelta[0], this._trackballRotationDelta[1], this._trackballRotationDelta[2], this._trackballRotationDelta[3]));
+                this._trackballRotateStart = v;
+            }
+        } else if (this._state === "pan" && this.enablePan) {
+            if (this._mode === "orbit") this.panOrbit(dx, dy);
+            else this.panTrackball(dx, dy);
+        } else if (this._state === "zoom" && this.enableZoom) this._dollyDelta += dy * this.zoomSpeed * 0.002;
+        event.preventDefault();
+    };
+
+    private onPointerUp = (event: PointerEvent): void => {
+        if (this._pointerId === null || event.pointerId !== this._pointerId) return;
+        this.domElement.releasePointerCapture(this._pointerId);
+        this._pointerId = null;
+        this._state = "none";
+        event.preventDefault();
+    };
+
+    private onWheel = (event: WheelEvent): void => {
+        if (!this.enabled || !this.enableZoom) return;
+        this.cancelTransition();
+        this._dollyDelta += event.deltaY * this.zoomSpeed * 0.001;
+        this._zoomCursorClientX = event.clientX;
+        this._zoomCursorClientY = event.clientY;
+        this._zoomCursorValid = true;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    private onContextMenu = (event: MouseEvent): void => {
+        event.preventDefault();
+    };
+
+    private getViewportRect(): { left: number; top: number; width: number; height: number } {
+        const rect = this.domElement.getBoundingClientRect();
+        const width = Math.max(1, rect.width || this.domElement.clientWidth || 1);
+        const height = Math.max(1, rect.height || this.domElement.clientHeight || 1);
+        return { left: rect.left, top: rect.top, width, height };
+    }
+
+    private getViewportWidth(): number {
+        return this.getViewportRect().width;
+    }
+
+    private getViewportHeight(): number {
+        return this.getViewportRect().height;
+    }
+
+    private getAspect(aspectOverride?: number): number {
+        if (aspectOverride && aspectOverride > 0) return aspectOverride;
+        return this.getViewportWidth() / Math.max(1, this.getViewportHeight());
+    }
+
+    private captureProjectionState(): ProjectionState {
+        if (this.camera.type === "orthographic") {
+            const camera = this.camera as OrthographicCamera;
+            return { type: "orthographic", left: camera.left, right: camera.right, top: camera.top, bottom: camera.bottom, near: camera.near, far: camera.far };
+        }
+        const camera = this.camera as PerspectiveCamera;
+        return { type: "perspective", near: camera.near, far: camera.far };
+    }
+
+    private applyProjectionState(state: ProjectionState): void {
+        if (state.type === "orthographic" && this.camera.type === "orthographic") {
+            const camera = this.camera as OrthographicCamera;
+            camera.left = state.left;
+            camera.right = state.right;
+            camera.top = state.top;
+            camera.bottom = state.bottom;
+            camera.near = state.near;
+            camera.far = state.far;
+        } else if (state.type === "perspective" && this.camera.type === "perspective") {
+            const camera = this.camera as PerspectiveCamera;
+            camera.near = state.near;
+            camera.far = state.far;
+        }
+    }
+
+    private lerpProjectionState(a: ProjectionState, b: ProjectionState, t: number): ProjectionState {
+        if (a.type === "orthographic" && b.type === "orthographic") {
+            return {
+                type: "orthographic",
+                left: lerp(a.left, b.left, t),
+                right: lerp(a.right, b.right, t),
+                top: lerp(a.top, b.top, t),
+                bottom: lerp(a.bottom, b.bottom, t),
+                near: lerp(a.near, b.near, t),
+                far: lerp(a.far, b.far, t)
+            };
+        }
+        return {
+            type: "perspective",
+            near: lerp((a as ProjectionState).near, (b as ProjectionState).near, t),
+            far: lerp((a as ProjectionState).far, (b as ProjectionState).far, t)
+        };
+    }
+
+    private applyPose(position: Vec3, target: Vec3, up: Vec3): void {
+        this.target = vec3clone(target);
+        this.camera.transform.setPosition(position[0], position[1], position[2]);
+        this.camera.lookAtWithUp(target, up);
+    }
+
+    private applyPoseOrTransition(position: Vec3, target: Vec3, up: Vec3, projection: ProjectionState, animate: boolean | undefined, duration: number | undefined): void {
+        const shouldAnimate = animate ?? true;
+        if (!shouldAnimate || (duration ?? DEFAULT_TRANSITION_SECONDS) <= 0) {
+            this.cancelTransition();
+            this.applyPose(position, target, up);
+            this.applyProjectionState(projection);
+            this.syncFromCamera();
+            return;
+        }
+        this._transition = {
+            elapsed: 0,
+            duration: duration ?? DEFAULT_TRANSITION_SECONDS,
+            fromPosition: vec3clone(this.camera.position),
+            toPosition: vec3clone(position),
+            fromTarget: vec3clone(this.target),
+            toTarget: vec3clone(target),
+            fromUp: vec3normalize(this.camera.up, this._axisConvention.up),
+            toUp: vec3normalize(up, this._axisConvention.up),
+            fromProjection: this.captureProjectionState(),
+            toProjection: projection
+        };
+    }
+
+    private updateOrbit(dt: number): void {
+        const damping = this.enableDamping ? (1 - Math.pow(1 - clamp01(this.dampingFactor), dt * 60)) : 1;
         if (this.enableRotate) {
             this._theta += this._thetaDelta * damping;
             this._phi += this._phiDelta * damping;
@@ -238,1132 +655,337 @@ export class OrbitControls {
             this._thetaDelta = 0;
             this._phiDelta = 0;
         }
-        this._phi = this.clamp(this._phi, this.minPolarAngle, this.maxPolarAngle);
-        this._theta = this.clamp(this._theta, this.minAzimuthAngle, this.maxAzimuthAngle);
-        if (this.enableZoom) {
-            const dolly = this._dollyDelta * damping;
-            if (dolly !== 0) {
-                const prevRadius = this._radius;
-                const prevZoom = this._zoom;
-                if (this.camera.type === "orthographic") {
-                    this._zoom *= Math.exp(-dolly);
-                    this._zoom = this.clamp(this._zoom, this.minZoom, this.maxZoom);
-                } else {
-                    this._radius *= Math.exp(dolly);
-                    this._radius = this.clamp(this._radius, this.minDistance, this.maxDistance);
-                }
-                if (this.zoomOnCursor && this._zoomCursorValid) {
-                    this.applyZoomOnCursor(prevRadius, prevZoom);
-                }
-                this._dollyDelta *= (1 - damping);
-            }
-        } else {
-            this._dollyDelta = 0;
-        }
-        if (this.enablePan) {
-            this.target[0] += this._panOffsetX * damping;
-            this.target[1] += this._panOffsetY * damping;
-            this.target[2] += this._panOffsetZ * damping;
-            this._panOffsetX *= (1 - damping);
-            this._panOffsetY *= (1 - damping);
-            this._panOffsetZ *= (1 - damping);
-        } else {
-            this._panOffsetX = 0;
-            this._panOffsetY = 0;
-            this._panOffsetZ = 0;
-        }
-        this._radius = this.clamp(this._radius, this.minDistance, this.maxDistance);
-        this._radius = Math.max(1e-6, this._radius);
-        const sinPhi = Math.sin(this._phi);
-        const cosPhi = Math.cos(this._phi);
-        const sinTheta = Math.sin(this._theta);
-        const cosTheta = Math.cos(this._theta);
-        const px = this.target[0] + this._radius * sinPhi * sinTheta;
-        const py = this.target[1] + this._radius * cosPhi;
-        const pz = this.target[2] + this._radius * sinPhi * cosTheta;
-        this.camera.transform.setPosition(px, py, pz);
-        this.setCameraRotationLookAt(px, py, pz, this.target[0], this.target[1], this.target[2]);
+        this._phi = clamp(this._phi, this.minPolarAngle, this.maxPolarAngle);
+        this._theta = clamp(this._theta, this.minAzimuthAngle, this.maxAzimuthAngle);
+        this.applyDolly(damping, this.computeOrbitBasis());
+        this.applyPan(damping);
+        this._radius = clamp(this._radius, this.minDistance, this.maxDistance);
+        const offset = this.sphericalToOffset(this._theta, this._phi, Math.max(EPSILON, this._radius));
+        const position = vec3add(this.target, offset);
+        const forward = vec3normalize(vec3sub(this.target, position), vec3scl(this._axisConvention.forward, -1));
+        const up = this.getOrbitUp(forward);
+        this.camera.transform.setPosition(position[0], position[1], position[2]);
+        this.camera.lookAtWithUp(this.target, up);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
     }
 
-    private applyZoomOnCursor(prevRadius: number, prevZoom: number): void {
-        const rect = this.domElement.getBoundingClientRect();
-        const rw = Math.max(1, rect.width);
-        const rh = Math.max(1, rect.height);
-        const x01 = (this._zoomCursorClientX - rect.left) / rw;
-        const y01 = (this._zoomCursorClientY - rect.top) / rh;
-        const ndcX = (x01 * 2) - 1;
-        const ndcY = 1 - (y01 * 2);
-        const sinPhi = Math.sin(this._phi);
-        const cosPhi = Math.cos(this._phi);
-        const sinTheta = Math.sin(this._theta);
-        const cosTheta = Math.cos(this._theta);
-        let fx = -sinPhi * sinTheta;
-        let fy = -cosPhi;
-        let fz = -sinPhi * cosTheta;
-        let upx = 0;
-        let upy = 1;
-        let upz = 0;
-        const dotFU = fx * upx + fy * upy + fz * upz;
-        if (Math.abs(dotFU) > 0.999) {
-            upx = 0;
-            upy = 0;
-            upz = 1;
-        }
-        let rx = fy * upz - fz * upy;
-        let ry = fz * upx - fx * upz;
-        let rz = fx * upy - fy * upx;
-        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rl <= 0) return;
-        rx /= rl;
-        ry /= rl;
-        rz /= rl;
-        const ux = ry * fz - rz * fy;
-        const uy = rz * fx - rx * fz;
-        const uz = rx * fy - ry * fx;
-        if (this.camera.type === "orthographic") {
-            const baseW = this._orthoBaseRight - this._orthoBaseLeft;
-            const baseH = this._orthoBaseTop - this._orthoBaseBottom;
-            const oldHalfW = (baseW / Math.max(1e-9, prevZoom)) * 0.5;
-            const newHalfW = (baseW / Math.max(1e-9, this._zoom)) * 0.5;
-            const oldHalfH = (baseH / Math.max(1e-9, prevZoom)) * 0.5;
-            const newHalfH = (baseH / Math.max(1e-9, this._zoom)) * 0.5;
-            const dx = ndcX * (oldHalfW - newHalfW);
-            const dy = ndcY * (oldHalfH - newHalfH);
-            this.target[0] += (rx * dx) + (ux * dy);
-            this.target[1] += (ry * dx) + (uy * dy);
-            this.target[2] += (rz * dx) + (uz * dy);
+    private updateTrackball(dt: number): void {
+        const damping = this.enableDamping ? (1 - Math.pow(1 - clamp01(this.dampingFactor), dt * 60)) : 1;
+        if (this.enableRotate) {
+            const delta = this._trackballRotationDelta;
+            if (!quatisid(delta[0], delta[1], delta[2], delta[3])) {
+                const step = quatslerpid(delta[0], delta[1], delta[2], delta[3], damping);
+                this._trackballEye = quatrotvec(this._trackballEye[0], this._trackballEye[1], this._trackballEye[2], step[0], step[1], step[2], step[3]);
+                this._trackballUp = vec3normalize(quatrotvec(this._trackballUp[0], this._trackballUp[1], this._trackballUp[2], step[0], step[1], step[2], step[3]), this._axisConvention.up);
+                const remainder = quatmul(delta[0], delta[1], delta[2], delta[3], ...quatinvert(step[0], step[1], step[2], step[3]));
+                this._trackballRotationDelta = quatnormalize(remainder[0], remainder[1], remainder[2], remainder[3]);
+            }
+        } else this._trackballRotationDelta = [0, 0, 0, 1];
+        this.applyDolly(damping, this.computeTrackballBasis());
+        this.applyPan(damping);
+        const radius = vec3mag(this._trackballEye);
+        this._radius = clamp(Math.max(EPSILON, radius), this.minDistance, this.maxDistance);
+        if (radius > EPSILON) this._trackballEye = vec3scl(this._trackballEye, this._radius / radius);
+        else this._trackballEye = vec3scl(this._axisConvention.forward, this._radius);
+        const position = vec3add(this.target, this._trackballEye);
+        this.camera.transform.setPosition(position[0], position[1], position[2]);
+        this.camera.lookAtWithUp(this.target, this._trackballUp);
+        if (this.camera.type === "orthographic") this.applyOrthographicZoom();
+    }
+
+    private applyDolly(damping: number, basis: Basis3): void {
+        if (!this.enableZoom) {
+            this._dollyDelta = 0;
             return;
         }
-        const cam = this.camera as PerspectiveCamera;
-        const fovRad = (cam.fov * Math.PI) / 180;
-        const aspect = rw / rh;
-        const tanHalfFov = Math.tan(fovRad * 0.5);
-        const oldHalfH = prevRadius * tanHalfFov;
-        const newHalfH = this._radius * tanHalfFov;
-        const oldHalfW = oldHalfH * aspect;
-        const newHalfW = newHalfH * aspect;
-        const dx = ndcX * (oldHalfW - newHalfW);
-        const dy = ndcY * (oldHalfH - newHalfH);
-        this.target[0] += (rx * dx) + (ux * dy);
-        this.target[1] += (ry * dx) + (uy * dy);
-        this.target[2] += (rz * dx) + (uz * dy);
+        const dolly = this._dollyDelta * damping;
+        if (Math.abs(dolly) <= EPSILON) {
+            this._dollyDelta *= (1 - damping);
+            return;
+        }
+        const prevRadius = this._radius;
+        const prevZoom = this._zoom;
+        if (this.camera.type === "orthographic") {
+            this._zoom = clamp(this._zoom * Math.exp(-dolly), this.minZoom, this.maxZoom);
+        } else {
+            const next = clamp(this._radius * Math.exp(dolly), this.minDistance, this.maxDistance);
+            if (this._mode === "trackball") {
+                const current = Math.max(EPSILON, vec3mag(this._trackballEye));
+                this._trackballEye = vec3scl(this._trackballEye, next / current);
+            }
+            this._radius = next;
+        }
+        if (this.zoomOnCursor && this._zoomCursorValid) this.applyZoomOnCursor(prevRadius, prevZoom, basis);
+        this._dollyDelta *= (1 - damping);
     }
 
-    private applyOrthographicZoom(): void {
-        const cam = this.camera as OrthographicCamera;
-        const baseW = this._orthoBaseRight - this._orthoBaseLeft;
-        const baseH = this._orthoBaseTop - this._orthoBaseBottom;
-        const cx = (this._orthoBaseLeft + this._orthoBaseRight) * 0.5;
-        const cy = (this._orthoBaseBottom + this._orthoBaseTop) * 0.5;
-        const w = baseW / this._zoom;
-        const h = baseH / this._zoom;
-        cam.left = cx - w * 0.5;
-        cam.right = cx + w * 0.5;
-        cam.bottom = cy - h * 0.5;
-        cam.top = cy + h * 0.5;
+    private applyPan(damping: number): void {
+        if (!this.enablePan) {
+            this._panOffset = [0, 0, 0];
+            return;
+        }
+        this.target[0] += this._panOffset[0] * damping;
+        this.target[1] += this._panOffset[1] * damping;
+        this.target[2] += this._panOffset[2] * damping;
+        this._panOffset = vec3scl(this._panOffset, 1 - damping);
     }
 
-    private onPointerDown = (event: PointerEvent): void => {
-        if (!this.enabled) return;
-        if (this._pointerId !== null) return;
-        this._pointerId = event.pointerId;
-        this.domElement.setPointerCapture(this._pointerId);
-        this._pointerX = event.clientX;
-        this._pointerY = event.clientY;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        if (event.button === this.mouseButtons.rotate) this._state = "rotate";
-        else if (event.button === this.mouseButtons.pan) this._state = "pan";
-        else if (event.button === this.mouseButtons.zoom) this._state = "zoom";
-        else this._state = "none";
-        event.preventDefault();
-    };
+    private panOrbit(deltaX: number, deltaY: number): void {
+        const basis = this.computeOrbitBasis();
+        this.queuePan(deltaX, deltaY, basis);
+    }
 
-    private onPointerMove = (event: PointerEvent): void => {
-        if (!this.enabled) return;
-        if (this._pointerId === null) return;
-        if (event.pointerId !== this._pointerId) return;
-        const dx = event.clientX - this._pointerX;
-        const dy = event.clientY - this._pointerY;
-        this._pointerX = event.clientX;
-        this._pointerY = event.clientY;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        if (dx === 0 && dy === 0) return;
-        const h = Math.max(1, this.domElement.clientHeight);
-        if (this._state === "rotate" && this.enableRotate) {
-            const s = (2 * Math.PI) / h;
-            this._thetaDelta += (-dx * s) * this.rotateSpeed;
-            this._phiDelta += (-dy * s) * this.rotateSpeed;
-        } else if (this._state === "pan" && this.enablePan) {
-            this.pan(dx, dy);
-        } else if (this._state === "zoom" && this.enableZoom) {
-            this._dollyDelta += dy * this.zoomSpeed * 0.002;
-        }
-        event.preventDefault();
-    };
+    private panTrackball(deltaX: number, deltaY: number): void {
+        const basis = this.computeTrackballBasis();
+        this.queuePan(deltaX, deltaY, basis);
+    }
 
-    private onPointerUp = (event: PointerEvent): void => {
-        if (this._pointerId === null) return;
-        if (event.pointerId !== this._pointerId) return;
-        this.domElement.releasePointerCapture(this._pointerId);
-        this._pointerId = null;
-        this._state = "none";
-        event.preventDefault();
-    };
-
-    private onWheel = (event: WheelEvent): void => {
-        if (!this.enabled) return;
-        if (!this.enableZoom) return;
-        this._dollyDelta += event.deltaY * this.zoomSpeed * 0.001;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        event.preventDefault();
-        event.stopPropagation();
-    };
-
-    private onContextMenu = (event: MouseEvent): void => {
-        event.preventDefault();
-    };
-
-    private pan(deltaX: number, deltaY: number): void {
-        const w = Math.max(1, this.domElement.clientWidth);
-        const h = Math.max(1, this.domElement.clientHeight);
-        const sinPhi = Math.sin(this._phi);
-        const cosPhi = Math.cos(this._phi);
-        const sinTheta = Math.sin(this._theta);
-        const cosTheta = Math.cos(this._theta);
-        const px = this.target[0] + this._radius * sinPhi * sinTheta;
-        const py = this.target[1] + this._radius * cosPhi;
-        const pz = this.target[2] + this._radius * sinPhi * cosTheta;
-        let fx = this.target[0] - px;
-        let fy = this.target[1] - py;
-        let fz = this.target[2] - pz;
-        const fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
-        if (fl > 0) {
-            fx /= fl;
-            fy /= fl;
-            fz /= fl;
-        }
-        let upx = 0;
-        let upy = 1;
-        let upz = 0;
-        const dotFU = fx * upx + fy * upy + fz * upz;
-        if (Math.abs(dotFU) > 0.999) {
-            upx = 0;
-            upy = 0;
-            upz = 1;
-        }
-        let rx = fy * upz - fz * upy;
-        let ry = fz * upx - fx * upz;
-        let rz = fx * upy - fy * upx;
-        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rl > 0) {
-            rx /= rl;
-            ry /= rl;
-            rz /= rl;
-        }
-        const ux = ry * fz - rz * fy;
-        const uy = rz * fx - rx * fz;
-        const uz = rx * fy - ry * fx;
+    private queuePan(deltaX: number, deltaY: number, basis: Basis3): void {
+        const w = Math.max(1, this.getViewportWidth());
+        const h = Math.max(1, this.getViewportHeight());
         let panX = 0;
         let panY = 0;
         if (this.camera.type === "orthographic") {
-            const baseW = this._orthoBaseRight - this._orthoBaseLeft;
-            const baseH = this._orthoBaseTop - this._orthoBaseBottom;
-            const viewW = baseW / this._zoom;
-            const viewH = baseH / this._zoom;
+            const viewW = (this._orthoBaseRight - this._orthoBaseLeft) / Math.max(EPSILON, this._zoom);
+            const viewH = (this._orthoBaseTop - this._orthoBaseBottom) / Math.max(EPSILON, this._zoom);
             panX = (deltaX * viewW / w) * this.panSpeed;
             panY = (deltaY * viewH / h) * this.panSpeed;
         } else {
-            const cam = this.camera as PerspectiveCamera;
-            const fovRad = (cam.fov * Math.PI) / 180;
-            const targetDistance = this._radius * Math.tan(fovRad * 0.5);
+            const camera = this.camera as PerspectiveCamera;
+            const targetDistance = this._radius * Math.tan((camera.fov * Math.PI / 180) * 0.5);
             panX = (2 * deltaX * targetDistance / h) * this.panSpeed;
             panY = (2 * deltaY * targetDistance / h) * this.panSpeed;
         }
-        this._panOffsetX += (rx * -panX) + (ux * panY);
-        this._panOffsetY += (ry * -panX) + (uy * panY);
-        this._panOffsetZ += (rz * -panX) + (uz * panY);
+        this._panOffset = vec3add(this._panOffset, vec3add(vec3scl(basis.right, -panX), vec3scl(basis.up, panY)));
     }
 
-    private setCameraRotationLookAt(px: number, py: number, pz: number, tx: number, ty: number, tz: number): void {
-        let fx = tx - px;
-        let fy = ty - py;
-        let fz = tz - pz;
-        const fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
-        if (fl <= 0) return;
-        fx /= fl;
-        fy /= fl;
-        fz /= fl;
-        let upx = 0;
-        let upy = 1;
-        let upz = 0;
-        const dotFU = fx * upx + fy * upy + fz * upz;
-        if (Math.abs(dotFU) > 0.999) {
-            upx = 0;
-            upy = 0;
-            upz = 1;
-        }
-        let rx = fy * upz - fz * upy;
-        let ry = fz * upx - fx * upz;
-        let rz = fx * upy - fy * upx;
-        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rl <= 0) return;
-        rx /= rl;
-        ry /= rl;
-        rz /= rl;
-        const ux = ry * fz - rz * fy;
-        const uy = rz * fx - rx * fz;
-        const uz = rx * fy - ry * fx;
-        const m00 = rx;
-        const m10 = ry;
-        const m20 = rz;
-        const m01 = ux;
-        const m11 = uy;
-        const m21 = uz;
-        const m02 = -fx;
-        const m12 = -fy;
-        const m22 = -fz;
-        const trace = m00 + m11 + m22;
-        let qw: number;
-        let qx: number;
-        let qy: number;
-        let qz: number;
-        if (trace > 0) {
-            const s = 0.5 / Math.sqrt(trace + 1.0);
-            qw = 0.25 / s;
-            qx = (m21 - m12) * s;
-            qy = (m02 - m20) * s;
-            qz = (m10 - m01) * s;
-        } else if (m00 > m11 && m00 > m22) {
-            const s = 2.0 * Math.sqrt(1.0 + m00 - m11 - m22);
-            qw = (m21 - m12) / s;
-            qx = 0.25 * s;
-            qy = (m01 + m10) / s;
-            qz = (m02 + m20) / s;
-        } else if (m11 > m22) {
-            const s = 2.0 * Math.sqrt(1.0 + m11 - m00 - m22);
-            qw = (m02 - m20) / s;
-            qx = (m01 + m10) / s;
-            qy = 0.25 * s;
-            qz = (m12 + m21) / s;
-        } else {
-            const s = 2.0 * Math.sqrt(1.0 + m22 - m00 - m11);
-            qw = (m10 - m01) / s;
-            qx = (m02 + m20) / s;
-            qy = (m12 + m21) / s;
-            qz = 0.25 * s;
-        }
-        this.camera.transform.setRotation(qx, qy, qz, qw);
-    }
-
-    private clamp(x: number, min: number, max: number): number {
-        return Math.max(min, Math.min(max, x));
-    }
-}
-
-export type TrackballControlsMouseButtons = {
-    rotate?: number;
-    pan?: number;
-    zoom?: number;
-};
-
-export type TrackballControlsDescriptor = {
-    target?: [number, number, number];
-    enabled?: boolean;
-    enableRotate?: boolean;
-    enablePan?: boolean;
-    enableZoom?: boolean;
-    rotateSpeed?: number;
-    panSpeed?: number;
-    zoomSpeed?: number;
-    zoomOnCursor?: boolean;
-    enableDamping?: boolean;
-    dampingFactor?: number;
-    minDistance?: number;
-    maxDistance?: number;
-    minZoom?: number;
-    maxZoom?: number;
-    mouseButtons?: TrackballControlsMouseButtons;
-};
-
-export class TrackballControls {
-    readonly camera: Camera;
-    readonly domElement: HTMLCanvasElement;
-    target: [number, number, number];
-    enabled: boolean = true;
-    enableRotate: boolean = true;
-    enablePan: boolean = true;
-    enableZoom: boolean = true;
-    rotateSpeed: number = 1.0;
-    panSpeed: number = 1.0;
-    zoomSpeed: number = 1.0;
-    zoomOnCursor: boolean = false;
-    enableDamping: boolean = false;
-    dampingFactor: number = 0.1;
-    minDistance: number = 0.0;
-    maxDistance: number = Infinity;
-    minZoom: number = 0.01;
-    maxZoom: number = Infinity;
-    mouseButtons: Required<TrackballControlsMouseButtons> = { rotate: 0, zoom: 1, pan: 2 };
-    private _state: "none" | "rotate" | "pan" | "zoom" = "none";
-    private _pointerId: number | null = null;
-    private _pointerX: number = 0;
-    private _pointerY: number = 0;
-    private _rotateStartX: number = 0;
-    private _rotateStartY: number = 0;
-    private _rotateStartZ: number = 1;
-    private _rotationDeltaX: number = 0;
-    private _rotationDeltaY: number = 0;
-    private _rotationDeltaZ: number = 0;
-    private _rotationDeltaW: number = 1;
-    private _dollyDelta: number = 0;
-    private _panOffsetX: number = 0;
-    private _panOffsetY: number = 0;
-    private _panOffsetZ: number = 0;
-    private _eyeX: number = 0;
-    private _eyeY: number = 0;
-    private _eyeZ: number = 1;
-    private _radius: number = 1.0;
-    private _zoom: number = 1.0;
-    private _upX: number = 0;
-    private _upY: number = 1;
-    private _upZ: number = 0;
-    private _zoomCursorClientX: number = 0;
-    private _zoomCursorClientY: number = 0;
-    private _zoomCursorValid: boolean = false;
-    private _orthoBaseLeft: number = -1;
-    private _orthoBaseRight: number = 1;
-    private _orthoBaseTop: number = 1;
-    private _orthoBaseBottom: number = -1;
-    private _savedTarget: [number, number, number] = [0, 0, 0];
-    private _savedEye: [number, number, number] = [0, 0, 1];
-    private _savedUp: [number, number, number] = [0, 1, 0];
-    private _savedZoom: number = 1.0;
-    private readonly _wheelListenerOptions: AddEventListenerOptions = { passive: false };
-
-    constructor(camera: Camera, domElement: HTMLCanvasElement, desc: TrackballControlsDescriptor = {}) {
-        this.camera = camera;
-        this.domElement = domElement;
-        this.target = desc.target ? [desc.target[0], desc.target[1], desc.target[2]] : [0, 0, 0];
-        if (desc.enabled !== undefined) this.enabled = desc.enabled;
-        if (desc.enableRotate !== undefined) this.enableRotate = desc.enableRotate;
-        if (desc.enablePan !== undefined) this.enablePan = desc.enablePan;
-        if (desc.enableZoom !== undefined) this.enableZoom = desc.enableZoom;
-        if (desc.rotateSpeed !== undefined) this.rotateSpeed = desc.rotateSpeed;
-        if (desc.panSpeed !== undefined) this.panSpeed = desc.panSpeed;
-        if (desc.zoomSpeed !== undefined) this.zoomSpeed = desc.zoomSpeed;
-        if (desc.zoomOnCursor !== undefined) this.zoomOnCursor = desc.zoomOnCursor;
-        if (desc.enableDamping !== undefined) this.enableDamping = desc.enableDamping;
-        if (desc.dampingFactor !== undefined) this.dampingFactor = desc.dampingFactor;
-        if (desc.minDistance !== undefined) this.minDistance = desc.minDistance;
-        if (desc.maxDistance !== undefined) this.maxDistance = desc.maxDistance;
-        if (desc.minZoom !== undefined) this.minZoom = desc.minZoom;
-        if (desc.maxZoom !== undefined) this.maxZoom = desc.maxZoom;
-        if (desc.mouseButtons) {
-            if (desc.mouseButtons.rotate !== undefined) this.mouseButtons.rotate = desc.mouseButtons.rotate;
-            if (desc.mouseButtons.zoom !== undefined) this.mouseButtons.zoom = desc.mouseButtons.zoom;
-            if (desc.mouseButtons.pan !== undefined) this.mouseButtons.pan = desc.mouseButtons.pan;
-        }
-        this.domElement.style.touchAction = "none";
-        this.syncFromCamera();
-        this.saveState();
-        this.domElement.addEventListener("pointerdown", this.onPointerDown);
-        this.domElement.addEventListener("pointermove", this.onPointerMove);
-        this.domElement.addEventListener("pointerup", this.onPointerUp);
-        this.domElement.addEventListener("pointercancel", this.onPointerUp);
-        this.domElement.addEventListener("wheel", this.onWheel, this._wheelListenerOptions);
-        this.domElement.addEventListener("contextmenu", this.onContextMenu);
-    }
-
-    dispose(): void {
-        this.domElement.removeEventListener("pointerdown", this.onPointerDown);
-        this.domElement.removeEventListener("pointermove", this.onPointerMove);
-        this.domElement.removeEventListener("pointerup", this.onPointerUp);
-        this.domElement.removeEventListener("pointercancel", this.onPointerUp);
-        this.domElement.removeEventListener("wheel", this.onWheel, this._wheelListenerOptions);
-        this.domElement.removeEventListener("contextmenu", this.onContextMenu);
-    }
-
-    syncFromCamera(): void {
-        const p = this.camera.transform.position;
-        const ex = p[0] - this.target[0];
-        const ey = p[1] - this.target[1];
-        const ez = p[2] - this.target[2];
-        const r = Math.sqrt(ex * ex + ey * ey + ez * ez);
-        this._radius = Math.max(1e-9, r);
-        this._eyeX = ex;
-        this._eyeY = ey;
-        this._eyeZ = ez;
-        if (r <= 1e-9) {
-            this._eyeX = 0;
-            this._eyeY = 0;
-            this._eyeZ = this._radius;
-        }
-        const m = this.camera.transform.worldMatrix;
-        const upx = m[4];
-        const upy = m[5];
-        const upz = m[6];
-        const ul = Math.sqrt(upx * upx + upy * upy + upz * upz);
-        if (ul > 0) {
-            this._upX = upx / ul;
-            this._upY = upy / ul;
-            this._upZ = upz / ul;
-        } else {
-            this._upX = 0;
-            this._upY = 1;
-            this._upZ = 0;
-        }
-        this._rotateStartX = 0;
-        this._rotateStartY = 0;
-        this._rotateStartZ = 1;
-        this._rotationDeltaX = 0;
-        this._rotationDeltaY = 0;
-        this._rotationDeltaZ = 0;
-        this._rotationDeltaW = 1;
-        this._dollyDelta = 0;
-        this._panOffsetX = 0;
-        this._panOffsetY = 0;
-        this._panOffsetZ = 0;
-        if (this.camera.type === "orthographic") {
-            const c = this.camera as OrthographicCamera;
-            this._orthoBaseLeft = c.left;
-            this._orthoBaseRight = c.right;
-            this._orthoBaseTop = c.top;
-            this._orthoBaseBottom = c.bottom;
-            this._zoom = 1.0;
-        }
-    }
-
-    saveState(): void {
-        this._savedTarget = [this.target[0], this.target[1], this.target[2]];
-        this._savedEye = [this._eyeX, this._eyeY, this._eyeZ];
-        this._savedUp = [this._upX, this._upY, this._upZ];
-        this._savedZoom = this._zoom;
-    }
-
-    reset(): void {
-        this.target[0] = this._savedTarget[0];
-        this.target[1] = this._savedTarget[1];
-        this.target[2] = this._savedTarget[2];
-        this._eyeX = this._savedEye[0];
-        this._eyeY = this._savedEye[1];
-        this._eyeZ = this._savedEye[2];
-        this._upX = this._savedUp[0];
-        this._upY = this._savedUp[1];
-        this._upZ = this._savedUp[2];
-        this._zoom = this._savedZoom;
-        const r = Math.sqrt(this._eyeX * this._eyeX + this._eyeY * this._eyeY + this._eyeZ * this._eyeZ);
-        this._radius = Math.max(1e-9, r);
-        this._rotationDeltaX = 0;
-        this._rotationDeltaY = 0;
-        this._rotationDeltaZ = 0;
-        this._rotationDeltaW = 1;
-        this._dollyDelta = 0;
-        this._panOffsetX = 0;
-        this._panOffsetY = 0;
-        this._panOffsetZ = 0;
-    }
-
-    get distance(): number {
-        return this._radius;
-    }
-
-    set distance(value: number) {
-        const next = Math.max(1e-9, value);
-        const r = Math.sqrt(this._eyeX * this._eyeX + this._eyeY * this._eyeY + this._eyeZ * this._eyeZ);
-        if (r > 0) {
-            const s = next / r;
-            this._eyeX *= s;
-            this._eyeY *= s;
-            this._eyeZ *= s;
-        } else {
-            this._eyeX = 0;
-            this._eyeY = 0;
-            this._eyeZ = next;
-        }
-        this._radius = next;
-    }
-
-    get zoom(): number {
-        return this._zoom;
-    }
-
-    set zoom(value: number) {
-        this._zoom = value;
-    }
-
-    setTarget(x: number, y: number, z: number): this;
-    setTarget(target: [number, number, number]): this;
-    setTarget(xOrTarget: number | [number, number, number], y?: number, z?: number): this {
-        if (typeof xOrTarget === "number") {
-            this.target[0] = xOrTarget;
-            this.target[1] = y!;
-            this.target[2] = z!;
-        } else {
-            this.target[0] = xOrTarget[0];
-            this.target[1] = xOrTarget[1];
-            this.target[2] = xOrTarget[2];
-        }
-        return this;
-    }
-
-    update(dtSeconds: number = 0): void {
-        if (!this.enabled) return;
-        const dt = (dtSeconds > 0) ? dtSeconds : (1 / 60);
-        const damping = this.enableDamping ? (1 - Math.pow(1 - this.clamp(this.dampingFactor, 0, 1), dt * 60)) : 1;
-        if (this.enableRotate) {
-            if (!this.isIdentityQuat(this._rotationDeltaX, this._rotationDeltaY, this._rotationDeltaZ, this._rotationDeltaW)) {
-                const step = this.slerpIdentityToQuat(this._rotationDeltaX, this._rotationDeltaY, this._rotationDeltaZ, this._rotationDeltaW, damping);
-                this.applyRotation(step[0], step[1], step[2], step[3]);
-                const inv = this.quatInvert(step[0], step[1], step[2], step[3]);
-                const rem = this.quatMul(this._rotationDeltaX, this._rotationDeltaY, this._rotationDeltaZ, this._rotationDeltaW, inv[0], inv[1], inv[2], inv[3]);
-                this._rotationDeltaX = rem[0];
-                this._rotationDeltaY = rem[1];
-                this._rotationDeltaZ = rem[2];
-                this._rotationDeltaW = rem[3];
-                this.normalizeQuatInPlace();
-            }
-        } else {
-            this._rotationDeltaX = 0;
-            this._rotationDeltaY = 0;
-            this._rotationDeltaZ = 0;
-            this._rotationDeltaW = 1;
-        }
-        if (this.enableZoom) {
-            const dolly = this._dollyDelta * damping;
-            if (dolly !== 0) {
-                const prevRadius = this._radius;
-                const prevZoom = this._zoom;
-                if (this.camera.type === "orthographic") {
-                    this._zoom *= Math.exp(-dolly);
-                    this._zoom = this.clamp(this._zoom, this.minZoom, this.maxZoom);
-                } else {
-                    const oldR = Math.max(1e-9, this._radius);
-                    const targetR = oldR * Math.exp(dolly);
-                    const newR = this.clamp(targetR, this.minDistance, this.maxDistance);
-                    const s = newR / oldR;
-                    this._eyeX *= s;
-                    this._eyeY *= s;
-                    this._eyeZ *= s;
-                    this._radius = newR;
-                }
-                if (this.zoomOnCursor && this._zoomCursorValid) {
-                    this.applyZoomOnCursor(prevRadius, prevZoom);
-                }
-                this._dollyDelta *= (1 - damping);
-            }
-        } else {
-            this._dollyDelta = 0;
-        }
-        if (this.enablePan) {
-            this.target[0] += this._panOffsetX * damping;
-            this.target[1] += this._panOffsetY * damping;
-            this.target[2] += this._panOffsetZ * damping;
-            this._panOffsetX *= (1 - damping);
-            this._panOffsetY *= (1 - damping);
-            this._panOffsetZ *= (1 - damping);
-        } else {
-            this._panOffsetX = 0;
-            this._panOffsetY = 0;
-            this._panOffsetZ = 0;
-        }
-        const r = Math.sqrt(this._eyeX * this._eyeX + this._eyeY * this._eyeY + this._eyeZ * this._eyeZ);
-        this._radius = Math.max(1e-6, this.clamp(r, this.minDistance, this.maxDistance));
-        if (r > 0) {
-            const s = this._radius / r;
-            this._eyeX *= s;
-            this._eyeY *= s;
-            this._eyeZ *= s;
-        } else {
-            this._eyeX = 0;
-            this._eyeY = 0;
-            this._eyeZ = this._radius;
-        }
-        const px = this.target[0] + this._eyeX;
-        const py = this.target[1] + this._eyeY;
-        const pz = this.target[2] + this._eyeZ;
-        this.camera.transform.setPosition(px, py, pz);
-        this.setCameraRotationLookAtUp(px, py, pz, this.target[0], this.target[1], this.target[2], this._upX, this._upY, this._upZ);
-        if (this.camera.type === "orthographic") this.applyOrthographicZoom();
-    }
-
-    private applyRotation(qx: number, qy: number, qz: number, qw: number): void {
-        const e = this.rotateVectorByQuat(this._eyeX, this._eyeY, this._eyeZ, qx, qy, qz, qw);
-        this._eyeX = e[0];
-        this._eyeY = e[1];
-        this._eyeZ = e[2];
-        const u = this.rotateVectorByQuat(this._upX, this._upY, this._upZ, qx, qy, qz, qw);
-        const ul = Math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-        if (ul > 0) {
-            this._upX = u[0] / ul;
-            this._upY = u[1] / ul;
-            this._upZ = u[2] / ul;
-        }
-    }
-
-    private applyZoomOnCursor(prevRadius: number, prevZoom: number): void {
-        const rect = this.domElement.getBoundingClientRect();
-        const rw = Math.max(1, rect.width);
-        const rh = Math.max(1, rect.height);
-        const x01 = (this._zoomCursorClientX - rect.left) / rw;
-        const y01 = (this._zoomCursorClientY - rect.top) / rh;
+    private applyZoomOnCursor(prevRadius: number, prevZoom: number, basis: Basis3): void {
+        const rect = this.getViewportRect();
+        const x01 = (this._zoomCursorClientX - rect.left) / rect.width;
+        const y01 = (this._zoomCursorClientY - rect.top) / rect.height;
         const ndcX = (x01 * 2) - 1;
         const ndcY = 1 - (y01 * 2);
-        const basis = this.computeBasis();
-        const rx = basis[0];
-        const ry = basis[1];
-        const rz = basis[2];
-        const ux = basis[3];
-        const uy = basis[4];
-        const uz = basis[5];
         if (this.camera.type === "orthographic") {
             const baseW = this._orthoBaseRight - this._orthoBaseLeft;
             const baseH = this._orthoBaseTop - this._orthoBaseBottom;
-            const oldHalfW = (baseW / Math.max(1e-9, prevZoom)) * 0.5;
-            const newHalfW = (baseW / Math.max(1e-9, this._zoom)) * 0.5;
-            const oldHalfH = (baseH / Math.max(1e-9, prevZoom)) * 0.5;
-            const newHalfH = (baseH / Math.max(1e-9, this._zoom)) * 0.5;
-            const dx = ndcX * (oldHalfW - newHalfW);
-            const dy = ndcY * (oldHalfH - newHalfH);
-            this.target[0] += (rx * dx) + (ux * dy);
-            this.target[1] += (ry * dx) + (uy * dy);
-            this.target[2] += (rz * dx) + (uz * dy);
+            const oldHalfW = (baseW / Math.max(EPSILON, prevZoom)) * 0.5;
+            const newHalfW = (baseW / Math.max(EPSILON, this._zoom)) * 0.5;
+            const oldHalfH = (baseH / Math.max(EPSILON, prevZoom)) * 0.5;
+            const newHalfH = (baseH / Math.max(EPSILON, this._zoom)) * 0.5;
+            this.target = vec3add(this.target, vec3add(vec3scl(basis.right, ndcX * (oldHalfW - newHalfW)), vec3scl(basis.up, ndcY * (oldHalfH - newHalfH))));
             return;
         }
-        const cam = this.camera as PerspectiveCamera;
-        const fovRad = (cam.fov * Math.PI) / 180;
-        const aspect = rw / rh;
-        const tanHalfFov = Math.tan(fovRad * 0.5);
+        const camera = this.camera as PerspectiveCamera;
+        const tanHalfFov = Math.tan((camera.fov * Math.PI / 180) * 0.5);
+        const aspect = rect.width / rect.height;
         const oldHalfH = prevRadius * tanHalfFov;
         const newHalfH = this._radius * tanHalfFov;
         const oldHalfW = oldHalfH * aspect;
         const newHalfW = newHalfH * aspect;
-        const dx = ndcX * (oldHalfW - newHalfW);
-        const dy = ndcY * (oldHalfH - newHalfH);
-        this.target[0] += (rx * dx) + (ux * dy);
-        this.target[1] += (ry * dx) + (uy * dy);
-        this.target[2] += (rz * dx) + (uz * dy);
+        this.target = vec3add(this.target, vec3add(vec3scl(basis.right, ndcX * (oldHalfW - newHalfW)), vec3scl(basis.up, ndcY * (oldHalfH - newHalfH))));
     }
 
     private applyOrthographicZoom(): void {
-        const cam = this.camera as OrthographicCamera;
-        const baseW = this._orthoBaseRight - this._orthoBaseLeft;
-        const baseH = this._orthoBaseTop - this._orthoBaseBottom;
+        if (this.camera.type !== "orthographic") return;
+        const camera = this.camera as OrthographicCamera;
         const cx = (this._orthoBaseLeft + this._orthoBaseRight) * 0.5;
         const cy = (this._orthoBaseBottom + this._orthoBaseTop) * 0.5;
-        const w = baseW / this._zoom;
-        const h = baseH / this._zoom;
-        cam.left = cx - w * 0.5;
-        cam.right = cx + w * 0.5;
-        cam.bottom = cy - h * 0.5;
-        cam.top = cy + h * 0.5;
+        const width = (this._orthoBaseRight - this._orthoBaseLeft) / Math.max(EPSILON, this._zoom);
+        const height = (this._orthoBaseTop - this._orthoBaseBottom) / Math.max(EPSILON, this._zoom);
+        camera.left = cx - width * 0.5;
+        camera.right = cx + width * 0.5;
+        camera.bottom = cy - height * 0.5;
+        camera.top = cy + height * 0.5;
     }
 
-    private onPointerDown = (event: PointerEvent): void => {
-        if (!this.enabled) return;
-        if (this._pointerId !== null) return;
-        this._pointerId = event.pointerId;
-        this.domElement.setPointerCapture(this._pointerId);
-        this._pointerX = event.clientX;
-        this._pointerY = event.clientY;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        if (event.button === this.mouseButtons.rotate) this._state = "rotate";
-        else if (event.button === this.mouseButtons.pan) this._state = "pan";
-        else if (event.button === this.mouseButtons.zoom) this._state = "zoom";
-        else this._state = "none";
-        if (this._state === "rotate" && this.enableRotate) {
-            const v = this.getTrackballVector(event.clientX, event.clientY);
-            this._rotateStartX = v[0];
-            this._rotateStartY = v[1];
-            this._rotateStartZ = v[2];
-        }
-        event.preventDefault();
-    };
+    private offsetToSpherical(offset: readonly number[]): { theta: number; phi: number; } {
+        const localX = vec3dot(offset, this._axisConvention.right);
+        const localY = vec3dot(offset, this._axisConvention.up);
+        const localZ = vec3dot(offset, this._axisConvention.forward);
+        const radius = Math.max(EPSILON, Math.hypot(localX, localY, localZ));
+        return { theta: Math.atan2(localX, localZ), phi: Math.acos(clamp(localY / radius, -1, 1)) };
+    }
 
-    private onPointerMove = (event: PointerEvent): void => {
-        if (!this.enabled) return;
-        if (this._pointerId === null) return;
-        if (event.pointerId !== this._pointerId) return;
-        const dx = event.clientX - this._pointerX;
-        const dy = event.clientY - this._pointerY;
-        this._pointerX = event.clientX;
-        this._pointerY = event.clientY;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        if (dx === 0 && dy === 0) return;
-        if (this._state === "rotate" && this.enableRotate) {
-            const v = this.getTrackballVector(event.clientX, event.clientY);
-            const q = this.rotationFromTrackballDrag(this._rotateStartX, this._rotateStartY, this._rotateStartZ, v[0], v[1], v[2]);
-            if (q) {
-                const out = this.quatMul(q[0], q[1], q[2], q[3], this._rotationDeltaX, this._rotationDeltaY, this._rotationDeltaZ, this._rotationDeltaW);
-                this._rotationDeltaX = out[0];
-                this._rotationDeltaY = out[1];
-                this._rotationDeltaZ = out[2];
-                this._rotationDeltaW = out[3];
-                this.normalizeQuatInPlace();
-            }
-            this._rotateStartX = v[0];
-            this._rotateStartY = v[1];
-            this._rotateStartZ = v[2];
-        } else if (this._state === "pan" && this.enablePan) {
-            this.pan(dx, dy);
-        } else if (this._state === "zoom" && this.enableZoom) {
-            this._dollyDelta += dy * this.zoomSpeed * 0.002;
-        }
-        event.preventDefault();
-    };
+    private sphericalToOffset(theta: number, phi: number, radius: number): Vec3 {
+        const sinPhi = Math.sin(phi);
+        const x = radius * sinPhi * Math.sin(theta);
+        const y = radius * Math.cos(phi);
+        const z = radius * sinPhi * Math.cos(theta);
+        return vec3add(vec3add(vec3scl(this._axisConvention.right, x), vec3scl(this._axisConvention.up, y)), vec3scl(this._axisConvention.forward, z));
+    }
 
-    private onPointerUp = (event: PointerEvent): void => {
-        if (this._pointerId === null) return;
-        if (event.pointerId !== this._pointerId) return;
-        this.domElement.releasePointerCapture(this._pointerId);
-        this._pointerId = null;
-        this._state = "none";
-        event.preventDefault();
-    };
+    private computeLookBasis(forwardHint: readonly number[], upHint: readonly number[]): Basis3 {
+        const forward = vec3normalize(forwardHint, vec3scl(this._axisConvention.forward, -1));
+        let up = vec3normalize(upHint, this._axisConvention.up);
+        if (Math.abs(vec3dot(forward, up)) > 0.999) up = Math.abs(forward[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+        const right = vec3normalize(vec3cross(forward, up), this._axisConvention.right);
+        const correctedUp = vec3normalize(vec3cross(right, forward), up);
+        return { right, up: correctedUp, forward };
+    }
 
-    private onWheel = (event: WheelEvent): void => {
-        if (!this.enabled) return;
-        if (!this.enableZoom) return;
-        this._dollyDelta += event.deltaY * this.zoomSpeed * 0.001;
-        this._zoomCursorClientX = event.clientX;
-        this._zoomCursorClientY = event.clientY;
-        this._zoomCursorValid = true;
-        event.preventDefault();
-        event.stopPropagation();
-    };
+    private computeOrbitBasis(): Basis3 {
+        const offset = this.sphericalToOffset(this._theta, this._phi, Math.max(EPSILON, this._radius));
+        const forward = vec3normalize(vec3scl(offset, -1), vec3scl(this._axisConvention.forward, -1));
+        return this.computeLookBasis(forward, this.getOrbitUp(forward));
+    }
 
-    private onContextMenu = (event: MouseEvent): void => {
-        event.preventDefault();
-    };
+    private computeTrackballBasis(): Basis3 {
+        const forward = vec3normalize(vec3scl(this._trackballEye, -1), vec3scl(this._axisConvention.forward, -1));
+        const basis = this.computeLookBasis(forward, this._trackballUp);
+        this._trackballUp = basis.up;
+        return basis;
+    }
 
-    private getTrackballVector(clientX: number, clientY: number): [number, number, number] {
-        const rect = this.domElement.getBoundingClientRect();
-        const rw = Math.max(1, rect.width);
-        const rh = Math.max(1, rect.height);
-        const x = (((clientX - rect.left) / rw) * 2) - 1;
-        const y = 1 - (((clientY - rect.top) / rh) * 2);
-        const len2 = x * x + y * y;
-        if (len2 <= 1) {
-            const z = Math.sqrt(1 - len2);
-            return [x, y, z];
-        }
-        const inv = 1.0 / Math.sqrt(len2);
+    private getOrbitUp(forward: readonly number[]): Vec3 {
+        const alignment = vec3dot(forward, this._axisConvention.up);
+        if (alignment < -0.999) return vec3scl(this._axisConvention.forward, -1);
+        if (alignment > 0.999) return vec3clone(this._axisConvention.forward);
+        return vec3clone(this._axisConvention.up);
+    }
+
+    private getTrackballVector(clientX: number, clientY: number): Vec3 {
+        const rect = this.getViewportRect();
+        const x = (((clientX - rect.left) / rect.width) * 2) - 1;
+        const y = 1 - (((clientY - rect.top) / rect.height) * 2);
+        const len2 = (x * x) + (y * y);
+        if (len2 <= 1) return [x, y, Math.sqrt(1 - len2)];
+        const inv = 1 / Math.sqrt(len2);
         return [x * inv, y * inv, 0];
     }
 
-    private rotationFromTrackballDrag(sx: number, sy: number, sz: number, ex: number, ey: number, ez: number): [number, number, number, number] | null {
-        const dot = this.clamp((sx * ex) + (sy * ey) + (sz * ez), -1, 1);
+    private rotationFromTrackballDrag(start: readonly number[], end: readonly number[]): [number, number, number, number] | null {
+        const dot = clamp(vec3dot(start, end), -1, 1);
         let angle = Math.acos(dot);
-        if (angle <= 1e-9) return null;
+        if (angle <= EPSILON) return null;
         angle *= this.rotateSpeed;
-        let ax = (sy * ez) - (sz * ey);
-        let ay = (sz * ex) - (sx * ez);
-        let az = (sx * ey) - (sy * ex);
-        const al = Math.sqrt(ax * ax + ay * ay + az * az);
-        if (al <= 1e-9) return null;
-        ax /= al;
-        ay /= al;
-        az /= al;
-        const basis = this.computeBasis();
-        const rx = basis[0];
-        const ry = basis[1];
-        const rz = basis[2];
-        const ux = basis[3];
-        const uy = basis[4];
-        const uz = basis[5];
-        const bx = basis[6];
-        const by = basis[7];
-        const bz = basis[8];
-        let wx = (rx * ax) + (ux * ay) + (bx * az);
-        let wy = (ry * ax) + (uy * ay) + (by * az);
-        let wz = (rz * ax) + (uz * ay) + (bz * az);
-        const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
-        if (wl <= 1e-9) return null;
-        wx /= wl;
-        wy /= wl;
-        wz /= wl;
+        let axis = vec3cross(start, end);
+        const axisLength = vec3mag(axis);
+        if (axisLength <= EPSILON) return null;
+        axis = vec3scl(axis, 1 / axisLength);
+        const basis = this.computeTrackballBasis();
+        const worldAxis = vec3normalize(vec3add(vec3add(vec3scl(basis.right, axis[0]), vec3scl(basis.up, axis[1])), vec3scl(vec3scl(basis.forward, -1), axis[2])), basis.right);
         const half = angle * 0.5;
-        const s = Math.sin(half);
-        const qw = Math.cos(half);
-        const qx = wx * s;
-        const qy = wy * s;
-        const qz = wz * s;
-        return [qx, qy, qz, qw];
+        const sinHalf = Math.sin(half);
+        return [worldAxis[0] * sinHalf, worldAxis[1] * sinHalf, worldAxis[2] * sinHalf, Math.cos(half)];
     }
 
-    private pan(deltaX: number, deltaY: number): void {
-        const w = Math.max(1, this.domElement.clientWidth);
-        const h = Math.max(1, this.domElement.clientHeight);
-        const basis = this.computeBasis();
-        const rx = basis[0];
-        const ry = basis[1];
-        const rz = basis[2];
-        const ux = basis[3];
-        const uy = basis[4];
-        const uz = basis[5];
-        let panX = 0;
-        let panY = 0;
-        if (this.camera.type === "orthographic") {
-            const baseW = this._orthoBaseRight - this._orthoBaseLeft;
-            const baseH = this._orthoBaseTop - this._orthoBaseBottom;
-            const viewW = baseW / this._zoom;
-            const viewH = baseH / this._zoom;
-            panX = (deltaX * viewW / w) * this.panSpeed;
-            panY = (deltaY * viewH / h) * this.panSpeed;
-        } else {
-            const cam = this.camera as PerspectiveCamera;
-            const fovRad = (cam.fov * Math.PI) / 180;
-            const targetDistance = this._radius * Math.tan(fovRad * 0.5);
-            panX = (2 * deltaX * targetDistance / h) * this.panSpeed;
-            panY = (2 * deltaY * targetDistance / h) * this.panSpeed;
-        }
-        this._panOffsetX += (rx * -panX) + (ux * panY);
-        this._panOffsetY += (ry * -panX) + (uy * panY);
-        this._panOffsetZ += (rz * -panX) + (uz * panY);
+    private resolveBounds(source: BoundsLike | Scene): Bounds3 {
+        return normalizeBounds(source as BoundsLike);
     }
 
-    private computeBasis(): [number, number, number, number, number, number, number, number, number] {
-        let bx = this._eyeX;
-        let by = this._eyeY;
-        let bz = this._eyeZ;
-        const bl = Math.sqrt(bx * bx + by * by + bz * bz);
-        if (bl > 0) {
-            bx /= bl;
-            by /= bl;
-            bz /= bl;
-        } else {
-            bx = 0;
-            by = 0;
-            bz = 1;
+    private getInspectionViewDirection(view: InspectionView): Vec3 {
+        switch (view) {
+            case "front": return vec3clone(this._axisConvention.forward);
+            case "back": return vec3scl(this._axisConvention.forward, -1);
+            case "right": return vec3clone(this._axisConvention.right);
+            case "left": return vec3scl(this._axisConvention.right, -1);
+            case "top": return vec3clone(this._axisConvention.up);
+            case "bottom": return vec3scl(this._axisConvention.up, -1);
         }
-        let upx = this._upX;
-        let upy = this._upY;
-        let upz = this._upZ;
-        const ul = Math.sqrt(upx * upx + upy * upy + upz * upz);
-        if (ul > 0) {
-            upx /= ul;
-            upy /= ul;
-            upz /= ul;
-        } else {
-            upx = 0;
-            upy = 1;
-            upz = 0;
+    }
+
+    private getInspectionViewUp(view: InspectionView): Vec3 {
+        if (view === "top") return vec3scl(this._axisConvention.forward, -1);
+        if (view === "bottom") return vec3clone(this._axisConvention.forward);
+        return vec3clone(this._axisConvention.up);
+    }
+
+    private getCurrentViewOrientation(): { direction: Vec3; up: Vec3; } {
+        const position = vec3clone(this.camera.position);
+        const direction = vec3normalize(vec3sub(position, this.target), this._axisConvention.forward);
+        return { direction, up: vec3normalize(this.camera.up, this.getOrbitUp(vec3scl(direction, -1))) };
+    }
+
+    private solveFit(bounds: Bounds3, options: FitToBoundsOptions): FitSolveResult {
+        const padding = Math.max(1, options.padding ?? 1.1);
+        const aspect = this.getAspect(options.aspect);
+        const orientation = options.view
+            ? { direction: this.getInspectionViewDirection(options.view), up: options.up ? vec3normalize(options.up, this._axisConvention.up) : this.getInspectionViewUp(options.view) }
+            : { direction: options.eyeDirection ? vec3normalize(options.eyeDirection, this._axisConvention.forward) : this.getCurrentViewOrientation().direction, up: options.up ? vec3normalize(options.up, this._axisConvention.up) : this.getCurrentViewOrientation().up };
+        const working = options.boundsMode === "sphere"
+            ? boundsFromSphere(bounds.sphereCenter, bounds.sphereRadius * padding, bounds.partial)
+            : expandBounds(bounds, padding);
+        const basis = this.computeLookBasis(vec3scl(orientation.direction, -1), orientation.up);
+        const target = options.boundsMode === "sphere" ? vec3clone(bounds.sphereCenter) : getBoundsCenter(working);
+        if (this.camera.type === "orthographic") return this.solveFitOrthographic(working, bounds, basis, target, aspect, options.minNear);
+        return this.solveFitPerspective(working, bounds, basis, target, aspect, options.minNear);
+    }
+
+    private solveFitPerspective(working: Bounds3, sourceBounds: Bounds3, basis: Basis3, target: Vec3, aspect: number, minNear: number | undefined): FitSolveResult {
+        const corners = getBoundsCorners(working);
+        const camera = this.camera as PerspectiveCamera;
+        const tanHalfV = Math.tan((camera.fov * Math.PI / 180) * 0.5);
+        const tanHalfH = tanHalfV * Math.max(aspect, EPSILON);
+        let distance = sourceBounds.sphereRadius;
+        const zs: number[] = [];
+        for (const corner of corners) {
+            const delta = vec3sub(corner, target);
+            const x = vec3dot(delta, basis.right);
+            const y = vec3dot(delta, basis.up);
+            const z = vec3dot(delta, basis.forward);
+            zs.push(z);
+            distance = Math.max(distance, (Math.abs(x) / Math.max(tanHalfH, EPSILON)) - z, (Math.abs(y) / Math.max(tanHalfV, EPSILON)) - z);
         }
-        const dotBU = (bx * upx) + (by * upy) + (bz * upz);
-        if (Math.abs(dotBU) > 0.999) {
-            if (Math.abs(by) < 0.9) {
-                upx = 0;
-                upy = 1;
-                upz = 0;
-            } else {
-                upx = 1;
-                upy = 0;
-                upz = 0;
+        distance = Math.max(distance, sourceBounds.sphereRadius, minNear ?? 0.01);
+        const minDepth = Math.min(...zs.map((z) => distance + z));
+        const maxDepth = Math.max(...zs.map((z) => distance + z));
+        const depthPadding = Math.max(sourceBounds.sphereRadius * 0.05, 0.01);
+        return {
+            position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
+            target, up: basis.up,
+            projection: {
+                type: "perspective",
+                near: Math.max(minNear ?? 0.01, minDepth - depthPadding),
+                far: Math.max((minNear ?? 0.01) + 0.01, maxDepth + depthPadding)
             }
-        }
-        let rx = (upy * bz) - (upz * by);
-        let ry = (upz * bx) - (upx * bz);
-        let rz = (upx * by) - (upy * bx);
-        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rl > 0) {
-            rx /= rl;
-            ry /= rl;
-            rz /= rl;
-        } else {
-            rx = 1;
-            ry = 0;
-            rz = 0;
-        }
-        const ux = (by * rz) - (bz * ry);
-        const uy = (bz * rx) - (bx * rz);
-        const uz = (bx * ry) - (by * rx);
-        this._upX = ux;
-        this._upY = uy;
-        this._upZ = uz;
-        return [rx, ry, rz, ux, uy, uz, bx, by, bz];
+        };
     }
 
-    private setCameraRotationLookAtUp(px: number, py: number, pz: number, tx: number, ty: number, tz: number, upxIn: number, upyIn: number, upzIn: number): void {
-        let fx = tx - px;
-        let fy = ty - py;
-        let fz = tz - pz;
-        const fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
-        if (fl <= 0) return;
-        fx /= fl;
-        fy /= fl;
-        fz /= fl;
-        let upx = upxIn;
-        let upy = upyIn;
-        let upz = upzIn;
-        const ul = Math.sqrt(upx * upx + upy * upy + upz * upz);
-        if (ul > 0) {
-            upx /= ul;
-            upy /= ul;
-            upz /= ul;
-        } else {
-            upx = 0;
-            upy = 1;
-            upz = 0;
+    private solveFitOrthographic(working: Bounds3, sourceBounds: Bounds3, basis: Basis3, target: Vec3, aspect: number, minNear: number | undefined): FitSolveResult {
+        const corners = getBoundsCorners(working);
+        let halfWidth = 0;
+        let halfHeight = 0;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        for (const corner of corners) {
+            const delta = vec3sub(corner, target);
+            const x = vec3dot(delta, basis.right);
+            const y = vec3dot(delta, basis.up);
+            const z = vec3dot(delta, basis.forward);
+            halfWidth = Math.max(halfWidth, Math.abs(x));
+            halfHeight = Math.max(halfHeight, Math.abs(y));
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
         }
-        const dotFU = (fx * upx) + (fy * upy) + (fz * upz);
-        if (Math.abs(dotFU) > 0.999) {
-            if (Math.abs(fy) < 0.9) {
-                upx = 0;
-                upy = 1;
-                upz = 0;
-            } else {
-                upx = 1;
-                upy = 0;
-                upz = 0;
+        if (aspect >= 1) halfWidth = Math.max(halfWidth, halfHeight * aspect);
+        else halfHeight = Math.max(halfHeight, halfWidth / Math.max(aspect, EPSILON));
+        const halfDepth = Math.max(Math.abs(minZ), Math.abs(maxZ), sourceBounds.sphereRadius);
+        const distance = Math.max(halfDepth * 2 + Math.max(halfWidth, halfHeight), sourceBounds.sphereRadius * 2, 0.1);
+        const depthPadding = Math.max(sourceBounds.sphereRadius * 0.05, 0.01);
+        return {
+            position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
+            target, up: basis.up,
+            projection: {
+                type: "orthographic",
+                left: -Math.max(halfWidth, 0.01),
+                right: Math.max(halfWidth, 0.01),
+                bottom: -Math.max(halfHeight, 0.01),
+                top: Math.max(halfHeight, 0.01),
+                near: Math.max(minNear ?? 0.01, distance + minZ - depthPadding),
+                far: Math.max((minNear ?? 0.01) + 0.01, distance + maxZ + depthPadding)
             }
-        }
-        let rx = (fy * upz) - (fz * upy);
-        let ry = (fz * upx) - (fx * upz);
-        let rz = (fx * upy) - (fy * upx);
-        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (rl <= 0) return;
-        rx /= rl;
-        ry /= rl;
-        rz /= rl;
-        const ux = (ry * fz) - (rz * fy);
-        const uy = (rz * fx) - (rx * fz);
-        const uz = (rx * fy) - (ry * fx);
-        const m00 = rx;
-        const m10 = ry;
-        const m20 = rz;
-        const m01 = ux;
-        const m11 = uy;
-        const m21 = uz;
-        const m02 = -fx;
-        const m12 = -fy;
-        const m22 = -fz;
-        const trace = m00 + m11 + m22;
-        let qw: number;
-        let qx: number;
-        let qy: number;
-        let qz: number;
-        if (trace > 0) {
-            const s = 0.5 / Math.sqrt(trace + 1.0);
-            qw = 0.25 / s;
-            qx = (m21 - m12) * s;
-            qy = (m02 - m20) * s;
-            qz = (m10 - m01) * s;
-        } else if (m00 > m11 && m00 > m22) {
-            const s = 2.0 * Math.sqrt(1.0 + m00 - m11 - m22);
-            qw = (m21 - m12) / s;
-            qx = 0.25 * s;
-            qy = (m01 + m10) / s;
-            qz = (m02 + m20) / s;
-        } else if (m11 > m22) {
-            const s = 2.0 * Math.sqrt(1.0 + m11 - m00 - m22);
-            qw = (m02 - m20) / s;
-            qx = (m01 + m10) / s;
-            qy = 0.25 * s;
-            qz = (m12 + m21) / s;
-        } else {
-            const s = 2.0 * Math.sqrt(1.0 + m22 - m00 - m11);
-            qw = (m10 - m01) / s;
-            qx = (m02 + m20) / s;
-            qy = (m12 + m21) / s;
-            qz = 0.25 * s;
-        }
-        this.camera.transform.setRotation(qx, qy, qz, qw);
-        this._upX = ux;
-        this._upY = uy;
-        this._upZ = uz;
+        };
     }
+}
 
-    private rotateVectorByQuat(vx: number, vy: number, vz: number, qx: number, qy: number, qz: number, qw: number): [number, number, number] {
-        const tx = 2 * ((qy * vz) - (qz * vy));
-        const ty = 2 * ((qz * vx) - (qx * vz));
-        const tz = 2 * ((qx * vy) - (qy * vx));
-        const outX = vx + (qw * tx) + ((qy * tz) - (qz * ty));
-        const outY = vy + (qw * ty) + ((qz * tx) - (qx * tz));
-        const outZ = vz + (qw * tz) + ((qx * ty) - (qy * tx));
-        return [outX, outY, outZ];
+export class OrbitControls extends NavigationControls {
+    constructor(camera: Camera, domElement: HTMLCanvasElement, desc: OrbitControlsDescriptor = {}) {
+        super(camera, domElement, { ...desc, mode: "orbit" });
     }
+}
 
-    private quatMul(ax: number, ay: number, az: number, aw: number, bx: number, by: number, bz: number, bw: number): [number, number, number, number] {
-        const x = (aw * bx) + (ax * bw) + (ay * bz) - (az * by);
-        const y = (aw * by) - (ax * bz) + (ay * bw) + (az * bx);
-        const z = (aw * bz) + (ax * by) - (ay * bx) + (az * bw);
-        const w = (aw * bw) - (ax * bx) - (ay * by) - (az * bz);
-        return [x, y, z, w];
-    }
-
-    private quatInvert(x: number, y: number, z: number, w: number): [number, number, number, number] {
-        return [-x, -y, -z, w];
-    }
-
-    private normalizeQuatInPlace(): void {
-        const l = Math.sqrt((this._rotationDeltaX * this._rotationDeltaX) + (this._rotationDeltaY * this._rotationDeltaY) + (this._rotationDeltaZ * this._rotationDeltaZ) + (this._rotationDeltaW * this._rotationDeltaW));
-        if (l > 0) {
-            const inv = 1.0 / l;
-            this._rotationDeltaX *= inv;
-            this._rotationDeltaY *= inv;
-            this._rotationDeltaZ *= inv;
-            this._rotationDeltaW *= inv;
-        } else {
-            this._rotationDeltaX = 0;
-            this._rotationDeltaY = 0;
-            this._rotationDeltaZ = 0;
-            this._rotationDeltaW = 1;
-        }
-    }
-
-    private isIdentityQuat(x: number, y: number, z: number, w: number): boolean {
-        return (Math.abs(x) < 1e-9) && (Math.abs(y) < 1e-9) && (Math.abs(z) < 1e-9) && (Math.abs(1 - w) < 1e-9);
-    }
-
-    private slerpIdentityToQuat(x: number, y: number, z: number, w: number, t: number): [number, number, number, number] {
-        const tt = this.clamp(t, 0, 1);
-        let cosHalfTheta = this.clamp(w, -1, 1);
-        let qx = x;
-        let qy = y;
-        let qz = z;
-        let qw = w;
-        if (cosHalfTheta < 0) {
-            cosHalfTheta = -cosHalfTheta;
-            qx = -qx;
-            qy = -qy;
-            qz = -qz;
-            qw = -qw;
-        }
-        if (cosHalfTheta >= 0.9995) {
-            const ox = qx * tt;
-            const oy = qy * tt;
-            const oz = qz * tt;
-            const ow = (1 - tt) + (qw * tt);
-            const l = Math.sqrt(ox * ox + oy * oy + oz * oz + ow * ow);
-            if (l > 0) {
-                const inv = 1.0 / l;
-                return [ox * inv, oy * inv, oz * inv, ow * inv];
-            }
-            return [0, 0, 0, 1];
-        }
-        const halfTheta = Math.acos(cosHalfTheta);
-        const sinHalfTheta = Math.sqrt(1 - (cosHalfTheta * cosHalfTheta));
-        if (sinHalfTheta <= 1e-9) return [0, 0, 0, 1];
-        const a = Math.sin((1 - tt) * halfTheta) / sinHalfTheta;
-        const b = Math.sin(tt * halfTheta) / sinHalfTheta;
-        const ox = qx * b;
-        const oy = qy * b;
-        const oz = qz * b;
-        const ow = a + (qw * b);
-        return [ox, oy, oz, ow];
-    }
-
-    private clamp(x: number, min: number, max: number): number {
-        return Math.max(min, Math.min(max, x));
+export class TrackballControls extends NavigationControls {
+    constructor(camera: Camera, domElement: HTMLCanvasElement, desc: TrackballControlsDescriptor = {}) {
+        super(camera, domElement, { ...desc, mode: "trackball" });
     }
 }

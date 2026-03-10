@@ -19,8 +19,8 @@ import type { Texture2DDescriptor } from "../graphics/texture";
 import { pythonInterop } from "../python";
 import { mat4, vec3, quat, frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
-import { OrbitControls, TrackballControls } from "../world/controls";
-import type { OrbitControlsDescriptor, TrackballControlsDescriptor } from "../world/controls";
+import { NavigationControls, OrbitControls, TrackballControls } from "../world/controls";
+import type { NavigationControlsDescriptor, OrbitControlsDescriptor, TrackballControlsDescriptor } from "../world/controls";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
@@ -33,20 +33,13 @@ export type WasmGPUDescriptor = RendererDescriptor & {
     // Future options: physics, audio, etc.
 };
 
-export type FrameCallback = (dt: number, time: number, wgpu: WasmGPU) => void;
-
-export type GltfOptions = {
-    load?: LoadGltfOptions;
-    import?: ImportGltfOptions;
-};
-
 export class WasmGPU {
     private renderer: Renderer;
     readonly compute: Compute;
     private _performanceStats: PerformanceStats | null = null;
     private _isRunning: boolean = false;
     private _lastTime: number = 0;
-    private _frameCallback: FrameCallback | null = null;
+    private _frameCallback: ((dt: number, time: number, wgpu: WasmGPU) => void) | null = null;
     private _animationFrameId: number | null = null;
 
     private constructor(renderer: Renderer, desc: WasmGPUDescriptor | ComputeDescriptor) {
@@ -61,7 +54,7 @@ export class WasmGPU {
         return new WasmGPU(renderer, descriptor);
     }
 
-    run(callback: FrameCallback): void {
+    run(callback: (dt: number, time: number, wgpu: WasmGPU) => void): void {
         if (this._isRunning) return;
         this._isRunning = true;
         this._frameCallback = callback;
@@ -183,6 +176,9 @@ export class WasmGPU {
     };
 
     readonly createControls = {
+        navigation: (camera: Camera, domElement: HTMLCanvasElement, options?: NavigationControlsDescriptor): NavigationControls => {
+            return new NavigationControls(camera, domElement, options);
+        },
         orbit: (camera: Camera, domElement: HTMLCanvasElement, options?: OrbitControlsDescriptor): OrbitControls => {
             return new OrbitControls(camera, domElement, options);
         },
@@ -334,7 +330,7 @@ export class WasmGPU {
         import: async (doc: GltfDocument, options?: ImportGltfOptions): Promise<GltfImportResult> => {
             return importGltf(doc, options);
         },
-        loadAndImport: async (source: string | ArrayBuffer, options: GltfOptions = {}): Promise<GltfImportResult> => {
+        loadAndImport: async (source: string | ArrayBuffer, options: { load?: LoadGltfOptions; import?: ImportGltfOptions; } = {}): Promise<GltfImportResult> => {
             const doc = await loadGltf(source, options.load);
             return importGltf(doc, options.import);
         },

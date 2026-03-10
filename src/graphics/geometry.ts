@@ -83,6 +83,8 @@ export class Geometry {
     readonly indices: Uint32Array | null;
     readonly vertexCount: number;
     readonly indexCount: number;
+    private _boundsMin: [number, number, number];
+    private _boundsMax: [number, number, number];
     private _boundsCenter: [number, number, number];
     private _boundsRadius: number;
     private _positionBuffer: GPUBuffer | null = null;
@@ -150,6 +152,8 @@ export class Geometry {
                 if (y > maxY) maxY = y;
                 if (z > maxZ) maxZ = z;
             }
+            this._boundsMin = [minX, minY, minZ];
+            this._boundsMax = [maxX, maxY, maxZ];
             const cx = (minX + maxX) * 0.5;
             const cy = (minY + maxY) * 0.5;
             const cz = (minZ + maxZ) * 0.5;
@@ -164,6 +168,8 @@ export class Geometry {
             this._boundsCenter = [cx, cy, cz];
             this._boundsRadius = Math.sqrt(maxR2);
         } else {
+            this._boundsMin = [0, 0, 0];
+            this._boundsMax = [0, 0, 0];
             this._boundsCenter = [0, 0, 0];
             this._boundsRadius = 0;
         }
@@ -227,6 +233,14 @@ export class Geometry {
 
     get isSkinned8(): boolean {
         return this._jointsBuffer !== null && this._weightsBuffer !== null && this._joints1Buffer !== null && this._weights1Buffer !== null;
+    }
+
+    get boundsMin(): readonly [number, number, number] {
+        return this._boundsMin;
+    }
+
+    get boundsMax(): readonly [number, number, number] {
+        return this._boundsMax;
     }
 
     get boundsCenter(): readonly [number, number, number] {

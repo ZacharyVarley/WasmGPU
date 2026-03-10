@@ -4,6 +4,7 @@ import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
 import { assert } from "../utils";
 import { wasmInterop, type WasmPtr } from "../wasm";
+import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type GlyphColormap = BuiltinColormapName | "custom";
 
@@ -27,6 +28,8 @@ export type GlyphFieldDescriptor = {
     rotationsBuffer?: GPUBuffer | { buffer: GPUBuffer };
     scalesBuffer?: GPUBuffer | { buffer: GPUBuffer };
     attributesBuffer?: GPUBuffer | { buffer: GPUBuffer };
+    boundsMin?: [number, number, number];
+    boundsMax?: [number, number, number];
     boundsCenter?: [number, number, number];
     boundsRadius?: number;
     blendMode?: BlendMode;
@@ -51,15 +54,11 @@ export type GlyphFieldDescriptor = {
 const UNIFORM_FLOAT_COUNT = 44;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
-function clamp01(x: number): number {
-    return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
-function clampMin(x: number, min: number): number {
-    return x < min ? min : x;
-}
+const clampMin = (x: number, min: number): number => x < min ? min : x;
 
-function normalizeStops(stops: ReadonlyArray<Color4> | undefined | null): Color4[] {
+const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
     if (!stops || stops.length === 0) {
         return [
             [0.0, 0.0, 0.0, 1.0],
@@ -73,34 +72,32 @@ function normalizeStops(stops: ReadonlyArray<Color4> | undefined | null): Color4
         out.push([c[0], c[1], c[2], c[3]]);
     }
     return out;
-}
+};
 
-function colormapId(name: GlyphColormap): number {
-    switch (name) {
-        case "grayscale": return 0;
-        case "turbo": return 1;
-        case "viridis": return 2;
-        case "magma": return 3;
-        case "plasma": return 4;
-        case "inferno": return 5;
-        case "custom": return 6;
-    }
-}
-
-function colorModeId(mode: GlyphColorMode): number {
+const colorModeId = (mode: GlyphColorMode): number => {
     switch (mode) {
         case "rgba": return 0;
         case "scalar": return 1;
         case "solid": return 2;
     }
-}
+};
 
-function resolveBufferHandle(x: GPUBuffer | { buffer: GPUBuffer } | undefined | null): GPUBuffer | null {
+const resolveBufferHandle = (x: GPUBuffer | { buffer: GPUBuffer } | undefined | null): GPUBuffer | null => {
     if (!x) return null;
     return (x as any).buffer ? ((x as any).buffer as GPUBuffer) : (x as GPUBuffer);
-}
+};
 
-function createUvEllipsoidGeometry(latSegments: number = 8, lonSegments: number = 12): Geometry {
+const rotateVectorByQuat = (vx: number, vy: number, vz: number, qx: number, qy: number, qz: number, qw: number): [number, number, number] => {
+    const tx = 2 * ((qy * vz) - (qz * vy));
+    const ty = 2 * ((qz * vx) - (qx * vz));
+    const tz = 2 * ((qx * vy) - (qy * vx));
+    const outX = vx + (qw * tx) + ((qy * tz) - (qz * ty));
+    const outY = vy + (qw * ty) + ((qz * tx) - (qx * tz));
+    const outZ = vz + (qw * tz) + ((qx * ty) - (qy * tx));
+    return [outX, outY, outZ];
+};
+
+const createUvEllipsoidGeometry = (latSegments: number = 8, lonSegments: number = 12): Geometry => {
     const lat = Math.max(3, latSegments | 0);
     const lon = Math.max(3, lonSegments | 0);
     const positions: number[] = [];
@@ -142,9 +139,9 @@ function createUvEllipsoidGeometry(latSegments: number = 8, lonSegments: number 
         uvs: new Float32Array(uvs),
         indices: new Uint32Array(indices)
     });
-}
+};
 
-function createArrowGeometry(radialSegments: number = 12): Geometry {
+const createArrowGeometry = (radialSegments: number = 12): Geometry => {
     const seg = Math.max(3, radialSegments | 0);
     const positions: number[] = [];
     const normals: number[] = [];
@@ -268,7 +265,7 @@ function createArrowGeometry(radialSegments: number = 12): Geometry {
         uvs: new Float32Array(uvs),
         indices: new Uint32Array(indices)
     });
-}
+};
 
 let cachedEllipsoid: Geometry | null = null;
 let cachedArrow: Geometry | null = null;
@@ -291,6 +288,8 @@ export class GlyphField {
     readonly transform: Transform = new Transform();
     name: string | null = null;
     visible: boolean = true;
+    boundsMin: [number, number, number] = [0, 0, 0];
+    boundsMax: [number, number, number] = [0, 0, 0];
     blendMode: BlendMode = BlendMode.Opaque;
     cullMode: CullMode = CullMode.Back;
     depthWrite: boolean = true;
@@ -318,6 +317,7 @@ export class GlyphField {
     private _usingWasmPtrs: boolean = false;
     private _usingExternalBuffers: boolean = false;
     private _keepCPUData: boolean = false;
+    private _boundsSource: "none" | "explicit" | "computed" = "none";
     private _dataDirty: boolean = true;
     private _uniformDirty: boolean = true;
     private _colorMode: GlyphColorMode = "rgba";
@@ -336,8 +336,7 @@ export class GlyphField {
         if (desc.visible !== undefined) this.visible = !!desc.visible;
         this.shape = desc.shape ?? "ellipsoid";
         this.geometry = desc.geometry ?? defaultGlyphGeometry(this.shape);
-        if (desc.boundsCenter) this.boundsCenter = [desc.boundsCenter[0], desc.boundsCenter[1], desc.boundsCenter[2]];
-        if (desc.boundsRadius !== undefined) this.boundsRadius = desc.boundsRadius;
+        this.applyExplicitBounds(desc);
         if (desc.blendMode !== undefined) this.blendMode = desc.blendMode;
         if (desc.cullMode !== undefined) this.cullMode = desc.cullMode;
         if (desc.depthWrite !== undefined) this.depthWrite = !!desc.depthWrite;
@@ -373,6 +372,38 @@ export class GlyphField {
             this._instanceCount = desc.instanceCount | 0;
             this._dataDirty = false;
         }
+    }
+
+    private applyExplicitBounds(desc: GlyphFieldDescriptor): void {
+        if (desc.boundsMin && desc.boundsMax) {
+            const bounds = boundsFromBox(desc.boundsMin, desc.boundsMax);
+            this.setBounds(bounds, "explicit");
+            if (desc.boundsCenter) this.boundsCenter = [desc.boundsCenter[0], desc.boundsCenter[1], desc.boundsCenter[2]];
+            if (desc.boundsRadius !== undefined) this.boundsRadius = Math.max(0, desc.boundsRadius);
+            return;
+        }
+        if (desc.boundsCenter || desc.boundsRadius !== undefined) {
+            const center = desc.boundsCenter ?? [0, 0, 0];
+            const radius = desc.boundsRadius ?? 0;
+            this.setBounds(boundsFromSphere(center, radius), "explicit");
+        }
+    }
+
+    private setBounds(bounds: Bounds3, source: "none" | "explicit" | "computed"): void {
+        this.boundsMin = [bounds.boxMin[0], bounds.boxMin[1], bounds.boxMin[2]];
+        this.boundsMax = [bounds.boxMax[0], bounds.boxMax[1], bounds.boxMax[2]];
+        this.boundsCenter = [bounds.sphereCenter[0], bounds.sphereCenter[1], bounds.sphereCenter[2]];
+        this.boundsRadius = bounds.sphereRadius;
+        this._boundsSource = source;
+    }
+
+    private clearComputedBoundsIfNeeded(): void {
+        if (this._boundsSource !== "computed") return;
+        this._boundsSource = "none";
+        this.boundsMin = [0, 0, 0];
+        this.boundsMax = [0, 0, 0];
+        this.boundsCenter = [0, 0, 0];
+        this.boundsRadius = 0;
     }
 
     get instanceCount(): number {
@@ -532,6 +563,7 @@ export class GlyphField {
         this._usingWasmPtrs = false;
         this._usingExternalBuffers = false;
         this._keepCPUData = opts.keepCPUData ?? this._keepCPUData;
+        this.clearComputedBoundsIfNeeded();
         this._dataDirty = true;
         this.bindGroupKey = null;
     }
@@ -550,6 +582,7 @@ export class GlyphField {
         this._attributesPtr = attributesPtr >>> 0;
         this._usingWasmPtrs = true;
         this._usingExternalBuffers = false;
+        this.clearComputedBoundsIfNeeded();
         this._dataDirty = true;
         this.bindGroupKey = null;
     }
@@ -572,8 +605,62 @@ export class GlyphField {
         this._attributesPtr = 0;
         this._usingWasmPtrs = false;
         this._usingExternalBuffers = true;
+        this.clearComputedBoundsIfNeeded();
         this._dataDirty = false;
         this.bindGroupKey = null;
+    }
+
+    computeBoundsFromCPUData(): void {
+        const positions = this._positionsCPU;
+        const scales = this._scalesCPU;
+        const count = this._instanceCount;
+        if (!positions || !scales || count <= 0) return;
+        const center = this.geometry.boundsCenter;
+        const radius = this.geometry.boundsRadius;
+        const rotations = this._rotationsCPU;
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (let i = 0; i < count; i++) {
+            const po = i * 4;
+            const sx = Math.abs(scales[po + 0]);
+            const sy = Math.abs(scales[po + 1]);
+            const sz = Math.abs(scales[po + 2]);
+            let cx = center[0] * sx;
+            let cy = center[1] * sy;
+            let cz = center[2] * sz;
+            if (rotations) {
+                const ro = i * 4;
+                const rotated = rotateVectorByQuat(cx, cy, cz, rotations[ro + 0], rotations[ro + 1], rotations[ro + 2], rotations[ro + 3]);
+                cx = rotated[0];
+                cy = rotated[1];
+                cz = rotated[2];
+            }
+            const wx = positions[po + 0] + cx;
+            const wy = positions[po + 1] + cy;
+            const wz = positions[po + 2] + cz;
+            const r = radius * Math.max(sx, sy, sz);
+            if (wx - r < minX) minX = wx - r;
+            if (wy - r < minY) minY = wy - r;
+            if (wz - r < minZ) minZ = wz - r;
+            if (wx + r > maxX) maxX = wx + r;
+            if (wy + r > maxY) maxY = wy + r;
+            if (wz + r > maxZ) maxZ = wz + r;
+        }
+        this.setBounds(boundsFromBox([minX, minY, minZ], [maxX, maxY, maxZ]), "computed");
+    }
+
+    getLocalBounds(): Bounds3 {
+        if (this._boundsSource === "none" && this._positionsCPU && this._scalesCPU) this.computeBoundsFromCPUData();
+        if (this._boundsSource === "none") return emptyBounds(this._instanceCount > 0);
+        return boundsFromBox(this.boundsMin, this.boundsMax);
+    }
+
+    getWorldBounds(): Bounds3 {
+        return transformBounds(this.getLocalBounds(), this.transform.worldMatrix);
+    }
+
+    getBounds(): Bounds3 {
+        return this.getWorldBounds();
     }
 
     upload(device: GPUDevice, queue: GPUQueue): void {

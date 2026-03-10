@@ -2,6 +2,7 @@ import { Geometry } from "../graphics/geometry";
 import { Material } from "../graphics/material";
 import { SkinInstance } from "../graphics/animation";
 import { Transform } from "../core/transform";
+import { Bounds3, boundsFromBoxAndSphere, transformBounds } from "./bounds";
 
 export class Mesh {
     readonly geometry: Geometry;
@@ -61,6 +62,18 @@ export class Mesh {
 
     get worldMatrix(): number[] {
         return this.transform.worldMatrix;
+    }
+
+    getLocalBounds(): Bounds3 {
+        return boundsFromBoxAndSphere(this.geometry.boundsMin, this.geometry.boundsMax, this.geometry.boundsCenter, this.geometry.boundsRadius);
+    }
+
+    getWorldBounds(): Bounds3 {
+        return transformBounds(this.getLocalBounds(), this.transform.worldMatrix);
+    }
+
+    getBounds(): Bounds3 {
+        return this.getWorldBounds();
     }
 
     destroy(): void {

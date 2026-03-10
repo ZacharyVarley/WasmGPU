@@ -1,5 +1,5 @@
 export { WasmGPU } from "./core/engine";
-export type { WasmGPUDescriptor, FrameCallback } from "./core/engine";
+export type { WasmGPUDescriptor } from "./core/engine";
 export { Renderer } from "./core/renderer";
 export type { RendererDescriptor } from "./core/renderer";
 export { PerformanceStats } from "./core/stats";
@@ -22,10 +22,12 @@ export { pythonInterop } from "./python";
 export type { NdarrayTransfer, PyBufferLike, PyProxyLike, PythonArraySource, ReceiveNdarrayOptions, SendNdarrayOptions, WasmNdarrayHandle } from "./python";
 export { initWebAssembly, wasm, frameArena, wasmInterop, WasmSlice, WasmHeapArena, mat4, quat, vec3, cullf, frustumf, ndarrayf } from "./wasm";
 export type { WasmSliceHandle, WasmSliceKind, WasmSliceDType, WasmTypedArrayConstructor } from "./wasm";
+export type { Bounds3, BoundsProvider, BoundsLike, Vec3 as BoundsVec3 } from "./world/bounds";
+export { emptyBounds, cloneBounds, boundsFromBox, boundsFromSphere, boundsFromBoxAndSphere, normalizeBounds, unionBounds, getBoundsCenter, getBoundsSize, expandBounds, getBoundsCorners, transformBounds } from "./world/bounds";
 export { Camera, PerspectiveCamera, OrthographicCamera } from "./world/camera";
 export type { CameraType, PerspectiveCameraDescriptor, OrthographicCameraDescriptor } from "./world/camera";
-export { OrbitControls, TrackballControls } from "./world/controls";
-export type { OrbitControlsDescriptor, TrackballControlsDescriptor } from "./world/controls";
+export { NavigationControls, OrbitControls, TrackballControls, AxisConventions } from "./world/controls";
+export type { NavigationMode, InspectionView, NavigationControlsMouseButtons, OrbitControlsMouseButtons, TrackballControlsMouseButtons, NavigationControlsDescriptor, OrbitControlsDescriptor, TrackballControlsDescriptor, AxisConventionDescriptor, AxisConventionPreset, AxisConventionInput, FitToBoundsOptions, SetViewOptions } from "./world/controls";
 export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light";
 export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
 export { Mesh } from "./world/mesh";
@@ -34,5 +36,5 @@ export type { PointCloudDescriptor, PointCloudColormap } from "./world/pointclou
 export { GlyphField } from "./world/glyphfield";
 export type { GlyphFieldDescriptor, GlyphShape, GlyphColorMode, GlyphColormap } from "./world/glyphfield";
 export { Scene } from "./world/scene";
-export type { SceneDescriptor } from "./world/scene";
+export type { SceneDescriptor, SceneBoundsOptions } from "./world/scene";
 export { WasmGPU as default } from "./core/engine";

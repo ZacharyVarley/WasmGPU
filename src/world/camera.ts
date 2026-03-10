@@ -35,15 +35,26 @@ export abstract class Camera {
         return this.transform.worldPosition;
     }
 
+    get up(): [number, number, number] {
+        const m = this.transform.worldMatrix;
+        return [m[4], m[5], m[6]];
+    }
+
     lookAt(x: number, y: number, z: number): this;
     lookAt(target: number[]): this;
     lookAt(xOrTarget: number | number[], y?: number, z?: number): this {
         const target = typeof xOrTarget === "number" ? [xOrTarget, y!, z!] : xOrTarget;
+        return this.lookAtWithUp(target, [0, 1, 0]);
+    }
+
+    lookAtWithUp(target: readonly number[], up: readonly number[]): this {
         const eye = this.transform.worldPosition;
-        const up = [0, 1, 0];
-        const forward = vec3.normalize(vec3.sub(target, eye));
-        let upVec = up;
-        if (Math.abs(vec3.dot(forward, up)) > 0.999) upVec = [0, 0, 1];
+        const forward = vec3.normalize(vec3.sub(target as number[], eye));
+        let upVec = [up[0], up[1], up[2]];
+        if (Math.abs(vec3.dot(forward, upVec)) > 0.999) {
+            if (Math.abs(forward[1]) < 0.9) upVec = [0, 1, 0];
+            else upVec = [1, 0, 0];
+        }
         const right = vec3.normalize(vec3.cross(forward, upVec));
         const correctedUp = vec3.cross(right, forward);
         const lookMatrix = [
@@ -52,12 +63,12 @@ export abstract class Camera {
             -forward[0], -forward[1], -forward[2], 0,
             0, 0, 0, 1
         ];
-        const quat = this.matrixToQuaternion(lookMatrix);
+        const quat = Camera.matrixToQuaternion(lookMatrix);
         this.transform.setRotation(quat[0], quat[1], quat[2], quat[3]);
         return this;
     }
 
-    private matrixToQuaternion(m: number[]): number[] {
+    protected static matrixToQuaternion(m: number[]): number[] {
         const trace = m[0] + m[5] + m[10];
         let qw: number, qx: number, qy: number, qz: number;
         if (trace > 0) {

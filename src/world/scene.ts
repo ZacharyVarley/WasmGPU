@@ -3,9 +3,14 @@ import { PointCloud } from "./pointcloud";
 import { GlyphField } from "./glyphfield";
 import { Color } from "../graphics/material";
 import { Light, AmbientLight } from "./light";
+import { Bounds3, emptyBounds, unionBounds } from "./bounds";
 
 export type SceneDescriptor = {
     background?: Color;
+};
+
+export type SceneBoundsOptions = {
+    visibleOnly?: boolean;
 };
 
 export class Scene {
@@ -167,6 +172,25 @@ export class Scene {
         const ambient = this.getAmbientColor();
         const lights = this.enabledLights.filter(l => l.type !== "ambient").slice(0, Scene.MAX_LIGHTS);
         return { ambient, lights };
+    }
+
+    getBounds(options: SceneBoundsOptions = {}): Bounds3 {
+        const visibleOnly = options.visibleOnly ?? true;
+        let aggregated = emptyBounds(false);
+        const addBounds = (bounds: Bounds3): void => {
+            if (bounds.empty) {
+                if (bounds.partial) aggregated.partial = true;
+                return;
+            }
+            aggregated = unionBounds(aggregated, bounds);
+        };
+        const meshes = visibleOnly ? this.visibleMeshes : this._meshes;
+        const clouds = visibleOnly ? this.visiblePointClouds : this._pointClouds;
+        const glyphs = visibleOnly ? this.visibleGlyphFields : this._glyphFields;
+        for (const mesh of meshes) addBounds(mesh.getWorldBounds());
+        for (const pointCloud of clouds) addBounds(pointCloud.getWorldBounds());
+        for (const glyphField of glyphs) addBounds(glyphField.getWorldBounds());
+        return aggregated;
     }
 
     traverse(callback: (mesh: Mesh) => void): void {

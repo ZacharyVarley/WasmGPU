@@ -2,6 +2,7 @@ import { Transform } from "../core/transform";
 import { BlendMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { assert, createBuffer } from "../utils";
+import { Bounds3, boundsFromBox, boundsFromBoxAndSphere, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type PointCloudColormap = BuiltinColormapName | "custom";
 
@@ -9,6 +10,8 @@ export type PointCloudDescriptor = {
     data?: Float32Array;
     pointsBuffer?: GPUBuffer | { buffer: GPUBuffer };
     pointCount?: number;
+    boundsMin?: [number, number, number];
+    boundsMax?: [number, number, number];
     boundsCenter?: [number, number, number];
     boundsRadius?: number;
     blendMode?: BlendMode;
@@ -34,15 +37,13 @@ export type PointCloudDescriptor = {
 const UNIFORM_FLOAT_COUNT = 44;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
-function clamp01(x: number): number {
-    return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+type BoundsSourceMode = "none" | "explicit" | "computed";
 
-function clampMin(x: number, min: number): number {
-    return x < min ? min : x;
-}
+const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
-function normalizeStops(stops: ReadonlyArray<Color4> | undefined | null): Color4[] {
+const clampMin = (x: number, min: number): number => x < min ? min : x;
+
+const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
     if (!stops || stops.length === 0) {
         return [
             [0.0, 0.0, 0.0, 1.0],
@@ -56,9 +57,9 @@ function normalizeStops(stops: ReadonlyArray<Color4> | undefined | null): Color4
         out.push([c[0], c[1], c[2], c[3]]);
     }
     return out;
-}
+};
 
-function colormapId(name: PointCloudColormap): number {
+const colormapId = (name: PointCloudColormap): number => {
     switch (name) {
         case "grayscale": return 0;
         case "turbo": return 1;
@@ -74,6 +75,8 @@ export class PointCloud {
     readonly transform: Transform = new Transform();
     name: string | null = null;
     visible: boolean = true;
+    boundsMin: [number, number, number] = [0, 0, 0];
+    boundsMax: [number, number, number] = [0, 0, 0];
     boundsCenter: [number, number, number] = [0, 0, 0];
     boundsRadius: number = 0;
     blendMode: BlendMode = BlendMode.Additive;
@@ -93,6 +96,7 @@ export class PointCloud {
     private _softness: number = 0.15;
     private _CPUData: Float32Array | null = null;
     private _keepCPUData: boolean = false;
+    private _boundsSource: BoundsSourceMode = "none";
     pointsBuffer: GPUBuffer | null = null;
     uniformBuffer: GPUBuffer | null = null;
     bindGroup: GPUBindGroup | null = null;
@@ -104,8 +108,6 @@ export class PointCloud {
     constructor(desc: PointCloudDescriptor = {}) {
         if (desc.name !== undefined) this.name = desc.name;
         if (desc.visible !== undefined) this.visible = !!desc.visible;
-        if (desc.boundsCenter) this.boundsCenter = [desc.boundsCenter[0], desc.boundsCenter[1], desc.boundsCenter[2]];
-        if (desc.boundsRadius !== undefined) this.boundsRadius = desc.boundsRadius;
         if (desc.blendMode !== undefined) this.blendMode = desc.blendMode;
         if (desc.depthWrite !== undefined) this.depthWrite = !!desc.depthWrite;
         if (desc.depthTest !== undefined) this.depthTest = !!desc.depthTest;
@@ -122,10 +124,11 @@ export class PointCloud {
         if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
         if (desc.softness !== undefined) this._softness = desc.softness;
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
+        this.applyExplicitBounds(desc);
         if (desc.data) {
             this.setData(desc.data, { keepCPUData: this._keepCPUData });
         } else if (desc.pointsBuffer) {
-            const buf = (desc.pointsBuffer as any).buffer ? (desc.pointsBuffer as any).buffer as GPUBuffer : (desc.pointsBuffer as GPUBuffer);
+            const buf = (desc.pointsBuffer as { buffer?: GPUBuffer }).buffer ? (desc.pointsBuffer as { buffer: GPUBuffer }).buffer : (desc.pointsBuffer as GPUBuffer);
             const count = desc.pointCount ?? 0;
             assert(count > 0, "PointCloud: pointCount is required when using pointsBuffer.");
             this.setPointsBuffer(buf, count);
@@ -133,6 +136,38 @@ export class PointCloud {
             this._pointCount = desc.pointCount;
             this._pointsDirty = false;
         }
+    }
+
+    private applyExplicitBounds(desc: PointCloudDescriptor): void {
+        if (desc.boundsMin && desc.boundsMax) {
+            const bounds = boundsFromBox(desc.boundsMin, desc.boundsMax);
+            this.setBounds(bounds, "explicit");
+            if (desc.boundsCenter) this.boundsCenter = [desc.boundsCenter[0], desc.boundsCenter[1], desc.boundsCenter[2]];
+            if (desc.boundsRadius !== undefined) this.boundsRadius = Math.max(0, desc.boundsRadius);
+            return;
+        }
+        if (desc.boundsCenter || desc.boundsRadius !== undefined) {
+            const center = desc.boundsCenter ?? [0, 0, 0];
+            const radius = desc.boundsRadius ?? 0;
+            this.setBounds(boundsFromSphere(center, radius), "explicit");
+        }
+    }
+
+    private setBounds(bounds: Bounds3, source: BoundsSourceMode): void {
+        this.boundsMin = [bounds.boxMin[0], bounds.boxMin[1], bounds.boxMin[2]];
+        this.boundsMax = [bounds.boxMax[0], bounds.boxMax[1], bounds.boxMax[2]];
+        this.boundsCenter = [bounds.sphereCenter[0], bounds.sphereCenter[1], bounds.sphereCenter[2]];
+        this.boundsRadius = bounds.sphereRadius;
+        this._boundsSource = source;
+    }
+
+    private clearComputedBoundsIfNeeded(): void {
+        if (this._boundsSource !== "computed") return;
+        this._boundsSource = "none";
+        this.boundsMin = [0, 0, 0];
+        this.boundsMax = [0, 0, 0];
+        this.boundsCenter = [0, 0, 0];
+        this.boundsRadius = 0;
     }
 
     get pointCount(): number {
@@ -276,6 +311,7 @@ export class PointCloud {
         this._pointCount = data.length / 4;
         this._pointsDirty = true;
         this._keepCPUData = opts.keepCPUData ?? this._keepCPUData;
+        this.clearComputedBoundsIfNeeded();
     }
 
     setPointsBuffer(buffer: GPUBuffer, pointCount: number): void {
@@ -285,6 +321,7 @@ export class PointCloud {
         this.pointsBuffer = buffer;
         this._pointsDirty = false;
         this.bindGroupKey = null;
+        this.clearComputedBoundsIfNeeded();
     }
 
     dropCPUData(): void {
@@ -319,8 +356,7 @@ export class PointCloud {
             const d2 = dx * dx + dy * dy + dz * dz;
             if (d2 > r2) r2 = d2;
         }
-        this.boundsCenter = [cx, cy, cz];
-        this.boundsRadius = Math.sqrt(r2);
+        this.setBounds(boundsFromBoxAndSphere([minX, minY, minZ], [maxX, maxY, maxZ], [cx, cy, cz], Math.sqrt(r2)), "computed");
     }
 
     computeScalarRangeFromCPUData(): void {
@@ -336,6 +372,20 @@ export class PointCloud {
         this._scalarMin = minS;
         this._scalarMax = maxS;
         this._uniformDirty = true;
+    }
+
+    getLocalBounds(): Bounds3 {
+        if (this._boundsSource === "none" && this._CPUData) this.computeBoundsFromCPUData();
+        if (this._boundsSource === "none") return emptyBounds(this._pointCount > 0);
+        return boundsFromBoxAndSphere(this.boundsMin, this.boundsMax, this.boundsCenter, this.boundsRadius);
+    }
+
+    getWorldBounds(): Bounds3 {
+        return transformBounds(this.getLocalBounds(), this.transform.worldMatrix);
+    }
+
+    getBounds(): Bounds3 {
+        return this.getWorldBounds();
     }
 
     upload(device: GPUDevice, queue: GPUQueue): void {
@@ -417,5 +467,6 @@ export class PointCloud {
         this.bindGroupKey = null;
         this._CPUData = null;
         this._pointCount = 0;
+        this.transform.dispose();
     }
 }
