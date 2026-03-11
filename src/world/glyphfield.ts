@@ -1,4 +1,4 @@
-import { Transform } from "../core/transform";
+﻿import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
@@ -49,6 +49,7 @@ export type GlyphFieldDescriptor = {
     visible?: boolean;
     name?: string;
     keepCPUData?: boolean;
+    ndShape?: number[];
 };
 
 const UNIFORM_FLOAT_COUNT = 44;
@@ -57,6 +58,30 @@ const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
 const clampMin = (x: number, min: number): number => x < min ? min : x;
+
+const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
+    if (!shape) return null;
+    const out: number[] = [];
+    for (let i = 0; i < shape.length; i++) {
+        const d = shape[i] as number;
+        assert(Number.isInteger(d) && d > 0, `GlyphField: ndShape[${i}] must be an integer > 0.`);
+        out.push(d | 0);
+    }
+    return out.length > 0 ? out : null;
+};
+
+const linearIndexToNdIndex = (shape: ReadonlyArray<number> | null, index: number): number[] | null => {
+    if (!shape || shape.length === 0) return null;
+    if (!Number.isInteger(index) || index < 0) return null;
+    let remaining = index | 0;
+    const out = new Array(shape.length);
+    for (let i = shape.length - 1; i >= 0; i--) {
+        const dim = shape[i]!;
+        out[i] = remaining % dim;
+        remaining = Math.floor(remaining / dim);
+    }
+    return remaining === 0 ? out : null;
+};
 
 const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
     if (!stops || stops.length === 0) {
@@ -317,6 +342,7 @@ export class GlyphField {
     private _usingWasmPtrs: boolean = false;
     private _usingExternalBuffers: boolean = false;
     private _keepCPUData: boolean = false;
+    private _ndShape: number[] | null = null;
     private _boundsSource: "none" | "explicit" | "computed" = "none";
     private _dataDirty: boolean = true;
     private _uniformDirty: boolean = true;
@@ -352,6 +378,7 @@ export class GlyphField {
         if (desc.lit !== undefined) this._lit = !!desc.lit;
         if (desc.solidColor !== undefined) this._solidColor = [desc.solidColor[0], desc.solidColor[1], desc.solidColor[2], desc.solidColor[3]];
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
+        if (desc.ndShape !== undefined) this.ndShape = desc.ndShape;
         const positionsBuffer = resolveBufferHandle(desc.positionsBuffer);
         const rotationsBuffer = resolveBufferHandle(desc.rotationsBuffer);
         const scalesBuffer = resolveBufferHandle(desc.scalesBuffer);
@@ -408,6 +435,14 @@ export class GlyphField {
 
     get instanceCount(): number {
         return this._instanceCount;
+    }
+
+    get ndShape(): number[] | null {
+        return this._ndShape ? this._ndShape.slice() : null;
+    }
+
+    set ndShape(shape: ReadonlyArray<number> | null) {
+        this._ndShape = normalizeNdShape(shape);
     }
 
     set instanceCount(v: number) {
@@ -537,6 +572,18 @@ export class GlyphField {
 
     markUniformsDirty(): void {
         this._uniformDirty = true;
+    }
+
+    getAttributeRecord(index: number): [number, number, number, number] | null {
+        const data = this._attributesCPU;
+        if (!data) return null;
+        if (!Number.isInteger(index) || index < 0 || index >= this._instanceCount) return null;
+        const o = index * 4;
+        return [data[o + 0], data[o + 1], data[o + 2], data[o + 3]];
+    }
+
+    mapLinearIndexToNd(index: number): number[] | null {
+        return linearIndexToNdIndex(this._ndShape, index);
     }
 
     setCPUData(positions: Float32Array | null, rotations: Float32Array | null, scales: Float32Array | null, attributes: Float32Array | null, opts: { keepCPUData?: boolean; instanceCount?: number } = {}): void {
@@ -759,6 +806,7 @@ export class GlyphField {
         this._rotationsCPU = null;
         this._scalesCPU = null;
         this._attributesCPU = null;
+        this._ndShape = null;
         this._instanceCount = 0;
         this.transform.dispose();
     }

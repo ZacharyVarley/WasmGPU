@@ -3,14 +3,14 @@
 @group(1) @binding(2) var<storage, read> scales: array<vec4<f32>>;
 @group(1) @binding(3) var<storage, read> attributes: array<vec4<f32>>;
 
-struct GlyphUniforms {
+struct GlyphFieldUniforms {
     scalarParams: vec4<f32>,
     options: vec4<f32>,
     lightingParams: vec4<f32>,
     colors: array<vec4<f32>, 8>
 };
 
-@group(1) @binding(4) var<uniform> glyph: GlyphUniforms;
+@group(1) @binding(4) var<uniform> glyph: GlyphFieldUniforms;
 @group(1) @binding(5) var colormapSampler: sampler;
 @group(1) @binding(6) var colormapTex: texture_1d<f32>;
 

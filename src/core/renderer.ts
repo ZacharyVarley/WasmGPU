@@ -1,16 +1,22 @@
-import { Transform, TransformStore } from "./transform";
+﻿import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
 import { DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
+import type { PickQuery } from "../world/picking";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
-import { animf, cullf, frameArena, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
+import { animf, cullf, frameArena, mat4, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
 import glyphFieldWGSL from "../wgsl/world/glyphfield.wgsl";
+import pickMeshWGSL from "../wgsl/core/picking-mesh.wgsl";
+import pickMeshSkinnedWGSL from "../wgsl/core/picking-mesh-skinned.wgsl";
+import pickMeshSkinned8WGSL from "../wgsl/core/picking-mesh-skinned8.wgsl";
+import pickPointCloudWGSL from "../wgsl/world/picking-pointcloud.wgsl";
+import pickGlyphFieldWGSL from "../wgsl/world/picking-glyphfield.wgsl";
 import { createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -52,6 +58,29 @@ type GlyphDrawItem = {
 };
 
 type TransparentDrawItem = DrawItem | PointCloudDrawItem | GlyphDrawItem;
+
+export type RendererPickHit =
+    | {
+        kind: "mesh";
+        object: Mesh;
+        objectId: number;
+        elementIndex: number;
+        worldPosition: [number, number, number];
+    }
+    | {
+        kind: "pointcloud";
+        object: PointCloud;
+        objectId: number;
+        elementIndex: number;
+        worldPosition: [number, number, number];
+    }
+    | {
+        kind: "glyphfield";
+        object: GlyphField;
+        objectId: number;
+        elementIndex: number;
+        worldPosition: [number, number, number];
+    };
 
 export class Renderer {
     readonly canvas: HTMLCanvasElement;
@@ -116,6 +145,7 @@ export class Renderer {
     private transparentMergedDrawList: TransparentDrawItem[] = [];
     private cullPointCloudScratch: PointCloud[] = [];
     private objectIds: WeakMap<object, number> = new WeakMap();
+    private objectsById: Map<number, object> = new Map();
     private nextObjectId: number = 1;
     private cameraUniformStagingPtr!: WasmPtr;
     private lightingUniformStagingPtr!: WasmPtr;
@@ -150,7 +180,18 @@ export class Renderer {
     private gpuResultPending: boolean = false;
     private _gpuTimeNs: number | null = null;
     private dataMaterialDummyDataBuffer: GPUBuffer | null = null;
-
+    private pickBindGroupLayout: GPUBindGroupLayout | null = null;
+    private pickUniformBuffers: GPUBuffer[] = [];
+    private pickBindGroups: GPUBindGroup[] = [];
+    private pickIdTexture: GPUTexture | null = null;
+    private pickIdView: GPUTextureView | null = null;
+    private pickDepthTexture: GPUTexture | null = null;
+    private pickDepthView: GPUTextureView | null = null;
+    private pickDepthPayloadTexture: GPUTexture | null = null;
+    private pickDepthPayloadView: GPUTextureView | null = null;
+    private pickIdReadbackBuffer: GPUBuffer | null = null;
+    private pickDepthReadbackBuffer: GPUBuffer | null = null;
+    private pickTail: Promise<RendererPickHit | null> = Promise.resolve(null);
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
     }
@@ -276,6 +317,7 @@ export class Renderer {
         this.depthTexture = createDepthTexture(this.device, this.width, this.height);
         this.depthView = this.depthTexture.createView();
         if (this.smaaEnabled) this.resizeSmaaTargets();
+        this.resizePickTargets();
     }
 
     get aspectRatio(): number {
@@ -305,6 +347,7 @@ export class Renderer {
         if (id !== undefined) return id;
         id = this.nextObjectId++;
         this.objectIds.set(obj, id);
+        this.objectsById.set(id, obj);
         return id;
     }
 
@@ -450,6 +493,135 @@ export class Renderer {
         this.tryReadGpuTiming();
     }
 
+
+    pick(scene: Scene, camera: Camera, x: number, y: number, _opts: PickQuery = {}): Promise<RendererPickHit | null> {
+        const run = () => this.runPick(scene, camera, x, y);
+        this.pickTail = this.pickTail.then(run, run);
+        return this.pickTail;
+    }
+
+    private async runPick(scene: Scene, camera: Camera, x: number, y: number): Promise<RendererPickHit | null> {
+        frameArena.reset();
+        this.resize();
+        const clientW = Math.max(1, this.canvas.clientWidth || this.width);
+        const clientH = Math.max(1, this.canvas.clientHeight || this.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        if (x < 0 || y < 0 || x >= clientW || y >= clientH) return null;
+        const px = Math.min(this.width - 1, Math.max(0, Math.floor((x / clientW) * this.width)));
+        const py = Math.min(this.height - 1, Math.max(0, Math.floor((y / clientH) * this.height)));
+        this.modelBufferIndex = 0;
+        this.instanceBufferOffset = 0;
+        this.cameraUniformStagingPtr = frameArena.allocF32(20);
+        this.lightingUniformStagingPtr = frameArena.allocF32(104);
+        this.modelUniformStagingPtr = frameArena.allocF32(32);
+        if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
+        Transform.updateAll();
+        this.writeCameraUniforms(camera);
+        this.writeLightingUniforms(scene);
+        this.buildDrawLists(scene, camera);
+        this.buildPointCloudDrawLists(scene, camera);
+        this.buildGlyphFieldDrawLists(scene, camera);
+        if (!this.pickIdView || !this.pickDepthView || !this.pickDepthPayloadView) this.resizePickTargets();
+        this.ensurePickReadbackBuffers();
+        if (!this.pickIdTexture || !this.pickDepthPayloadTexture || !this.pickIdReadbackBuffer || !this.pickDepthReadbackBuffer) return null;
+        if (this.pickIdReadbackBuffer.mapState !== "unmapped") {
+            try { this.pickIdReadbackBuffer.unmap(); } catch { /* ignore */ }
+        }
+        if (this.pickDepthReadbackBuffer.mapState !== "unmapped") {
+            try { this.pickDepthReadbackBuffer.unmap(); } catch { /* ignore */ }
+        }
+        const encoder = this.device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [
+                {
+                    view: this.pickIdView!,
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                },
+                {
+                    view: this.pickDepthPayloadView!,
+                    clearValue: { r: 1, g: 0, b: 0, a: 0 },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }
+            ],
+            depthStencilAttachment: {
+                view: this.pickDepthView!,
+                depthClearValue: 1.0,
+                depthLoadOp: "clear",
+                depthStoreOp: "store"
+            }
+        });
+        this.executeMeshPickDrawList(pass, this.opaqueDrawList);
+        this.executeMeshPickDrawList(pass, this.transparentDrawList);
+        this.executeGlyphPickDrawList(pass, this.opaqueGlyphFieldDrawList);
+        this.executeGlyphPickDrawList(pass, this.transparentGlyphFieldDrawList);
+        this.executePointCloudPickDrawList(pass, this.opaquePointCloudDrawList);
+        this.executePointCloudPickDrawList(pass, this.transparentPointCloudDrawList);
+        pass.end();
+        encoder.copyTextureToBuffer(
+            { texture: this.pickIdTexture, origin: { x: px, y: py, z: 0 } },
+            { buffer: this.pickIdReadbackBuffer, bytesPerRow: 256, rowsPerImage: 1 },
+            { width: 1, height: 1, depthOrArrayLayers: 1 }
+        );
+        encoder.copyTextureToBuffer(
+            { texture: this.pickDepthPayloadTexture, origin: { x: px, y: py, z: 0 } },
+            { buffer: this.pickDepthReadbackBuffer, bytesPerRow: 256, rowsPerImage: 1 },
+            { width: 1, height: 1, depthOrArrayLayers: 1 }
+        );
+        this.queue.submit([encoder.finish()]);
+        await Promise.all([
+            this.pickIdReadbackBuffer.mapAsync(GPUMapMode.READ, 0, 256),
+            this.pickDepthReadbackBuffer.mapAsync(GPUMapMode.READ, 0, 256)
+        ]);
+        let ids = new Uint32Array(2);
+        let depth = 1;
+        try {
+            ids = new Uint32Array((this.pickIdReadbackBuffer.getMappedRange(0, 8) as ArrayBuffer).slice(0));
+            const depthArr = new Float32Array((this.pickDepthReadbackBuffer.getMappedRange(0, 4) as ArrayBuffer).slice(0));
+            depth = depthArr[0];
+        } finally {
+            try { this.pickIdReadbackBuffer.unmap(); } catch { /* ignore */ }
+            try { this.pickDepthReadbackBuffer.unmap(); } catch { /* ignore */ }
+        }
+        const objectId = ids[0] >>> 0;
+        const elementIndex = ids[1] >>> 0;
+        if (objectId === 0) return null;
+        if (!Number.isFinite(depth) || depth >= 1.0) return null;
+        const obj = this.objectsById.get(objectId);
+        if (!obj) return null;
+        const worldPosition = this.unprojectDepth(camera, px, py, depth);
+        if (obj instanceof Mesh) {
+            return {
+                kind: "mesh",
+                object: obj,
+                objectId,
+                elementIndex,
+                worldPosition
+            };
+        }
+        if (obj instanceof PointCloud) {
+            return {
+                kind: "pointcloud",
+                object: obj,
+                objectId,
+                elementIndex,
+                worldPosition
+            };
+        }
+        if (obj instanceof GlyphField) {
+            return {
+                kind: "glyphfield",
+                object: obj,
+                objectId,
+                elementIndex,
+                worldPosition
+            };
+        }
+        return null;
+    }
+
     destroy(): void {
         this.depthTexture?.destroy();
         this.smaaSceneColorTexture?.destroy();
@@ -481,7 +653,25 @@ export class Renderer {
         this.fallbackOcclusionTex?.destroy();
         this.cameraUniformBuffer?.destroy();
         for (const buffer of this.modelUniformBuffers) buffer.destroy();
+        for (const buffer of this.pickUniformBuffers) buffer.destroy();
         this.modelUniformBuffers = [];
+        this.pickUniformBuffers = [];
+        this.pickBindGroups = [];
+        this.pickBindGroupLayout = null;
+        this.pickIdTexture?.destroy();
+        this.pickDepthTexture?.destroy();
+        this.pickDepthPayloadTexture?.destroy();
+        this.pickIdTexture = null;
+        this.pickIdView = null;
+        this.pickDepthTexture = null;
+        this.pickDepthView = null;
+        this.pickDepthPayloadTexture = null;
+        this.pickDepthPayloadView = null;
+        this.pickIdReadbackBuffer?.destroy();
+        this.pickDepthReadbackBuffer?.destroy();
+        this.pickIdReadbackBuffer = null;
+        this.pickDepthReadbackBuffer = null;
+        this.pickTail = Promise.resolve(null);
         this.lightingUniformBuffer?.destroy();
         this.instanceBuffer?.destroy();
         this.instanceBuffer = null;
@@ -503,6 +693,9 @@ export class Renderer {
         this._gpuTimeNs = null;
         this.dataMaterialDummyDataBuffer?.destroy();
         this.dataMaterialDummyDataBuffer = null;
+        this.objectsById.clear();
+        this.objectIds = new WeakMap();
+        this.nextObjectId = 1;
     }
 
     private createGlobalBindGroupLayout(): void {
@@ -542,31 +735,55 @@ export class Renderer {
             size: 80,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
-        for (let i = 0; i < this.MODEL_BUFFER_POOL_SIZE; i++) {
-            this.modelUniformBuffers.push(this.device.createBuffer({
-                size: 128,
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-            }));
-        }
         this.lightingUniformBuffer = this.device.createBuffer({
             size: 416,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
-        this.globalBindGroups = new Array(this.MODEL_BUFFER_POOL_SIZE);
+        this.modelUniformBuffers = [];
+        this.globalBindGroups = [];
+        this.pickUniformBuffers = [];
+        this.pickBindGroups = [];
+        const pickLayout = this.getPickBindGroupLayout();
         for (let i = 0; i < this.MODEL_BUFFER_POOL_SIZE; i++) {
-            this.globalBindGroups[i] = this.device.createBindGroup({
+            const modelBuffer = this.device.createBuffer({
+                size: 128,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+            this.modelUniformBuffers.push(modelBuffer);
+            this.globalBindGroups.push(this.device.createBindGroup({
                 layout: this.globalBindGroupLayout,
                 entries: [
                     { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-                    { binding: 1, resource: { buffer: this.modelUniformBuffers[i] } },
+                    { binding: 1, resource: { buffer: modelBuffer } },
                     { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
                 ]
+            }));
+            const pickBuffer = this.device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
             });
+            this.pickUniformBuffers.push(pickBuffer);
+            this.pickBindGroups.push(this.device.createBindGroup({
+                layout: pickLayout,
+                entries: [{ binding: 0, resource: { buffer: pickBuffer } }]
+            }));
         }
         this.cameraUniformStagingPtr = 0;
         this.lightingUniformStagingPtr = 0;
         this.modelUniformStagingPtr = 0;
         this._wasmBuffer = null;
+    }
+
+    private getPickBindGroupLayout(): GPUBindGroupLayout {
+        if (this.pickBindGroupLayout) return this.pickBindGroupLayout;
+        this.pickBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [{
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: "uniform", minBindingSize: 16 }
+            }]
+        });
+        return this.pickBindGroupLayout;
     }
 
     private ensureModelBufferPool(requiredCount: number): void {
@@ -576,16 +793,25 @@ export class Renderer {
         while (newSize < requiredCount) newSize *= 2;
         this.modelUniformBuffers.length = newSize;
         this.globalBindGroups.length = newSize;
+        this.pickUniformBuffers.length = newSize;
+        this.pickBindGroups.length = newSize;
+        const pickLayout = this.getPickBindGroupLayout();
         for (let i = current; i < newSize; i++) {
-            const buf = this.device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-            this.modelUniformBuffers[i] = buf;
+            const modelBuffer = this.device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            this.modelUniformBuffers[i] = modelBuffer;
             this.globalBindGroups[i] = this.device.createBindGroup({
                 layout: this.globalBindGroupLayout,
                 entries: [
                     { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-                    { binding: 1, resource: { buffer: buf } },
-                    { binding: 2, resource: { buffer: this.lightingUniformBuffer } },
-                ],
+                    { binding: 1, resource: { buffer: modelBuffer } },
+                    { binding: 2, resource: { buffer: this.lightingUniformBuffer } }
+                ]
+            });
+            const pickBuffer = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            this.pickUniformBuffers[i] = pickBuffer;
+            this.pickBindGroups[i] = this.device.createBindGroup({
+                layout: pickLayout,
+                entries: [{ binding: 0, resource: { buffer: pickBuffer } }]
             });
         }
     }
@@ -774,6 +1000,64 @@ export class Renderer {
                 { binding: 5, resource: this.smaaBlendView! }
             ]
         });
+    }
+
+    private resizePickTargets(): void {
+        const w = this.width | 0;
+        const h = this.height | 0;
+        if (w <= 0 || h <= 0) return;
+        this.pickIdTexture?.destroy();
+        this.pickDepthTexture?.destroy();
+        this.pickDepthPayloadTexture?.destroy();
+        this.pickIdTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: "rg32uint",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+        });
+        this.pickIdView = this.pickIdTexture.createView();
+        this.pickDepthTexture = createDepthTexture(this.device, w, h);
+        this.pickDepthView = this.pickDepthTexture.createView();
+        this.pickDepthPayloadTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: "r32float",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+        });
+        this.pickDepthPayloadView = this.pickDepthPayloadTexture.createView();
+        this.ensurePickReadbackBuffers();
+    }
+
+    private ensurePickReadbackBuffers(): void {
+        if (!this.pickIdReadbackBuffer) {
+            this.pickIdReadbackBuffer = this.device.createBuffer({
+                size: 256,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            });
+        }
+        if (!this.pickDepthReadbackBuffer) {
+            this.pickDepthReadbackBuffer = this.device.createBuffer({
+                size: 256,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            });
+        }
+    }
+
+    private writePickUniform(slot: number, objectId: number, elementBase: number = 0): void {
+        if (slot >= this.pickUniformBuffers.length) this.ensureModelBufferPool(slot + 1);
+        const data = new Uint32Array([objectId >>> 0, elementBase >>> 0, 0, 0]);
+        this.queue.writeBuffer(this.pickUniformBuffers[slot], 0, data.buffer, data.byteOffset, data.byteLength);
+    }
+
+    private unprojectDepth(camera: Camera, px: number, py: number, depth: number): [number, number, number] {
+        const x = ((px + 0.5) / Math.max(1, this.width)) * 2.0 - 1.0;
+        const y = 1.0 - ((py + 0.5) / Math.max(1, this.height)) * 2.0;
+        const z = depth;
+        const inv = mat4.invert(camera.viewProjectionMatrix);
+        const wx = inv[0] * x + inv[4] * y + inv[8] * z + inv[12];
+        const wy = inv[1] * x + inv[5] * y + inv[9] * z + inv[13];
+        const wz = inv[2] * x + inv[6] * y + inv[10] * z + inv[14];
+        const ww = inv[3] * x + inv[7] * y + inv[11] * z + inv[15];
+        if (!Number.isFinite(ww) || Math.abs(ww) <= 1e-8) return [0, 0, 0];
+        return [wx / ww, wy / ww, wz / ww];
     }
 
     private executeSmaa(encoder: GPUCommandEncoder, outputView: GPUTextureView): void {
@@ -1673,6 +1957,164 @@ export class Renderer {
         }
     }
 
+
+    private executeMeshPickDrawList(pass: GPURenderPassEncoder, items: DrawItem[]): void {
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastGeometry: Geometry | null = null;
+        let lastSkinned = false;
+        let lastSkinned8 = false;
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const mesh = item.mesh;
+            const geometry = item.geometry;
+            if (!mesh.visible) continue;
+            const pipeline = this.getOrCreatePickMeshPipeline(item.material, item.skinned, item.skinned8);
+            if (pipeline !== lastPipeline) {
+                pass.setPipeline(pipeline);
+                lastPipeline = pipeline;
+                lastGeometry = null;
+                lastSkinned = false;
+                lastSkinned8 = false;
+            }
+            if (geometry !== lastGeometry || item.skinned !== lastSkinned || item.skinned8 !== lastSkinned8) {
+                geometry.upload(this.device);
+                pass.setVertexBuffer(0, geometry.positionBuffer);
+                if (item.skinned) {
+                    pass.setVertexBuffer(3, geometry.jointsBuffer!);
+                    pass.setVertexBuffer(4, geometry.weightsBuffer!);
+                    if (item.skinned8) {
+                        pass.setVertexBuffer(5, geometry.joints1Buffer!);
+                        pass.setVertexBuffer(6, geometry.weights1Buffer!);
+                    }
+                }
+                if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
+                lastGeometry = geometry;
+                lastSkinned = item.skinned;
+                lastSkinned8 = item.skinned8;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const slot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[slot];
+            const globalBindGroup = this.globalBindGroups[slot];
+            const modelPtr = mesh.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            this.writePickUniform(slot, this.getObjectId(mesh), 0);
+            pass.setBindGroup(0, globalBindGroup);
+            pass.setBindGroup(1, this.pickBindGroups[slot]);
+            if (item.skinned) {
+                const skin = mesh.skin;
+                if (skin) {
+                    skin.ensureGpuResources(this.device, this.skinBindGroupLayout);
+                    const jointCount = skin.jointCount | 0;
+                    const jointMatPtr = frameArena.allocF32(jointCount * 16) as WasmPtr;
+                    animf.computeJointMatricesTo(
+                        jointMatPtr,
+                        skin.skin.jointIndicesPtr,
+                        jointCount,
+                        skin.skin.invBindPtr,
+                        TransformStore.global().worldPtr as WasmPtr,
+                        skin.bindMatrixPtr
+                    );
+                    this.queue.writeBuffer(skin.boneBuffer!, 0, bytes, jointMatPtr, jointCount * 64);
+                    pass.setBindGroup(2, skin.bindGroup!);
+                }
+            }
+            if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount);
+            else pass.draw(geometry.vertexCount);
+        }
+    }
+
+    private executePointCloudPickDrawList(pass: GPURenderPassEncoder, items: PointCloudDrawItem[]): void {
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastCloud: PointCloud | null = null;
+        for (let i = 0; i < items.length; i++) {
+            const cloud = items[i].cloud;
+            if (!cloud.visible || cloud.pointCount <= 0) continue;
+            this.ensurePointCloudBindGroup(cloud);
+            if (!cloud.bindGroup) continue;
+            const pipeline = this.getOrCreatePickPointCloudPipeline();
+            if (pipeline !== lastPipeline) {
+                pass.setPipeline(pipeline);
+                lastPipeline = pipeline;
+                lastCloud = null;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const slot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[slot];
+            const globalBindGroup = this.globalBindGroups[slot];
+            const modelPtr = cloud.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            this.writePickUniform(slot, this.getObjectId(cloud), 0);
+            pass.setBindGroup(0, globalBindGroup);
+            if (cloud !== lastCloud) {
+                pass.setBindGroup(1, cloud.bindGroup);
+                lastCloud = cloud;
+            }
+            pass.setBindGroup(2, this.pickBindGroups[slot]);
+            pass.draw(6, cloud.pointCount);
+        }
+    }
+
+    private executeGlyphPickDrawList(pass: GPURenderPassEncoder, items: GlyphDrawItem[]): void {
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastGeometry: Geometry | null = null;
+        let lastField: GlyphField | null = null;
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const field = item.field;
+            const geometry = item.geometry;
+            if (!field.visible || field.instanceCount <= 0) continue;
+            this.ensureGlyphFieldBindGroup(field);
+            if (!field.bindGroup) continue;
+            const pipeline = this.getOrCreatePickGlyphFieldPipeline(field);
+            if (pipeline !== lastPipeline) {
+                pass.setPipeline(pipeline);
+                lastPipeline = pipeline;
+                lastGeometry = null;
+                lastField = null;
+            }
+            if (geometry !== lastGeometry) {
+                geometry.upload(this.device);
+                pass.setVertexBuffer(0, geometry.positionBuffer);
+                if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
+                lastGeometry = geometry;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const slot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[slot];
+            const globalBindGroup = this.globalBindGroups[slot];
+            const modelPtr = field.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            this.writePickUniform(slot, this.getObjectId(field), 0);
+            pass.setBindGroup(0, globalBindGroup);
+            if (field !== lastField) {
+                pass.setBindGroup(1, field.bindGroup);
+                lastField = field;
+            }
+            pass.setBindGroup(2, this.pickBindGroups[slot]);
+            if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, field.instanceCount);
+            else pass.draw(geometry.vertexCount, field.instanceCount);
+        }
+    }
+
     private drawInstancedRun(pass: GPURenderPassEncoder, geometry: Geometry, material: Material, items: DrawItem[], start: number, count: number): void {
         const ptrsPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
         const u32 = TransformStore.global().u32();
@@ -1781,6 +2223,152 @@ export class Renderer {
                 format: "depth24plus",
                 depthWriteEnabled: material.depthWrite,
                 depthCompare: material.depthTest ? "less" : "always"
+            }
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getOrCreatePickMeshPipeline(material: Material, skinned: boolean, skinned8: boolean): GPURenderPipeline {
+        if (skinned8 && !skinned) skinned = true;
+        const cullMode = this.getCullMode(material.cullMode);
+        const key = `pick:mesh:${cullMode}:${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        const shaderCode = skinned8 ? pickMeshSkinned8WGSL : skinned ? pickMeshSkinnedWGSL : pickMeshWGSL;
+        let shaderModule = this.shaderCache.get(shaderCode);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: shaderCode });
+            this.shaderCache.set(shaderCode, shaderModule);
+        }
+        const bindGroupLayouts: GPUBindGroupLayout[] = [this.globalBindGroupLayout, this.getPickBindGroupLayout()];
+        if (skinned) bindGroupLayouts.push(this.skinBindGroupLayout);
+        const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts });
+        let buffers: GPUVertexBufferLayout[];
+        if (skinned8) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 5, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 6, offset: 0, format: "float32x4" }] }
+            ];
+        } else if (skinned) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] }
+            ];
+        } else {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }
+            ];
+        }
+        const pipeline = this.device.createRenderPipeline({
+            layout: pipelineLayout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: "vs_main",
+                buffers
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: "fs_main",
+                targets: [{ format: "rg32uint" }, { format: "r32float" }]
+            },
+            primitive: {
+                topology: "triangle-list",
+                cullMode,
+                frontFace: "ccw"
+            },
+            depthStencil: {
+                format: "depth24plus",
+                depthWriteEnabled: true,
+                depthCompare: "less"
+            }
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getOrCreatePickPointCloudPipeline(): GPURenderPipeline {
+        const key = "pick:pointcloud";
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        let shaderModule = this.shaderCache.get(pickPointCloudWGSL);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: pickPointCloudWGSL });
+            this.shaderCache.set(pickPointCloudWGSL, shaderModule);
+        }
+        const pipelineLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, this.getPointCloudBindGroupLayout(), this.getPickBindGroupLayout()]
+        });
+        const pipeline = this.device.createRenderPipeline({
+            label: key,
+            layout: pipelineLayout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: "vs_main",
+                buffers: []
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: "fs_main",
+                targets: [{ format: "rg32uint" }, { format: "r32float" }]
+            },
+            primitive: {
+                topology: "triangle-list",
+                cullMode: "none"
+            },
+            depthStencil: {
+                format: "depth24plus",
+                depthWriteEnabled: true,
+                depthCompare: "less"
+            }
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getOrCreatePickGlyphFieldPipeline(field: GlyphField): GPURenderPipeline {
+        const cullMode = this.getCullMode(field.cullMode);
+        const key = `pick:glyphfield:${cullMode}`;
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        let shaderModule = this.shaderCache.get(pickGlyphFieldWGSL);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: pickGlyphFieldWGSL });
+            this.shaderCache.set(pickGlyphFieldWGSL, shaderModule);
+        }
+        const pipelineLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, this.getGlyphFieldBindGroupLayout(), this.getPickBindGroupLayout()]
+        });
+        const pipeline = this.device.createRenderPipeline({
+            label: key,
+            layout: pipelineLayout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: "vs_main",
+                buffers: [
+                    {
+                        arrayStride: 12,
+                        attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }]
+                    }
+                ]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: "fs_main",
+                targets: [{ format: "rg32uint" }, { format: "r32float" }]
+            },
+            primitive: {
+                topology: "triangle-list",
+                cullMode
+            },
+            depthStencil: {
+                format: "depth24plus",
+                depthWriteEnabled: true,
+                depthCompare: "less"
             }
         });
         this.pipelineCache.set(key, pipeline);

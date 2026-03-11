@@ -1,4 +1,5 @@
 import { Renderer, RendererDescriptor } from "./renderer";
+import type { RendererPickHit } from "./renderer";
 import { PerformanceStats } from "./stats";
 import type { PerformanceStatsDescriptor } from "./stats";
 import { Transform } from "./transform";
@@ -21,12 +22,14 @@ import { mat4, vec3, quat, frameArena, initWebAssembly, wasmInterop, WasmHeapAre
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { NavigationControls, OrbitControls, TrackballControls } from "../world/controls";
 import type { NavigationControlsDescriptor, OrbitControlsDescriptor, TrackballControlsDescriptor } from "../world/controls";
-import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
-import { Mesh } from "../world/mesh";
-import { PointCloud } from "../world/pointcloud";
-import type { PointCloudDescriptor } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
 import type { GlyphFieldDescriptor } from "../world/glyphfield";
+import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
+import { Mesh } from "../world/mesh";
+import { SelectionStore } from "../world/picking";
+import type { PickAttributes, PickQuery, PickResult } from "../world/picking";
+import { PointCloud } from "../world/pointcloud";
+import type { PointCloudDescriptor } from "../world/pointcloud";
 import { Scene } from "../world/scene";
 
 export type WasmGPUDescriptor = RendererDescriptor & {
@@ -133,6 +136,14 @@ export class WasmGPU {
         return frameArena;
     }
 
+    static createSelectionStore(): SelectionStore {
+        return new SelectionStore();
+    }
+
+    createSelectionStore(): SelectionStore {
+        return new SelectionStore();
+    }
+
     createPerformanceStats(desc: PerformanceStatsDescriptor = {}): PerformanceStats {
         this._performanceStats?.destroy();
         this.renderer.enableGpuTiming(desc.showGpuTime ?? true);
@@ -160,6 +171,45 @@ export class WasmGPU {
     render(scene: Scene, camera: Camera): void {
         if (!this._isRunning) frameArena.reset();
         this.renderer.render(scene, camera);
+    }
+
+    private buildPickNdIndex(hit: RendererPickHit): number[] | null {
+        if (hit.kind === "pointcloud") return hit.object.mapLinearIndexToNd(hit.elementIndex);
+        if (hit.kind === "glyphfield") return hit.object.mapLinearIndexToNd(hit.elementIndex);
+        return null;
+    }
+
+    private buildPickAttributes(hit: RendererPickHit, includeAttributes: boolean): PickAttributes | null {
+        if (!includeAttributes) return null;
+        if (hit.kind === "pointcloud") {
+            const rec = hit.object.getPointRecord(hit.elementIndex);
+            if (!rec) return null;
+            return {
+                scalar: rec.scalar,
+                packedPoint: rec.packed
+            };
+        }
+        if (hit.kind === "glyphfield") {
+            const vector = hit.object.getAttributeRecord(hit.elementIndex);
+            if (!vector) return null;
+            return { vector };
+        }
+        return null;
+    }
+
+    async pick(scene: Scene, camera: Camera, x: number, y: number, opts: PickQuery = {}): Promise<PickResult | null> {
+        const hit = await this.renderer.pick(scene, camera, x, y, opts);
+        if (!hit) return null;
+        const includeAttributes = opts.includeAttributes ?? true;
+        return {
+            kind: hit.kind,
+            object: hit.object,
+            objectId: hit.objectId,
+            elementIndex: hit.elementIndex,
+            worldPosition: [hit.worldPosition[0], hit.worldPosition[1], hit.worldPosition[2]],
+            ndIndex: this.buildPickNdIndex(hit),
+            attributes: this.buildPickAttributes(hit, includeAttributes)
+        };
     }
 
     createScene(background?: Color): Scene {

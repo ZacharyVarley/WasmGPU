@@ -1,4 +1,4 @@
-import { Transform } from "../core/transform";
+﻿import { Transform } from "../core/transform";
 import { BlendMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { assert, createBuffer } from "../utils";
@@ -32,6 +32,7 @@ export type PointCloudDescriptor = {
     visible?: boolean;
     name?: string;
     keepCPUData?: boolean;
+    ndShape?: number[];
 };
 
 const UNIFORM_FLOAT_COUNT = 44;
@@ -42,6 +43,30 @@ type BoundsSourceMode = "none" | "explicit" | "computed";
 const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
 const clampMin = (x: number, min: number): number => x < min ? min : x;
+
+const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
+    if (!shape) return null;
+    const out: number[] = [];
+    for (let i = 0; i < shape.length; i++) {
+        const d = shape[i] as number;
+        assert(Number.isInteger(d) && d > 0, `PointCloud: ndShape[${i}] must be an integer > 0.`);
+        out.push(d | 0);
+    }
+    return out.length > 0 ? out : null;
+};
+
+const linearIndexToNdIndex = (shape: ReadonlyArray<number> | null, index: number): number[] | null => {
+    if (!shape || shape.length === 0) return null;
+    if (!Number.isInteger(index) || index < 0) return null;
+    let remaining = index | 0;
+    const out = new Array(shape.length);
+    for (let i = shape.length - 1; i >= 0; i--) {
+        const dim = shape[i]!;
+        out[i] = remaining % dim;
+        remaining = Math.floor(remaining / dim);
+    }
+    return remaining === 0 ? out : null;
+};
 
 const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
     if (!stops || stops.length === 0) {
@@ -96,6 +121,7 @@ export class PointCloud {
     private _softness: number = 0.15;
     private _CPUData: Float32Array | null = null;
     private _keepCPUData: boolean = false;
+    private _ndShape: number[] | null = null;
     private _boundsSource: BoundsSourceMode = "none";
     pointsBuffer: GPUBuffer | null = null;
     uniformBuffer: GPUBuffer | null = null;
@@ -124,6 +150,7 @@ export class PointCloud {
         if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
         if (desc.softness !== undefined) this._softness = desc.softness;
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
+        if (desc.ndShape !== undefined) this.ndShape = desc.ndShape;
         this.applyExplicitBounds(desc);
         if (desc.data) {
             this.setData(desc.data, { keepCPUData: this._keepCPUData });
@@ -172,6 +199,14 @@ export class PointCloud {
 
     get pointCount(): number {
         return this._pointCount;
+    }
+
+    get ndShape(): number[] | null {
+        return this._ndShape ? this._ndShape.slice() : null;
+    }
+
+    set ndShape(shape: ReadonlyArray<number> | null) {
+        this._ndShape = normalizeNdShape(shape);
     }
 
     get basePointSize(): number {
@@ -328,6 +363,22 @@ export class PointCloud {
         this._CPUData = null;
     }
 
+    getPointRecord(index: number): { position: [number, number, number]; scalar: number; packed: [number, number, number, number] } | null {
+        const data = this._CPUData;
+        if (!data) return null;
+        if (!Number.isInteger(index) || index < 0 || index >= this._pointCount) return null;
+        const o = index * 4;
+        return {
+            position: [data[o + 0], data[o + 1], data[o + 2]],
+            scalar: data[o + 3],
+            packed: [data[o + 0], data[o + 1], data[o + 2], data[o + 3]]
+        };
+    }
+
+    mapLinearIndexToNd(index: number): number[] | null {
+        return linearIndexToNdIndex(this._ndShape, index);
+    }
+
     computeBoundsFromCPUData(): void {
         const data = this._CPUData;
         if (!data || data.length < 4) return;
@@ -466,6 +517,7 @@ export class PointCloud {
         this.bindGroup = null;
         this.bindGroupKey = null;
         this._CPUData = null;
+        this._ndShape = null;
         this._pointCount = 0;
         this.transform.dispose();
     }

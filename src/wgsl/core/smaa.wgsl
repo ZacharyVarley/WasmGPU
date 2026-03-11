@@ -13,13 +13,13 @@ struct Params {
 @group(0) @binding(4) var edgesTex: texture_2d<f32>;
 @group(0) @binding(5) var blendTex: texture_2d<f32>;
 
-struct VsOut {
+struct VertexOutput {
     @builtin(position) pos: vec4f,
     @location(0) uv: vec2f
 };
 
 @vertex
-fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VsOut {
+fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var positions = array<vec2f, 3>(
         vec2f(-1.0, -1.0),
         vec2f(3.0, -1.0),
@@ -30,7 +30,7 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VsOut {
         vec2f(2.0, 1.0),
         vec2f(0.0, -1.0)
     );
-    var out: VsOut;
+    var out: VertexOutput;
     out.pos = vec4f(positions[vi], 0.0, 1.0);
     out.uv = uvs[vi];
     return out;
@@ -41,7 +41,7 @@ fn luma(rgb: vec3f) -> f32 {
 }
 
 @fragment
-fn fs_smaa_edges(in: VsOut) -> @location(0) vec4f {
+fn fs_smaa_edges(in: VertexOutput) -> @location(0) vec4f {
     let t = params.rtMetrics.xy;
     let c = textureSampleLevel(sceneTex, sampPoint, in.uv, 0.0).rgb;
     let l = luma(c);
@@ -63,7 +63,7 @@ fn edgeH(uv: vec2f) -> bool {
 }
 
 @fragment
-fn fs_smaa_weights(in: VsOut) -> @location(0) vec4f {
+fn fs_smaa_weights(in: VertexOutput) -> @location(0) vec4f {
     let t = params.rtMetrics.xy;
     let e = textureSampleLevel(edgesTex, sampPoint, in.uv, 0.0);
     var wLeft: f32 = 0.0;
@@ -108,7 +108,7 @@ fn fs_smaa_weights(in: VsOut) -> @location(0) vec4f {
 }
 
 @fragment
-fn fs_smaa_neighborhood(in: VsOut) -> @location(0) vec4f {
+fn fs_smaa_neighborhood(in: VertexOutput) -> @location(0) vec4f {
     let t = params.rtMetrics.xy;
     let c = textureSampleLevel(sceneTex, sampLinear, in.uv, 0.0);
     let w = textureSampleLevel(blendTex, sampPoint, in.uv, 0.0);
