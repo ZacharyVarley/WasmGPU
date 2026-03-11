@@ -22,6 +22,7 @@ import { createDepthTexture } from "../utils";
 export type RendererDescriptor = {
     antialias?: boolean;
     powerPreference?: "high-performance" | "low-power";
+    canvasFormat?: GPUTextureFormat;
     frustumCulling?: boolean;
     frustumCullingStats?: boolean;
 };
@@ -215,7 +216,9 @@ export class Renderer {
         this.queue = this.device.queue;
         this.context = this.canvas.getContext("webgpu") as GPUCanvasContext;
         if (!this.context) throw new Error("Failed to get WebGPU canvas context.");
-        this.format = navigator.gpu.getPreferredCanvasFormat();
+        if (descriptor.canvasFormat) this.format = descriptor.canvasFormat;
+        else if (typeof navigator.gpu.getPreferredCanvasFormat === "function") this.format = navigator.gpu.getPreferredCanvasFormat();
+        else this.format = "rgba8unorm";
         this.smaaEnabled = descriptor.antialias ?? false;
         if (this.smaaEnabled) this.createSmaaResources();
         this.createGlobalBindGroupLayout();
