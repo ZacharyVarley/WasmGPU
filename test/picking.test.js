@@ -1,0 +1,275 @@
+import assert from "assert";
+import * as WasmGPU from "../dist/WasmGPU.js";
+import { create, globals } from "webgpu";
+
+Object.assign(globalThis, globals);
+const navigator = { gpu: create([]) };
+const gpu = navigator.gpu;
+assert.ok(gpu, "WebGPU not available. Ensure the dev dependency 'webgpu' is installed.");
+const adapter = await gpu.requestAdapter();
+assert.ok(adapter, "Failed to acquire a WebGPU adapter");
+const device = await adapter.requestDevice();
+assert.ok(device, "Failed to acquire a WebGPU device");
+device.addEventListener("uncapturederror", (e) => {
+    throw new Error(`Uncaptured WebGPU error: ${e.error ? e.error.message : String(e)}`);
+});
+Object.defineProperty(globalThis, "navigator", {
+    value: navigator,
+    configurable: true
+});
+if (!globalThis.window) globalThis.window = {};
+if (typeof globalThis.window.devicePixelRatio !== "number") globalThis.window.devicePixelRatio = 1;
+
+const numberApproxEqual = (a, b, tol = 1e-6, msg = "Numbers differ") => {
+    assert.ok(Number.isFinite(a) && Number.isFinite(b), "Expected finite numbers");
+    assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`);
+};
+
+const arraysApproxEqual = (a, b, tol = 1e-6, msg = "Arrays differ") => {
+    assert.strictEqual(a.length, b.length, `${msg}: length ${a.length} vs ${b.length}`);
+    for (let i = 0; i < a.length; i++) numberApproxEqual(a[i], b[i], tol, `${msg} at index ${i}`);
+};
+
+const makeCanvas = (width = 640, height = 480) => {
+    const canvas = {
+        width,
+        height,
+        clientWidth: width,
+        clientHeight: height,
+        style: {},
+        addEventListener() {},
+        removeEventListener() {},
+        getBoundingClientRect() {
+            return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight, right: this.clientWidth, bottom: this.clientHeight };
+        }
+    };
+    let device = null;
+    let format = "rgba8unorm";
+    let usage = GPUTextureUsage.RENDER_ATTACHMENT;
+    const context = {
+        configure(desc) {
+            device = desc.device;
+            format = desc.format ?? format;
+            usage = desc.usage ?? usage;
+        },
+        getCurrentTexture() {
+            assert.ok(device, "GPUCanvasContext.configure() must be called before getCurrentTexture().");
+            return device.createTexture({
+                size: {
+                    width: Math.max(1, canvas.width | 0),
+                    height: Math.max(1, canvas.height | 0),
+                    depthOrArrayLayers: 1
+                },
+                format,
+                usage: usage | GPUTextureUsage.RENDER_ATTACHMENT
+            });
+        }
+    };
+    canvas.getContext = (kind) => kind === "webgpu" ? context : null;
+    return canvas;
+};
+
+await WasmGPU.initWebAssembly(new URL("../dist/", import.meta.url).toString());
+
+const { WasmGPU: Engine, SelectionStore } = WasmGPU;
+assert.ok(Engine, "Missing export: WasmGPU class");
+assert.ok(typeof Engine.prototype.pick === "function", "Missing API: WasmGPU.pick(scene, camera, x, y, opts?)");
+assert.ok(typeof Engine.createSelectionStore === "function", "Missing API: WasmGPU.createSelectionStore()");
+assert.ok(SelectionStore, "Missing export: SelectionStore");
+
+const canvas = makeCanvas(512, 512);
+const wgpu = await Engine.create(canvas, { antialias: false, frustumCulling: false, canvasFormat: "rgba8unorm" });
+const scene = wgpu.createScene([0, 0, 0]);
+const camera = wgpu.createCamera.perspective({ fov: 50, near: 0.1, far: 200 });
+camera.transform.setPosition(0, 0, 12);
+camera.lookAt(0, 0, 0);
+
+const mesh = wgpu.createMesh(wgpu.geometry.box(2, 2, 2), wgpu.material.unlit({ color: [0.8, 0.9, 1.0] }));
+mesh.transform.setPosition(-2, 0, 0);
+
+const cloud = wgpu.createPointCloud({
+    data: new Float32Array([
+        0, 0, 0, 0.10,
+        1, 0, 0, 0.20,
+        0, 1, 0, 0.30,
+        1, 1, 0, 0.40
+    ]),
+    keepCPUData: true,
+    ndShape: [2, 2],
+    basePointSize: 10,
+    depthWrite: true,
+    blendMode: "opaque"
+});
+cloud.transform.setPosition(0, 0, 0);
+
+const field = wgpu.createGlyphField({
+    geometry: wgpu.geometry.box(0.25, 0.25, 0.25),
+    instanceCount: 2,
+    positions: new Float32Array([
+        2, 0, 0, 0,
+        2, 1, 0, 0
+    ]),
+    rotations: new Float32Array([
+        0, 0, 0, 1,
+        0, 0, 0, 1
+    ]),
+    scales: new Float32Array([
+        1, 1, 1, 0,
+        1, 1, 1, 0
+    ]),
+    attributes: new Float32Array([
+        0.5, 1.5, 2.5, 3.5,
+        4.5, 5.5, 6.5, 7.5
+    ]),
+    keepCPUData: true,
+    ndShape: [1, 2]
+});
+
+const cloudNoCPU = wgpu.createPointCloud({
+    data: new Float32Array([
+        -1, -1, 0, 0.8,
+        -2, -2, 0, 0.9
+    ]),
+    keepCPUData: false,
+    ndShape: [2, 1]
+});
+cloudNoCPU.upload(wgpu.gpu.device, wgpu.gpu.queue);
+
+scene.add(mesh).add(cloud).add(field).add(cloudNoCPU);
+
+const renderer = wgpu.renderer;
+assert.ok(renderer && typeof renderer.pick === "function", "Internal renderer.pick is required for WasmGPU.pick");
+const originalRendererPick = renderer.pick.bind(renderer);
+
+const makePickHit = (kind, object, objectId, elementIndex, worldPosition) => ({
+    kind,
+    object,
+    objectId,
+    elementIndex,
+    worldPosition
+});
+
+try {
+    renderer.pick = async () => makePickHit("pointcloud", cloud, 11, 3, [1, 1, 0]);
+    const pointHit = await wgpu.pick(scene, camera, 128, 128);
+    assert.ok(pointHit, "Expected pointcloud pick hit");
+    assert.strictEqual(pointHit.kind, "pointcloud");
+    assert.strictEqual(pointHit.object, cloud);
+    assert.strictEqual(pointHit.objectId, 11);
+    assert.strictEqual(pointHit.elementIndex, 3);
+    assert.deepStrictEqual(pointHit.worldPosition, [1, 1, 0]);
+    assert.deepStrictEqual(pointHit.ndIndex, [1, 1], "PointCloud nd index decode mismatch");
+    assert.ok(pointHit.attributes, "PointCloud attributes should be present when CPU data exists");
+    numberApproxEqual(pointHit.attributes.scalar, 0.40, 1e-6, "PointCloud scalar attribute mismatch");
+    arraysApproxEqual(pointHit.attributes.packedPoint, [1, 1, 0, 0.40], 1e-6, "PointCloud packed tuple mismatch");
+
+    const pointNoAttr = await wgpu.pick(scene, camera, 128, 128, { includeAttributes: false });
+    assert.ok(pointNoAttr, "Expected pointcloud hit with includeAttributes=false");
+    assert.strictEqual(pointNoAttr.attributes, null, "Attributes should be null when includeAttributes=false");
+
+    renderer.pick = async () => makePickHit("pointcloud", cloudNoCPU, 12, 1, [-2, -2, 0]);
+    const noCPUHit = await wgpu.pick(scene, camera, 128, 128);
+    assert.ok(noCPUHit, "Expected cloudNoCPU pick hit");
+    assert.deepStrictEqual(noCPUHit.ndIndex, [1, 0], "PointCloud nd index decode should still work without CPU attributes");
+    assert.strictEqual(noCPUHit.attributes, null, "PointCloud attributes should be null when CPU data is unavailable");
+
+    renderer.pick = async () => makePickHit("glyphfield", field, 21, 1, [2, 1, 0]);
+    const glyphHit = await wgpu.pick(scene, camera, 128, 128);
+    assert.ok(glyphHit, "Expected glyphfield pick hit");
+    assert.strictEqual(glyphHit.kind, "glyphfield");
+    assert.strictEqual(glyphHit.object, field);
+    assert.strictEqual(glyphHit.elementIndex, 1);
+    assert.deepStrictEqual(glyphHit.ndIndex, [0, 1], "GlyphField nd index decode mismatch");
+    assert.ok(glyphHit.attributes, "GlyphField attributes should be present when CPU data exists");
+    arraysApproxEqual(glyphHit.attributes.vector, [4.5, 5.5, 6.5, 7.5], 1e-6, "GlyphField vec4 attribute mismatch");
+
+    renderer.pick = async () => makePickHit("mesh", mesh, 31, 7, [-2, 0, 0]);
+    const meshHit = await wgpu.pick(scene, camera, 128, 128);
+    assert.ok(meshHit, "Expected mesh pick hit");
+    assert.strictEqual(meshHit.kind, "mesh");
+    assert.strictEqual(meshHit.object, mesh);
+    assert.strictEqual(meshHit.elementIndex, 7, "Mesh elementIndex should reflect primitive index payload");
+    assert.strictEqual(meshHit.ndIndex, null, "Mesh ndIndex should be null");
+    assert.strictEqual(meshHit.attributes, null, "Mesh attributes should be null");
+
+    renderer.pick = async () => {
+        const hits = [
+            { depth: 0.92, hit: makePickHit("mesh", mesh, 31, 1, [-2, 0, 0]) },
+            { depth: 0.23, hit: makePickHit("pointcloud", cloud, 11, 2, [0, 1, 0]) }
+        ];
+        hits.sort((a, b) => a.depth - b.depth);
+        return hits[0].hit;
+    };
+    const frontHit = await wgpu.pick(scene, camera, 128, 128);
+    assert.ok(frontHit, "Expected occlusion pick hit");
+    assert.strictEqual(frontHit.object, cloud, "Depth occlusion should resolve to front-most object");
+
+    renderer.pick = async () => null;
+    const miss = await wgpu.pick(scene, camera, 128, 128);
+    assert.strictEqual(miss, null, "Miss picks should return null");
+} finally {
+    renderer.pick = originalRendererPick;
+}
+
+{
+    const store = wgpu.createSelectionStore();
+    assert.ok(store instanceof SelectionStore, "createSelectionStore() should return SelectionStore");
+
+    const h0 = {
+        kind: "pointcloud",
+        object: cloud,
+        objectId: 11,
+        elementIndex: 0,
+        worldPosition: [0, 0, 0],
+        ndIndex: [0, 0],
+        attributes: { scalar: 0.1, packedPoint: [0, 0, 0, 0.1] }
+    };
+    const h1 = {
+        kind: "pointcloud",
+        object: cloud,
+        objectId: 11,
+        elementIndex: 1,
+        worldPosition: [1, 0, 0],
+        ndIndex: [0, 1],
+        attributes: { scalar: 0.2, packedPoint: [1, 0, 0, 0.2] }
+    };
+    const h2 = {
+        kind: "glyphfield",
+        object: field,
+        objectId: 21,
+        elementIndex: 1,
+        worldPosition: [2, 1, 0],
+        ndIndex: [0, 1],
+        attributes: { vector: [4.5, 5.5, 6.5, 7.5] }
+    };
+
+    store.replace(h0);
+    assert.strictEqual(store.size, 1, "replace() should clear and add exactly one hit");
+    assert.strictEqual(store.has(11, 0), true, "replace() should include replacement hit");
+
+    store.add([h1, h2]);
+    assert.strictEqual(store.size, 3, "add() should perform union semantics");
+
+    store.toggle(h1);
+    assert.strictEqual(store.has(11, 1), false, "toggle() should remove existing entry");
+    store.toggle(h1);
+    assert.strictEqual(store.has(11, 1), true, "toggle() should add missing entry");
+
+    store.remove([h0, h2]);
+    assert.strictEqual(store.has(11, 0), false, "remove() should subtract entries");
+    assert.strictEqual(store.has(21, 1), false, "remove() should subtract entries across object types");
+    assert.strictEqual(store.size, 1, "remove() should preserve untouched entries");
+
+    store.apply("replace", [h0, h2]);
+    assert.strictEqual(store.size, 2, "apply(replace) should replace from many-hits input");
+
+    store.clear();
+    assert.strictEqual(store.size, 0, "clear() should empty selection state");
+}
+
+{
+    const staticStore = Engine.createSelectionStore();
+    assert.ok(staticStore instanceof SelectionStore, "WasmGPU.createSelectionStore() static helper should return SelectionStore");
+}
+
+wgpu.destroy();

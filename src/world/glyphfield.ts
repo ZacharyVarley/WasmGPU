@@ -1,4 +1,4 @@
-﻿import { Transform } from "../core/transform";
+import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { Geometry } from "../graphics/geometry";
