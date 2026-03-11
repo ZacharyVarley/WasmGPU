@@ -7,15 +7,19 @@
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
             canvas { display: block; width: 100vw; height: 100vh; }
-            .hud { position: fixed; left: 10px; top: 10px; padding: 10px; background: rgba(5, 10, 18, 0.75); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; }
+            .hud { position: fixed; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; width: 200px; }
+            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; }
         </style>
     </head>
     <body>
         <canvas></canvas>
-        <div class="hud"></div>
+        <div class="hud">
+            <div class="pane nav"></div>
+            <div class="pane pick"></div>
+        </div>
         <script src="../dist/WasmGPU.iife.min.js"></script>
         <script type="module">
-            const canvas = document.querySelector("canvas"), hud = document.querySelector(".hud");
+            const canvas = document.querySelector("canvas"), navHud = document.querySelector(".nav"), pickHud = document.querySelector(".pick");
             const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
             const scene = wgpu.createScene([0.02, 0.03, 0.04]);
             const perspective = wgpu.createCamera.perspective({ fov: 50, near: 0.05, far: 500 });
@@ -60,13 +64,18 @@
             };
 
             const data = generate(100000);
-            scene.add(wgpu.createPointCloud({
+            const points = wgpu.createPointCloud({
                 data: data.data, keepCPUData: true,
+                ndShape: [1000, 100],
                 boundsMin: data.boundsMin, boundsMax: data.boundsMax,
                 basePointSize: 5.0, minPointSize: 1.0, maxPointSize: 10.0,
                 sizeAttenuation: 1.8, softness: 0.3, opacity: 1, gamma: 0.9,
                 blendMode: "additive", colormap: "turbo"
-            }));
+            });
+            scene.add(points);
+
+            const selection = wgpu.createSelectionStore();
+            let hoverHit = null;
 
             let activeCamera = perspective;
             let currentView = "front";
@@ -75,14 +84,73 @@
                 if (activeCamera.type === "perspective") activeCamera.updateAspect(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
             };
 
+            const fmt = (n, d = 3) => Number.isFinite(n) ? n.toFixed(d) : "nan";
+            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
+            const fmtVec4 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}, ${fmt(v[3])}]`;
+            const fmtNd = (v) => v ? `[${v.join(", ")}]` : "null";
+
+            const describeHit = (hit) => {
+                if (!hit) return ["Hover: miss"];
+                const lines = [
+                    `Hover: hit`,
+                    `kind: ${hit.kind}`,
+                    `objectId: ${hit.objectId}`,
+                    `elementIndex: ${hit.elementIndex}`,
+                    `world: ${fmtVec3(hit.worldPosition)}`,
+                    `ndIndex: ${fmtNd(hit.ndIndex)}`
+                ];
+                if (hit.attributes) {
+                    if (hit.attributes.scalar !== undefined && hit.attributes.scalar !== null) lines.push(`scalar: ${fmt(hit.attributes.scalar, 5)}`);
+                    if (hit.attributes.vector) lines.push(`vector: ${fmtVec4(hit.attributes.vector)}`);
+                    if (hit.attributes.packedPoint) lines.push(`packedPoint: ${fmtVec4(hit.attributes.packedPoint)}`);
+                } else lines.push("attributes: null");
+                return lines;
+            };
+
+            const getRelativePointer = (event) => {
+                const rect = canvas.getBoundingClientRect();
+                return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+            };
+
+            const selectionModeFromEvent = (event) => {
+                if (event.shiftKey) return "add";
+                if (event.ctrlKey || event.metaKey) return "toggle";
+                return "replace";
+            };
+
+            const selectedPointEntries = () => selection.values().filter((entry) => entry.kind === "pointcloud" && entry.object === points);
+
             const updateHud = () => {
-                hud.textContent = [
+                navHud.textContent = [
                     `Mode: ${controls.mode}`,
                     `Camera: ${activeCamera.type}`,
                     `View: ${currentView ?? "free"}`,
-                    "", "1 orbit", "2 trackball",
-                    "W/S front/back", "A/D left/right", "Q/E top/bottom",
-                    "X fit to bounds", "C toggle orthographic"
+                    "",
+                    "Navigation",
+                    "1 orbit",
+                    "2 trackball",
+                    "W/S front/back",
+                    "A/D left/right",
+                    "Q/E top/bottom",
+                    "X fit to bounds",
+                    "C toggle orthographic"
+                ].join("\n");
+                const selected = selectedPointEntries();
+                const head = selected.slice(0, 6).map((entry) => `#${entry.elementIndex}  nd=${fmtNd(entry.ndIndex)}`);
+                const tail = selected.length > head.length ? [`... +${selected.length - head.length} more`] : [];
+                pickHud.textContent = [
+                    "Picking / Selection",
+                    "hover: pointer move",
+                    "click: replace",
+                    "Shift+click: add",
+                    "Ctrl/Cmd+click: toggle",
+                    "",
+                    ...describeHit(hoverHit),
+                    "",
+                    `selectionCount: ${selection.size}`,
+                    "selected point indices:",
+                    ...(head.length > 0 ? head : ["(none)"]),
+                    ...tail
                 ].join("\n");
             };
 
@@ -115,12 +183,43 @@
                 } else if (key === "x") { fitCurrent(currentView, true);
                 } else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); }
             });
+
+            let hoverPickToken = 0;
+            canvas.addEventListener("pointermove", (event) => {
+                const { x, y } = getRelativePointer(event);
+                const token = ++hoverPickToken;
+                wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
+                    if (token !== hoverPickToken) return;
+                    hoverHit = hit;
+                    updateHud();
+                }).catch(() => {
+                    if (token !== hoverPickToken) return;
+                    hoverHit = null;
+                    updateHud();
+                });
+            });
+
+            canvas.addEventListener("pointerleave", () => {
+                hoverPickToken++;
+                hoverHit = null;
+                updateHud();
+            });
+
+            canvas.addEventListener("click", async (event) => {
+                const { x, y } = getRelativePointer(event);
+                const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
+                const mode = selectionModeFromEvent(event);
+                if (hit) selection.apply(mode, hit);
+                else if (mode === "replace") selection.clear();
+                updateHud();
+            });
+
             window.addEventListener("resize", updateProjection);
             updateProjection();
             fitCurrent(currentView, false);
             updateHud();
 
-            wgpu.run((dt, time) => {
+            wgpu.run((dt) => {
                 updateProjection();
                 controls.update(dt);
                 wgpu.render(scene, activeCamera);
