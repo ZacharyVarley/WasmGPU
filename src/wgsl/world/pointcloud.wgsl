@@ -18,8 +18,8 @@ struct PointCloudUniforms {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) t: f32,
-    @location(1) pointCoord: vec2<f32>
+    @location(0) col: vec4<f32>,
+    @location(1) pointCoord: vec2<f32>,
 };
 
 struct CameraUniforms {
@@ -48,12 +48,8 @@ fn saturate(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
 }
 
-fn sampleCustomStops(t: f32) -> vec4<f32> {
-    let count = u32(pc.options.z + 0.5);
-    if (count <= 1u) {
-        return pc.colors[0u];
-    }
-    let n = min(count, 8u);
+fn sampleCustomStops(t: f32, stopCount: u32) -> vec4<f32> {
+    let n = min(stopCount, 8u);
     let x = saturate(t) * f32(n - 1u);
     let i = u32(floor(x));
     let f = x - f32(i);
@@ -67,9 +63,9 @@ fn colormap(tIn: f32) -> vec4<f32> {
     let t = saturate(tIn);
     let stopCount = u32(pc.options.z + 0.5);
     if (stopCount >= 2u) {
-        return sampleCustomStops(t);
+        return sampleCustomStops(t, stopCount);
     }
-    return textureSample(colormapTex, colormapSampler, t);
+    return textureSampleLevel(colormapTex, colormapSampler, t, 0.0);
 }
 
 @vertex
@@ -77,63 +73,54 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
     let p = points[instanceIndex];
     let worldPos = model.model * vec4<f32>(p.position, 1.0);
     let clip = camera.viewProj * worldPos;
-    let dist = distance(camera.position, worldPos.xyz);
+
     let baseSize = pc.sizeParams.x;
     let minSize = pc.sizeParams.y;
     let maxSize = pc.sizeParams.z;
     let atten = pc.sizeParams.w;
     var sizePx = baseSize;
     if (atten > 0.0) {
+        let dist = distance(camera.position, worldPos.xyz);
         sizePx = baseSize * (atten / max(dist, 1e-6));
     }
     sizePx = clamp(sizePx, minSize, maxSize);
-    var uv = vec2<f32>(0.0);
-    if (vertexIndex == 0u) {
-        uv = vec2<f32>(0.0, 0.0);
-    } else if (vertexIndex == 1u) {
-        uv = vec2<f32>(1.0, 0.0);
-    } else if (vertexIndex == 2u) {
-        uv = vec2<f32>(0.0, 1.0);
-    } else if (vertexIndex == 3u) {
-        uv = vec2<f32>(1.0, 0.0);
-    } else if (vertexIndex == 4u) {
-        uv = vec2<f32>(1.0, 1.0);
-    } else if (vertexIndex == 5u) {
-        uv = vec2<f32>(0.0, 1.0);
-    }
+
+    let uv = vec2<f32>(
+        f32((vertexIndex + 2u) / 3u % 2u), 
+        f32((vertexIndex + 1u) / 3u % 2u)
+    );
+
     let row0 = vec3<f32>(camera.viewProj[0][0], camera.viewProj[1][0], camera.viewProj[2][0]);
     let row1 = vec3<f32>(camera.viewProj[0][1], camera.viewProj[1][1], camera.viewProj[2][1]);
+
+    // the aspect ratio is supposed to be calculated in the projection matrix
+    // if not, you should atleast pass the resolution in the camera uniform
     let aspect = length(row1) / max(length(row0), 1e-6);
+
     let ndcSize = (sizePx * 2.0) / max(camera._pad0, 1.0);
     let offsetX = (uv.x - 0.5) * ndcSize / aspect * clip.w;
     let offsetY = -(uv.y - 0.5) * ndcSize * clip.w;
     var out: VertexOutput;
     out.position = clip + vec4<f32>(offsetX, offsetY, 0.0, 0.0);
-    out.pointCoord = uv;
+    out.pointCoord = uv * 2.0 - vec2<f32>(1.0, 1.0);
     let denom = max(pc.scalarParams.y - pc.scalarParams.x, 1e-6);
     var t = (p.scalar - pc.scalarParams.x) / denom;
     if (pc.options.x > 0.5) {
         t = 1.0 - t;
     }
-    out.t = pow(saturate(t), pc.scalarParams.w);
+    var c = colormap(t);
+    c.a = c.a * pc.scalarParams.z;
+    out.col = vec4<f32>(srgbFromLinear(c.rgb), c.a);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = in.pointCoord * 2.0 - vec2<f32>(1.0, 1.0);
+    let uv = in.pointCoord;
     let r2 = dot(uv, uv);
-    if (r2 > 1.0) {
-        discard;
-    }
+    if (r2 > 1.0) { discard; }
     let softness = pc.options.w;
-    var alpha = 1.0;
-    if (softness > 0.0) {
-        let r = sqrt(r2);
-        alpha = 1.0 - smoothstep(1.0 - softness, 1.0, r);
-    }
-    var c = colormap(in.t);
-    c.a = c.a * pc.scalarParams.z * alpha;
-    c = vec4<f32>(srgbFromLinear(c.rgb), c.a);
-    return c;
+    let falloff = (1.0 - r2);
+    let alpha = falloff * falloff;
+    return vec4<f32>(in.col.rgb, in.col.a*alpha);
 }

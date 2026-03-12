@@ -2569,12 +2569,12 @@ export class Renderer {
                 },
                 {
                     binding: 2,
-                    visibility: GPUShaderStage.FRAGMENT,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                     sampler: { type: "filtering" }
                 },
                 {
                     binding: 3,
-                    visibility: GPUShaderStage.FRAGMENT,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                     texture: { sampleType: "float", viewDimension: "1d" }
                 }
             ]
