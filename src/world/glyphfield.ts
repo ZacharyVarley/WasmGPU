@@ -354,7 +354,7 @@ export class GlyphField {
     private _opacity: number = 1.0;
     private _gamma: number = 1.0;
     private _invert: boolean = false;
-    private _lit: boolean = true;
+    private _lit: boolean = false;
     private _solidColor: Color4 = [1, 1, 1, 1];
 
     constructor(desc: GlyphFieldDescriptor = {}) {

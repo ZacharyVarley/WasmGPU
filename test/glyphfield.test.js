@@ -349,6 +349,9 @@ assert.ok(compute.kernels && typeof compute.kernels.copyF32 === "function", "Mis
     assert.ok(("colorMode" in gf), "GlyphField.colorMode missing");
     assert.ok(("lit" in gf), "GlyphField.lit missing");
     assert.ok(("solidColor" in gf), "GlyphField.solidColor missing");
+    assert.strictEqual(gf.lit, false, "GlyphField.lit should default to false so glyph colors remain visible without scene lights");
+    const uDefault = gf.getUniformData();
+    numberApproxEqual(uDefault[8], 0.0, 1e-6, "Default lightingParams.x (lit flag) should be 0");
 
     gf.scalarMin = -2.0;
     gf.scalarMax = 3.0;
@@ -372,9 +375,9 @@ assert.ok(compute.kernels && typeof compute.kernels.copyF32 === "function", "Mis
     numberApproxEqual(u[2], 0.25, 1e-6, "scalarParams.z mismatch");
     numberApproxEqual(u[3], 2.0, 1e-6, "scalarParams.w mismatch");
 
-    // options: [invertFlag, colormapId, customStopCountOr0, colorModeId]
+    // options: [invertFlag, solidAlpha, customStopCountOr0, colorModeId]
     numberApproxEqual(u[4], 1.0, 1e-6, "options.x (invert) mismatch");
-    numberApproxEqual(u[5], 4.0, 1e-6, "options.y (colormapId for plasma) mismatch");
+    numberApproxEqual(u[5], 0.4, 1e-6, "options.y (solid alpha) mismatch");
     numberApproxEqual(u[7], 1.0, 1e-6, "options.w (colorModeId for scalar) mismatch");
 
     // lightingParams: [litFlag, solidR, solidG, solidB]
