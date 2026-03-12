@@ -73,3 +73,6 @@ assert.ok(compute.readback, "Compute.readback is missing");
     try { await compute.readback.readScalarU32(buf); } catch { threw = true; }
     assert.ok(threw, "Expected readback to throw when source buffer lacks COPY_SRC");
 }
+
+compute.destroy();
+device.destroy();

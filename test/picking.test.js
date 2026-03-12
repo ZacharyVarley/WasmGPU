@@ -273,3 +273,4 @@ try {
 }
 
 wgpu.destroy();
+device.destroy();
