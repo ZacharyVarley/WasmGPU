@@ -74,6 +74,8 @@ await WasmGPU.initWebAssembly(new URL("../dist/", import.meta.url).toString());
 const { WasmGPU: Engine, SelectionStore } = WasmGPU;
 assert.ok(Engine, "Missing export: WasmGPU class");
 assert.ok(typeof Engine.prototype.pick === "function", "Missing API: WasmGPU.pick(scene, camera, x, y, opts?)");
+assert.ok(typeof Engine.prototype.pickRect === "function", "Missing API: WasmGPU.pickRect(scene, camera, x0, y0, x1, y1, opts?)");
+assert.ok(typeof Engine.prototype.pickLasso === "function", "Missing API: WasmGPU.pickLasso(scene, camera, points, opts?)");
 assert.ok(typeof Engine.createSelectionStore === "function", "Missing API: WasmGPU.createSelectionStore()");
 assert.ok(SelectionStore, "Missing export: SelectionStore");
 
@@ -139,7 +141,11 @@ scene.add(mesh).add(cloud).add(field).add(cloudNoCPU);
 
 const renderer = wgpu.renderer;
 assert.ok(renderer && typeof renderer.pick === "function", "Internal renderer.pick is required for WasmGPU.pick");
+assert.ok(typeof renderer.pickRect === "function", "Internal renderer.pickRect is required for WasmGPU.pickRect");
+assert.ok(typeof renderer.pickLasso === "function", "Internal renderer.pickLasso is required for WasmGPU.pickLasso");
 const originalRendererPick = renderer.pick.bind(renderer);
+const originalRendererPickRect = renderer.pickRect.bind(renderer);
+const originalRendererPickLasso = renderer.pickLasso.bind(renderer);
 
 const makePickHit = (kind, object, objectId, elementIndex, worldPosition) => ({
     kind,
@@ -207,8 +213,75 @@ try {
     renderer.pick = async () => null;
     const miss = await wgpu.pick(scene, camera, 128, 128);
     assert.strictEqual(miss, null, "Miss picks should return null");
+
+    let rectOpts = null;
+    renderer.pickRect = async (_scene, _camera, _x0, _y0, _x1, _y1, opts) => {
+        rectOpts = opts;
+        return {
+            mode: "rect",
+            hits: [
+                makePickHit("pointcloud", cloud, 11, 2, [0, 1, 0]),
+                makePickHit("glyphfield", field, 21, 1, [2, 1, 0])
+            ],
+            truncated: false,
+            bounds: { x: 12, y: 34, width: 56, height: 78 },
+            sampledPixels: 128
+        };
+    };
+    const rectResult = await wgpu.pickRect(scene, camera, 10, 20, 110, 140, { maxHits: 5 });
+    assert.strictEqual(rectOpts.maxHits, 5, "pickRect should forward maxHits to renderer");
+    assert.strictEqual(rectResult.mode, "rect", "pickRect should preserve mode");
+    assert.strictEqual(rectResult.hits.length, 2, "pickRect should include all renderer hits");
+    assert.strictEqual(rectResult.truncated, false, "pickRect truncation flag mismatch");
+    assert.deepStrictEqual(rectResult.bounds, { x: 12, y: 34, width: 56, height: 78 }, "pickRect bounds mismatch");
+    assert.strictEqual(rectResult.sampledPixels, 128, "pickRect sampledPixels mismatch");
+    assert.deepStrictEqual(rectResult.hits[0].ndIndex, [1, 0], "pickRect pointcloud ndIndex mismatch");
+    assert.ok(rectResult.hits[0].attributes, "pickRect pointcloud attributes should exist");
+    numberApproxEqual(rectResult.hits[0].attributes.scalar, 0.30, 1e-6, "pickRect scalar mismatch");
+    assert.deepStrictEqual(rectResult.hits[1].ndIndex, [0, 1], "pickRect glyph ndIndex mismatch");
+    assert.ok(rectResult.hits[1].attributes, "pickRect glyph attributes should exist");
+
+    const rectNoAttr = await wgpu.pickRect(scene, camera, 10, 20, 110, 140, { includeAttributes: false });
+    assert.strictEqual(rectNoAttr.hits[0].attributes, null, "pickRect includeAttributes=false should null pointcloud attrs");
+    assert.strictEqual(rectNoAttr.hits[1].attributes, null, "pickRect includeAttributes=false should null glyph attrs");
+
+    let lassoPoints = null;
+    let lassoOpts = null;
+    renderer.pickLasso = async (_scene, _camera, points, opts) => {
+        lassoPoints = points;
+        lassoOpts = opts;
+        return {
+            mode: "lasso",
+            hits: [makePickHit("pointcloud", cloudNoCPU, 12, 1, [-2, -2, 0])],
+            truncated: true,
+            bounds: { x: 1, y: 2, width: 40, height: 20 },
+            sampledPixels: 9
+        };
+    };
+    const lassoInput = [{ x: 1, y: 1 }, { x: 60, y: 1 }, { x: 60, y: 40 }, { x: 10, y: 20 }];
+    const lassoResult = await wgpu.pickLasso(scene, camera, lassoInput, { includeAttributes: true, maxHits: 1 });
+    assert.strictEqual(lassoPoints.length, lassoInput.length, "pickLasso should forward points to renderer");
+    assert.strictEqual(lassoOpts.maxHits, 1, "pickLasso should forward maxHits to renderer");
+    assert.strictEqual(lassoResult.mode, "lasso", "pickLasso should preserve mode");
+    assert.strictEqual(lassoResult.truncated, true, "pickLasso truncation flag mismatch");
+    assert.strictEqual(lassoResult.hits.length, 1, "pickLasso hit count mismatch");
+    assert.deepStrictEqual(lassoResult.hits[0].ndIndex, [1, 0], "pickLasso ndIndex mismatch");
+    assert.strictEqual(lassoResult.hits[0].attributes, null, "pickLasso should keep null attributes when CPU data is unavailable");
+
+    renderer.pickRect = async () => ({
+        mode: "rect",
+        hits: [],
+        truncated: false,
+        bounds: { x: 0, y: 0, width: 0, height: 0 },
+        sampledPixels: 0
+    });
+    const rectMiss = await wgpu.pickRect(scene, camera, 0, 0, 0, 0);
+    assert.strictEqual(rectMiss.hits.length, 0, "pickRect miss should return empty hit list");
+    assert.strictEqual(rectMiss.truncated, false, "pickRect miss should not be truncated");
 } finally {
     renderer.pick = originalRendererPick;
+    renderer.pickRect = originalRendererPickRect;
+    renderer.pickLasso = originalRendererPickLasso;
 }
 
 {
