@@ -34,7 +34,7 @@ export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light
 export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
 export { Mesh } from "./world/mesh";
 export { SelectionStore } from "./world/picking";
-export type { PickAttributes, PickHit, PickKind, PickQuery, PickResult, SelectionEntry, SelectionMode } from "./world/picking";
+export type { PickAttributes, PickHit, PickKind, PickLassoPoint, PickQuery, PickRegionMode, PickRegionQuery, PickRegionResult, PickResult, SelectionEntry, SelectionMode } from "./world/picking";
 export { PointCloud } from "./world/pointcloud";
 export type { PointCloudDescriptor, PointCloudColormap } from "./world/pointcloud";
 export { Scene } from "./world/scene";

@@ -1,4 +1,4 @@
-﻿import { Mesh } from "./mesh";
+import { Mesh } from "./mesh";
 import { PointCloud } from "./pointcloud";
 import { GlyphField } from "./glyphfield";
 
@@ -24,6 +24,31 @@ export type PickResult = PickHit;
 
 export type PickQuery = {
     includeAttributes?: boolean;
+};
+
+export type PickRegionMode = "rect" | "lasso";
+
+export type PickLassoPoint = {
+    x: number;
+    y: number;
+};
+
+export type PickRegionQuery = {
+    includeAttributes?: boolean;
+    maxHits?: number;
+};
+
+export type PickRegionResult = {
+    mode: PickRegionMode;
+    hits: PickHit[];
+    truncated: boolean;
+    bounds: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    sampledPixels: number;
 };
 
 export type SelectionMode = "replace" | "add" | "toggle" | "remove";

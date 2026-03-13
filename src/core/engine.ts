@@ -27,7 +27,7 @@ import type { GlyphFieldDescriptor } from "../world/glyphfield";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { SelectionStore } from "../world/picking";
-import type { PickAttributes, PickQuery, PickResult } from "../world/picking";
+import type { PickAttributes, PickHit, PickLassoPoint, PickQuery, PickRegionQuery, PickRegionResult, PickResult } from "../world/picking";
 import { PointCloud } from "../world/pointcloud";
 import type { PointCloudDescriptor } from "../world/pointcloud";
 import { Scene } from "../world/scene";
@@ -197,10 +197,7 @@ export class WasmGPU {
         return null;
     }
 
-    async pick(scene: Scene, camera: Camera, x: number, y: number, opts: PickQuery = {}): Promise<PickResult | null> {
-        const hit = await this.renderer.pick(scene, camera, x, y, opts);
-        if (!hit) return null;
-        const includeAttributes = opts.includeAttributes ?? true;
+    private buildPickHit(hit: RendererPickHit, includeAttributes: boolean): PickHit {
         return {
             kind: hit.kind,
             object: hit.object,
@@ -209,6 +206,47 @@ export class WasmGPU {
             worldPosition: [hit.worldPosition[0], hit.worldPosition[1], hit.worldPosition[2]],
             ndIndex: this.buildPickNdIndex(hit),
             attributes: this.buildPickAttributes(hit, includeAttributes)
+        };
+    }
+
+    async pick(scene: Scene, camera: Camera, x: number, y: number, opts: PickQuery = {}): Promise<PickResult | null> {
+        const hit = await this.renderer.pick(scene, camera, x, y, opts);
+        if (!hit) return null;
+        const includeAttributes = opts.includeAttributes ?? true;
+        return this.buildPickHit(hit, includeAttributes);
+    }
+
+    async pickRect(scene: Scene, camera: Camera, x0: number, y0: number, x1: number, y1: number, opts: PickRegionQuery = {}): Promise<PickRegionResult> {
+        const includeAttributes = opts.includeAttributes ?? true;
+        const result = await this.renderer.pickRect(scene, camera, x0, y0, x1, y1, opts);
+        return {
+            mode: result.mode,
+            hits: result.hits.map((hit) => this.buildPickHit(hit, includeAttributes)),
+            truncated: result.truncated,
+            bounds: {
+                x: result.bounds.x,
+                y: result.bounds.y,
+                width: result.bounds.width,
+                height: result.bounds.height
+            },
+            sampledPixels: result.sampledPixels
+        };
+    }
+
+    async pickLasso(scene: Scene, camera: Camera, points: PickLassoPoint[], opts: PickRegionQuery = {}): Promise<PickRegionResult> {
+        const includeAttributes = opts.includeAttributes ?? true;
+        const result = await this.renderer.pickLasso(scene, camera, points, opts);
+        return {
+            mode: result.mode,
+            hits: result.hits.map((hit) => this.buildPickHit(hit, includeAttributes)),
+            truncated: result.truncated,
+            bounds: {
+                x: result.bounds.x,
+                y: result.bounds.y,
+                width: result.bounds.width,
+                height: result.bounds.height
+            },
+            sampledPixels: result.sampledPixels
         };
     }
 

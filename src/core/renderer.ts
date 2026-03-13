@@ -1,11 +1,11 @@
-﻿import { Transform, TransformStore } from "./transform";
+import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
 import { DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
-import type { PickQuery } from "../world/picking";
+import type { PickLassoPoint, PickQuery, PickRegionQuery } from "../world/picking";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
 import { animf, cullf, frameArena, mat4, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
@@ -61,27 +61,63 @@ type GlyphDrawItem = {
 type TransparentDrawItem = DrawItem | PointCloudDrawItem | GlyphDrawItem;
 
 export type RendererPickHit =
-    | {
+    {
         kind: "mesh";
         object: Mesh;
         objectId: number;
         elementIndex: number;
         worldPosition: [number, number, number];
-    }
-    | {
+    } |
+    {
         kind: "pointcloud";
         object: PointCloud;
         objectId: number;
         elementIndex: number;
         worldPosition: [number, number, number];
-    }
-    | {
+    } |
+    {
         kind: "glyphfield";
         object: GlyphField;
         objectId: number;
         elementIndex: number;
         worldPosition: [number, number, number];
     };
+
+export type RendererPickRegionMode = "rect" | "lasso";
+
+export type RendererPickRegionBounds = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+
+export type RendererPickRegionResult = {
+    mode: RendererPickRegionMode;
+    hits: RendererPickHit[];
+    truncated: boolean;
+    bounds: RendererPickRegionBounds;
+    sampledPixels: number;
+};
+
+type ResolvedPickRegionQuery = {
+    mode: RendererPickRegionMode;
+    bounds: RendererPickRegionBounds;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    maxHits: number;
+    lasso: Array<{ x: number; y: number }> | null;
+};
+
+type DecodedPickSample = {
+    objectId: number;
+    elementIndex: number;
+    depth: number;
+    px: number;
+    py: number;
+};
 
 export class Renderer {
     readonly canvas: HTMLCanvasElement;
@@ -192,7 +228,9 @@ export class Renderer {
     private pickDepthPayloadView: GPUTextureView | null = null;
     private pickIdReadbackBuffer: GPUBuffer | null = null;
     private pickDepthReadbackBuffer: GPUBuffer | null = null;
-    private pickTail: Promise<RendererPickHit | null> = Promise.resolve(null);
+    private pickIdReadbackCapacityBytes: number = 0;
+    private pickDepthReadbackCapacityBytes: number = 0;
+    private pickTail: Promise<unknown> = Promise.resolve();
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
     }
@@ -496,22 +534,161 @@ export class Renderer {
         this.tryReadGpuTiming();
     }
 
-
-    pick(scene: Scene, camera: Camera, x: number, y: number, _opts: PickQuery = {}): Promise<RendererPickHit | null> {
-        const run = () => this.runPick(scene, camera, x, y);
-        this.pickTail = this.pickTail.then(run, run);
-        return this.pickTail;
+    private schedulePick<T>(run: () => Promise<T>): Promise<T> {
+        const task = this.pickTail.then(run, run);
+        this.pickTail = task.then(() => undefined, () => undefined);
+        return task;
     }
 
-    private async runPick(scene: Scene, camera: Camera, x: number, y: number): Promise<RendererPickHit | null> {
-        frameArena.reset();
-        this.resize();
-        const clientW = Math.max(1, this.canvas.clientWidth || this.width);
-        const clientH = Math.max(1, this.canvas.clientHeight || this.height);
+    pick(scene: Scene, camera: Camera, x: number, y: number, _opts: PickQuery = {}): Promise<RendererPickHit | null> {
+        return this.schedulePick(() => this.runPick(scene, camera, x, y));
+    }
+
+    pickRect(scene: Scene, camera: Camera, x0: number, y0: number, x1: number, y1: number, opts: PickRegionQuery = {}): Promise<RendererPickRegionResult> {
+        return this.schedulePick(() => this.runPickRect(scene, camera, x0, y0, x1, y1, opts));
+    }
+
+    pickLasso(scene: Scene, camera: Camera, points: PickLassoPoint[], opts: PickRegionQuery = {}): Promise<RendererPickRegionResult> {
+        return this.schedulePick(() => this.runPickLasso(scene, camera, points, opts));
+    }
+
+    private clamp(x: number, min: number, max: number): number {
+        if (x < min) return min;
+        if (x > max) return max;
+        return x;
+    }
+
+    private alignTo256(x: number): number {
+        return (x + 255) & ~255;
+    }
+
+    private getPickMaxHits(opts: PickRegionQuery): number {
+        const v = opts.maxHits;
+        if (!Number.isFinite(v as number)) return 10000;
+        return Math.max(1, Math.floor(v as number));
+    }
+
+    private toFramebufferPixel(clientCoord: number, clientSize: number, framebufferSize: number): number {
+        const size = Math.max(1, framebufferSize | 0);
+        const t = (clientCoord / Math.max(1, clientSize)) * size;
+        const p = Math.floor(t);
+        if (p < 0) return 0;
+        if (p >= size) return size - 1;
+        return p;
+    }
+
+    private toClientBounds(minX: number, minY: number, maxX: number, maxY: number, clientW: number, clientH: number): RendererPickRegionBounds {
+        const x = this.clamp(minX, 0, clientW);
+        const y = this.clamp(minY, 0, clientH);
+        const right = this.clamp(maxX, 0, clientW);
+        const bottom = this.clamp(maxY, 0, clientH);
+        return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
+    }
+
+    private resolveSinglePixel(x: number, y: number, clientW: number, clientH: number): { px: number; py: number } | null {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
         if (x < 0 || y < 0 || x >= clientW || y >= clientH) return null;
-        const px = Math.min(this.width - 1, Math.max(0, Math.floor((x / clientW) * this.width)));
-        const py = Math.min(this.height - 1, Math.max(0, Math.floor((y / clientH) * this.height)));
+        const px = this.toFramebufferPixel(x, clientW, this.width);
+        const py = this.toFramebufferPixel(y, clientH, this.height);
+        return { px, py };
+    }
+
+    private resolveRectPickQuery(x0: number, y0: number, x1: number, y1: number, maxHits: number, clientW: number, clientH: number): ResolvedPickRegionQuery {
+        const minX = Math.min(x0, x1);
+        const minY = Math.min(y0, y1);
+        const maxX = Math.max(x0, x1);
+        const maxY = Math.max(y0, y1);
+        const bounds = this.toClientBounds(minX, minY, maxX, maxY, clientW, clientH);
+        const sameX = Math.abs(x0 - x1) <= 1e-6;
+        const sameY = Math.abs(y0 - y1) <= 1e-6;
+        if (sameX && sameY) {
+            const p = this.resolveSinglePixel(x0, y0, clientW, clientH);
+            if (!p) return { mode: "rect", bounds, x: 0, y: 0, width: 0, height: 0, maxHits, lasso: null };
+            return { mode: "rect", bounds, x: p.px, y: p.py, width: 1, height: 1, maxHits, lasso: null };
+        }
+        if (bounds.width <= 0 || bounds.height <= 0) return { mode: "rect", bounds, x: 0, y: 0, width: 0, height: 0, maxHits, lasso: null };
+        const maxClientX = Math.max(bounds.x, (bounds.x + bounds.width) - 1e-6);
+        const maxClientY = Math.max(bounds.y, (bounds.y + bounds.height) - 1e-6);
+        const px0 = this.toFramebufferPixel(bounds.x, clientW, this.width);
+        const py0 = this.toFramebufferPixel(bounds.y, clientH, this.height);
+        const px1 = this.toFramebufferPixel(maxClientX, clientW, this.width);
+        const py1 = this.toFramebufferPixel(maxClientY, clientH, this.height);
+        return {
+            mode: "rect", bounds,
+            x: Math.min(px0, px1), y: Math.min(py0, py1),
+            width: Math.abs(px1 - px0) + 1, height: Math.abs(py1 - py0) + 1,
+            maxHits, lasso: null
+        };
+    }
+
+    private resolveLassoPickQuery(points: PickLassoPoint[], maxHits: number, clientW: number, clientH: number): ResolvedPickRegionQuery {
+        if (!Array.isArray(points) || points.length < 3) {
+            return {
+                mode: "lasso", bounds: { x: 0, y: 0, width: 0, height: 0 },
+                x: 0, y: 0,
+                width: 0, height: 0,
+                maxHits, lasso: null
+            };
+        }
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        }
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+            return {
+                mode: "lasso", bounds: { x: 0, y: 0, width: 0, height: 0 },
+                x: 0, y: 0,
+                width: 0, height: 0,
+                maxHits, lasso: null
+            };
+        }
+        const bounds = this.toClientBounds(minX, minY, maxX, maxY, clientW, clientH);
+        if (bounds.width <= 0 || bounds.height <= 0) {
+            return { mode: "lasso", bounds, x: 0, y: 0, width: 0, height: 0, maxHits, lasso: null };
+        }
+        const lasso: Array<{ x: number; y: number }> = [];
+        let minFx = Infinity;
+        let minFy = Infinity;
+        let maxFx = -Infinity;
+        let maxFy = -Infinity;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+            const fx = (p.x / Math.max(1, clientW)) * Math.max(1, this.width);
+            const fy = (p.y / Math.max(1, clientH)) * Math.max(1, this.height);
+            lasso.push({ x: fx, y: fy });
+            if (fx < minFx) minFx = fx;
+            if (fy < minFy) minFy = fy;
+            if (fx > maxFx) maxFx = fx;
+            if (fy > maxFy) maxFy = fy;
+        }
+        if (lasso.length < 3 || !Number.isFinite(minFx) || !Number.isFinite(minFy) || !Number.isFinite(maxFx) || !Number.isFinite(maxFy)) {
+            return { mode: "lasso", bounds, x: 0, y: 0, width: 0, height: 0, maxHits, lasso: null };
+        }
+        const px0 = this.clamp(Math.floor(minFx), 0, Math.max(0, this.width - 1));
+        const py0 = this.clamp(Math.floor(minFy), 0, Math.max(0, this.height - 1));
+        const px1 = this.clamp(Math.floor(maxFx), 0, Math.max(0, this.width - 1));
+        const py1 = this.clamp(Math.floor(maxFy), 0, Math.max(0, this.height - 1));
+        if (px1 < px0 || py1 < py0) {
+            return { mode: "lasso", bounds, x: 0, y: 0, width: 0, height: 0, maxHits, lasso: null };
+        }
+        return {
+            mode: "lasso", bounds,
+            x: px0, y: py0,
+            width: (px1 - px0) + 1, height: (py1 - py0) + 1,
+            maxHits, lasso
+        };
+    }
+
+    private preparePickFrame(scene: Scene, camera: Camera): void {
         this.modelBufferIndex = 0;
         this.instanceBufferOffset = 0;
         this.cameraUniformStagingPtr = frameArena.allocF32(20);
@@ -525,37 +702,81 @@ export class Renderer {
         this.buildPointCloudDrawLists(scene, camera);
         this.buildGlyphFieldDrawLists(scene, camera);
         if (!this.pickIdView || !this.pickDepthView || !this.pickDepthPayloadView) this.resizePickTargets();
-        this.ensurePickReadbackBuffers();
-        if (!this.pickIdTexture || !this.pickDepthPayloadTexture || !this.pickIdReadbackBuffer || !this.pickDepthReadbackBuffer) return null;
-        if (this.pickIdReadbackBuffer.mapState !== "unmapped") {
-            try { this.pickIdReadbackBuffer.unmap(); } catch { /* ignore */ }
+    }
+
+    private resolveRendererPickHit(camera: Camera, sample: DecodedPickSample): RendererPickHit | null {
+        const obj = this.objectsById.get(sample.objectId);
+        if (!obj) return null;
+        const worldPosition = this.unprojectDepth(camera, sample.px, sample.py, sample.depth);
+        if (obj instanceof Mesh) {
+            return {
+                kind: "mesh",
+                object: obj, objectId: sample.objectId,
+                elementIndex: sample.elementIndex, worldPosition
+            };
         }
-        if (this.pickDepthReadbackBuffer.mapState !== "unmapped") {
-            try { this.pickDepthReadbackBuffer.unmap(); } catch { /* ignore */ }
+        if (obj instanceof PointCloud) {
+            return {
+                kind: "pointcloud",
+                object: obj, objectId: sample.objectId,
+                elementIndex: sample.elementIndex, worldPosition
+            };
         }
+        if (obj instanceof GlyphField) {
+            return {
+                kind: "glyphfield",
+                object: obj, objectId: sample.objectId,
+                elementIndex: sample.elementIndex, worldPosition
+            };
+        }
+        return null;
+    }
+
+    private pointInPolygon(x: number, y: number, polygon: Array<{ x: number; y: number }>): boolean {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x;
+            const yi = polygon[i].y;
+            const xj = polygon[j].x;
+            const yj = polygon[j].y;
+            const intersects = ((yi > y) !== (yj > y)) && (x < (((xj - xi) * (y - yi)) / ((yj - yi) || 1e-12)) + xi);
+            if (intersects) inside = !inside;
+        }
+        return inside;
+    }
+
+    private async executePickRegion(scene: Scene, camera: Camera, query: ResolvedPickRegionQuery): Promise<RendererPickRegionResult> {
+        if (query.width <= 0 || query.height <= 0) return { mode: query.mode, hits: [], truncated: false, bounds: query.bounds, sampledPixels: 0 };
+        this.preparePickFrame(scene, camera);
+        if (!this.pickIdView || !this.pickDepthView || !this.pickDepthPayloadView) return { mode: query.mode, hits: [], truncated: false, bounds: query.bounds, sampledPixels: 0 };
+        const readback = this.ensurePickReadbackBuffers(query.width, query.height);
+        if (!this.pickIdTexture || !this.pickDepthPayloadTexture || !this.pickIdReadbackBuffer || !this.pickDepthReadbackBuffer) return { mode: query.mode, hits: [], truncated: false, bounds: query.bounds, sampledPixels: 0 };
+        if (this.pickIdReadbackBuffer.mapState !== "unmapped") try { this.pickIdReadbackBuffer.unmap(); } catch { /* ignore */ }
+        if (this.pickDepthReadbackBuffer.mapState !== "unmapped") try { this.pickDepthReadbackBuffer.unmap(); } catch { /* ignore */ }
         const encoder = this.device.createCommandEncoder();
         const pass = encoder.beginRenderPass({
             colorAttachments: [
                 {
-                    view: this.pickIdView!,
+                    view: this.pickIdView,
                     clearValue: { r: 0, g: 0, b: 0, a: 0 },
                     loadOp: "clear",
                     storeOp: "store"
                 },
                 {
-                    view: this.pickDepthPayloadView!,
+                    view: this.pickDepthPayloadView,
                     clearValue: { r: 1, g: 0, b: 0, a: 0 },
                     loadOp: "clear",
                     storeOp: "store"
                 }
             ],
             depthStencilAttachment: {
-                view: this.pickDepthView!,
+                view: this.pickDepthView,
                 depthClearValue: 1.0,
                 depthLoadOp: "clear",
                 depthStoreOp: "store"
             }
         });
+        pass.setScissorRect(query.x, query.y, query.width, query.height);
         this.executeMeshPickDrawList(pass, this.opaqueDrawList);
         this.executeMeshPickDrawList(pass, this.transparentDrawList);
         this.executeGlyphPickDrawList(pass, this.opaqueGlyphFieldDrawList);
@@ -564,65 +785,101 @@ export class Renderer {
         this.executePointCloudPickDrawList(pass, this.transparentPointCloudDrawList);
         pass.end();
         encoder.copyTextureToBuffer(
-            { texture: this.pickIdTexture, origin: { x: px, y: py, z: 0 } },
-            { buffer: this.pickIdReadbackBuffer, bytesPerRow: 256, rowsPerImage: 1 },
-            { width: 1, height: 1, depthOrArrayLayers: 1 }
+            { texture: this.pickIdTexture, origin: { x: query.x, y: query.y, z: 0 } },
+            { buffer: this.pickIdReadbackBuffer, bytesPerRow: readback.idBytesPerRow, rowsPerImage: query.height },
+            { width: query.width, height: query.height, depthOrArrayLayers: 1 }
         );
         encoder.copyTextureToBuffer(
-            { texture: this.pickDepthPayloadTexture, origin: { x: px, y: py, z: 0 } },
-            { buffer: this.pickDepthReadbackBuffer, bytesPerRow: 256, rowsPerImage: 1 },
-            { width: 1, height: 1, depthOrArrayLayers: 1 }
+            { texture: this.pickDepthPayloadTexture, origin: { x: query.x, y: query.y, z: 0 } },
+            { buffer: this.pickDepthReadbackBuffer, bytesPerRow: readback.depthBytesPerRow, rowsPerImage: query.height },
+            { width: query.width, height: query.height, depthOrArrayLayers: 1 }
         );
         this.queue.submit([encoder.finish()]);
         await Promise.all([
-            this.pickIdReadbackBuffer.mapAsync(GPUMapMode.READ, 0, 256),
-            this.pickDepthReadbackBuffer.mapAsync(GPUMapMode.READ, 0, 256)
+            this.pickIdReadbackBuffer.mapAsync(GPUMapMode.READ, 0, readback.idSizeBytes),
+            this.pickDepthReadbackBuffer.mapAsync(GPUMapMode.READ, 0, readback.depthSizeBytes)
         ]);
-        let ids = new Uint32Array(2);
-        let depth = 1;
+        let truncated = false;
+        let sampledPixels = 0;
+        const samples: Map<string, DecodedPickSample> = new Map();
         try {
-            ids = new Uint32Array((this.pickIdReadbackBuffer.getMappedRange(0, 8) as ArrayBuffer).slice(0));
-            const depthArr = new Float32Array((this.pickDepthReadbackBuffer.getMappedRange(0, 4) as ArrayBuffer).slice(0));
-            depth = depthArr[0];
+            const idWords = new Uint32Array(this.pickIdReadbackBuffer.getMappedRange(0, readback.idSizeBytes));
+            const depthWords = new Float32Array(this.pickDepthReadbackBuffer.getMappedRange(0, readback.depthSizeBytes));
+            const lasso = query.mode === "lasso" ? query.lasso : null;
+            rows: for (let y = 0; y < query.height; y++) {
+                const idRowBase = (y * readback.idBytesPerRow) >>> 2;
+                const depthRowBase = (y * readback.depthBytesPerRow) >>> 2;
+                const py = query.y + y;
+                for (let x = 0; x < query.width; x++) {
+                    const px = query.x + x;
+                    if (lasso && !this.pointInPolygon(px + 0.5, py + 0.5, lasso)) continue;
+                    sampledPixels++;
+                    const idIndex = idRowBase + (x * 2);
+                    const objectId = idWords[idIndex] >>> 0;
+                    if (objectId === 0) continue;
+                    const elementIndex = idWords[idIndex + 1] >>> 0;
+                    const depth = depthWords[depthRowBase + x];
+                    if (!Number.isFinite(depth) || depth >= 1.0) continue;
+                    const key = `${objectId}:${elementIndex}`;
+                    const existing = samples.get(key);
+                    if (!existing) {
+                        if (samples.size >= query.maxHits) {
+                            truncated = true;
+                            break rows;
+                        }
+                        samples.set(key, { objectId, elementIndex, depth, px, py });
+                    } else if (depth < existing.depth) {
+                        existing.depth = depth;
+                        existing.px = px;
+                        existing.py = py;
+                    }
+                }
+            }
         } finally {
             try { this.pickIdReadbackBuffer.unmap(); } catch { /* ignore */ }
             try { this.pickDepthReadbackBuffer.unmap(); } catch { /* ignore */ }
         }
-        const objectId = ids[0] >>> 0;
-        const elementIndex = ids[1] >>> 0;
-        if (objectId === 0) return null;
-        if (!Number.isFinite(depth) || depth >= 1.0) return null;
-        const obj = this.objectsById.get(objectId);
-        if (!obj) return null;
-        const worldPosition = this.unprojectDepth(camera, px, py, depth);
-        if (obj instanceof Mesh) {
-            return {
-                kind: "mesh",
-                object: obj,
-                objectId,
-                elementIndex,
-                worldPosition
-            };
+        const hits: RendererPickHit[] = [];
+        for (const sample of samples.values()) {
+            const hit = this.resolveRendererPickHit(camera, sample);
+            if (hit) hits.push(hit);
         }
-        if (obj instanceof PointCloud) {
-            return {
-                kind: "pointcloud",
-                object: obj,
-                objectId,
-                elementIndex,
-                worldPosition
-            };
-        }
-        if (obj instanceof GlyphField) {
-            return {
-                kind: "glyphfield",
-                object: obj,
-                objectId,
-                elementIndex,
-                worldPosition
-            };
-        }
-        return null;
+        return { mode: query.mode, hits, truncated, bounds: query.bounds, sampledPixels };
+    }
+
+    private async runPick(scene: Scene, camera: Camera, x: number, y: number): Promise<RendererPickHit | null> {
+        frameArena.reset();
+        this.resize();
+        const clientW = Math.max(1, this.canvas.clientWidth || this.width);
+        const clientH = Math.max(1, this.canvas.clientHeight || this.height);
+        const pixel = this.resolveSinglePixel(x, y, clientW, clientH);
+        if (!pixel) return null;
+        const query: ResolvedPickRegionQuery = {
+            mode: "rect", bounds: { x, y, width: 0, height: 0 },
+            x: pixel.px, y: pixel.py,
+            width: 1, height: 1,
+            maxHits: 1, lasso: null
+        };
+        const result = await this.executePickRegion(scene, camera, query);
+        return result.hits.length > 0 ? result.hits[0] : null;
+    }
+
+    private async runPickRect(scene: Scene, camera: Camera, x0: number, y0: number, x1: number, y1: number, opts: PickRegionQuery): Promise<RendererPickRegionResult> {
+        frameArena.reset();
+        this.resize();
+        const clientW = Math.max(1, this.canvas.clientWidth || this.width);
+        const clientH = Math.max(1, this.canvas.clientHeight || this.height);
+        const query = this.resolveRectPickQuery(x0, y0, x1, y1, this.getPickMaxHits(opts), clientW, clientH);
+        return this.executePickRegion(scene, camera, query);
+    }
+
+    private async runPickLasso(scene: Scene, camera: Camera, points: PickLassoPoint[], opts: PickRegionQuery): Promise<RendererPickRegionResult> {
+        frameArena.reset();
+        this.resize();
+        const clientW = Math.max(1, this.canvas.clientWidth || this.width);
+        const clientH = Math.max(1, this.canvas.clientHeight || this.height);
+        const query = this.resolveLassoPickQuery(points, this.getPickMaxHits(opts), clientW, clientH);
+        return this.executePickRegion(scene, camera, query);
     }
 
     destroy(): void {
@@ -674,7 +931,9 @@ export class Renderer {
         this.pickDepthReadbackBuffer?.destroy();
         this.pickIdReadbackBuffer = null;
         this.pickDepthReadbackBuffer = null;
-        this.pickTail = Promise.resolve(null);
+        this.pickIdReadbackCapacityBytes = 0;
+        this.pickDepthReadbackCapacityBytes = 0;
+        this.pickTail = Promise.resolve();
         this.lightingUniformBuffer?.destroy();
         this.instanceBuffer?.destroy();
         this.instanceBuffer = null;
@@ -1026,22 +1285,33 @@ export class Renderer {
             usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
         });
         this.pickDepthPayloadView = this.pickDepthPayloadTexture.createView();
-        this.ensurePickReadbackBuffers();
+        this.ensurePickReadbackBuffers(1, 1);
     }
 
-    private ensurePickReadbackBuffers(): void {
-        if (!this.pickIdReadbackBuffer) {
+    private ensurePickReadbackBuffers(copyWidth: number, copyHeight: number): { idBytesPerRow: number; depthBytesPerRow: number; idSizeBytes: number; depthSizeBytes: number } {
+        const width = Math.max(1, copyWidth | 0);
+        const height = Math.max(1, copyHeight | 0);
+        const idBytesPerRow = this.alignTo256(width * 8);
+        const depthBytesPerRow = this.alignTo256(width * 4);
+        const idSizeBytes = idBytesPerRow * height;
+        const depthSizeBytes = depthBytesPerRow * height;
+        if (!this.pickIdReadbackBuffer || this.pickIdReadbackCapacityBytes < idSizeBytes) {
+            this.pickIdReadbackBuffer?.destroy();
             this.pickIdReadbackBuffer = this.device.createBuffer({
-                size: 256,
+                size: idSizeBytes,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
             });
+            this.pickIdReadbackCapacityBytes = idSizeBytes;
         }
-        if (!this.pickDepthReadbackBuffer) {
+        if (!this.pickDepthReadbackBuffer || this.pickDepthReadbackCapacityBytes < depthSizeBytes) {
+            this.pickDepthReadbackBuffer?.destroy();
             this.pickDepthReadbackBuffer = this.device.createBuffer({
-                size: 256,
+                size: depthSizeBytes,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
             });
+            this.pickDepthReadbackCapacityBytes = depthSizeBytes;
         }
+        return { idBytesPerRow, depthBytesPerRow, idSizeBytes, depthSizeBytes };
     }
 
     private writePickUniform(slot: number, objectId: number, elementBase: number = 0): void {
