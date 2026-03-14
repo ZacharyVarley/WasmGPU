@@ -1,6 +1,8 @@
-﻿import { Transform } from "../core/transform";
+import { Transform } from "../core/transform";
 import { BlendMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
+import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform, SCALE_UNIFORM_FLOAT_COUNT } from "../scaling";
+import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { assert, createBuffer } from "../utils";
 import { Bounds3, boundsFromBox, boundsFromBoxAndSphere, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
@@ -21,28 +23,23 @@ export type PointCloudDescriptor = {
     minPointSize?: number;
     maxPointSize?: number;
     sizeAttenuation?: number;
-    scalarMin?: number;
-    scalarMax?: number;
     opacity?: number;
-    gamma?: number;
-    invert?: boolean;
     colormap?: PointCloudColormap | Colormap;
     colormapStops?: Color4[];
     softness?: number;
+    scaleTransform: ScaleTransformDescriptor;
     visible?: boolean;
     name?: string;
     keepCPUData?: boolean;
     ndShape?: number[];
 };
 
-const UNIFORM_FLOAT_COUNT = 44;
+const UNIFORM_FLOAT_COUNT = 4 + SCALE_UNIFORM_FLOAT_COUNT + 4 + (8 * 4);
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
 type BoundsSourceMode = "none" | "explicit" | "computed";
 
 const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-
-const clampMin = (x: number, min: number): number => x < min ? min : x;
 
 const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
     if (!shape) return null;
@@ -84,17 +81,14 @@ const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4
     return out;
 };
 
-const colormapId = (name: PointCloudColormap): number => {
-    switch (name) {
-        case "grayscale": return 0;
-        case "turbo": return 1;
-        case "viridis": return 2;
-        case "magma": return 3;
-        case "plasma": return 4;
-        case "inferno": return 5;
-        case "custom": return 6;
-    }
-}
+const normalizePointCloudScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform): ScaleTransform => {
+    return normalizeScaleTransform({
+        componentCount: 4,
+        componentIndex: 3,
+        stride: 4,
+        ...transform
+    });
+};
 
 export class PointCloud {
     readonly transform: Transform = new Transform();
@@ -111,18 +105,16 @@ export class PointCloud {
     private _minPointSize: number = 1.0;
     private _maxPointSize: number = 16.0;
     private _sizeAttenuation: number = 1.0;
-    private _scalarMin: number = 0.0;
-    private _scalarMax: number = 1.0;
     private _opacity: number = 1.0;
-    private _gamma: number = 1.0;
-    private _invert: boolean = false;
     private _colormap: PointCloudColormap | Colormap = "viridis";
     private _colormapStops: Color4[] = [[0.26700, 0.00487, 0.32942, 1.0], [0.99325, 0.90616, 0.14394, 1.0]];
     private _softness: number = 0.15;
+    private _scaleTransform: ScaleTransform;
     private _CPUData: Float32Array | null = null;
     private _keepCPUData: boolean = false;
     private _ndShape: number[] | null = null;
     private _boundsSource: BoundsSourceMode = "none";
+    private _scaleRevision: number = 0;
     pointsBuffer: GPUBuffer | null = null;
     uniformBuffer: GPUBuffer | null = null;
     bindGroup: GPUBindGroup | null = null;
@@ -131,7 +123,9 @@ export class PointCloud {
     private _uniformDirty: boolean = true;
     private _pointsDirty: boolean = true;
 
-    constructor(desc: PointCloudDescriptor = {}) {
+    constructor(desc: PointCloudDescriptor) {
+        assert(!!desc && !!desc.scaleTransform, "PointCloud: scaleTransform is required.");
+        this._scaleTransform = normalizePointCloudScaleTransform(desc.scaleTransform);
         if (desc.name !== undefined) this.name = desc.name;
         if (desc.visible !== undefined) this.visible = !!desc.visible;
         if (desc.blendMode !== undefined) this.blendMode = desc.blendMode;
@@ -141,11 +135,7 @@ export class PointCloud {
         if (desc.minPointSize !== undefined) this._minPointSize = desc.minPointSize;
         if (desc.maxPointSize !== undefined) this._maxPointSize = desc.maxPointSize;
         if (desc.sizeAttenuation !== undefined) this._sizeAttenuation = desc.sizeAttenuation;
-        if (desc.scalarMin !== undefined) this._scalarMin = desc.scalarMin;
-        if (desc.scalarMax !== undefined) this._scalarMax = desc.scalarMax;
         if (desc.opacity !== undefined) this._opacity = desc.opacity;
-        if (desc.gamma !== undefined) this._gamma = desc.gamma;
-        if (desc.invert !== undefined) this._invert = !!desc.invert;
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
         if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
         if (desc.softness !== undefined) this._softness = desc.softness;
@@ -209,6 +199,41 @@ export class PointCloud {
         this._ndShape = normalizeNdShape(shape);
     }
 
+    get scaleTransform(): ScaleTransform {
+        return cloneScaleTransform(this._scaleTransform);
+    }
+
+    setScaleTransform(transform: ScaleTransformDescriptor | ScaleTransform): void {
+        this._scaleTransform = normalizePointCloudScaleTransform(transform);
+        this._uniformDirty = true;
+    }
+
+    applyScaleStats(stats: ScaleStatsResult): void {
+        const next = cloneScaleTransform(this._scaleTransform);
+        if (Number.isFinite(stats.min)) next.domainMin = stats.min;
+        if (Number.isFinite(stats.max)) next.domainMax = stats.max;
+        if (stats.percentileMin !== null && stats.percentileMax !== null) {
+            next.clampMin = stats.percentileMin;
+            next.clampMax = stats.percentileMax;
+        }
+        this._scaleTransform = normalizePointCloudScaleTransform(next);
+        this._uniformDirty = true;
+    }
+
+    getScaleSourceDescriptor(revision: number = this._scaleRevision): ScaleSourceDescriptor | null {
+        if (!this.pointsBuffer || this._pointCount <= 0) return null;
+        return {
+            buffer: this.pointsBuffer,
+            count: this._pointCount,
+            componentCount: this._scaleTransform.componentCount,
+            componentIndex: this._scaleTransform.componentIndex,
+            valueMode: this._scaleTransform.valueMode,
+            stride: this._scaleTransform.stride,
+            offset: this._scaleTransform.offset,
+            revision
+        };
+    }
+
     get basePointSize(): number {
         return this._basePointSize;
     }
@@ -249,26 +274,6 @@ export class PointCloud {
         this._uniformDirty = true;
     }
 
-    get scalarMin(): number {
-        return this._scalarMin;
-    }
-
-    set scalarMin(v: number) {
-        if (v === this._scalarMin) return;
-        this._scalarMin = v;
-        this._uniformDirty = true;
-    }
-
-    get scalarMax(): number {
-        return this._scalarMax;
-    }
-
-    set scalarMax(v: number) {
-        if (v === this._scalarMax) return;
-        this._scalarMax = v;
-        this._uniformDirty = true;
-    }
-
     get opacity(): number {
         return this._opacity;
     }
@@ -276,26 +281,6 @@ export class PointCloud {
     set opacity(v: number) {
         if (v === this._opacity) return;
         this._opacity = v;
-        this._uniformDirty = true;
-    }
-
-    get gamma(): number {
-        return this._gamma;
-    }
-
-    set gamma(v: number) {
-        if (v === this._gamma) return;
-        this._gamma = v;
-        this._uniformDirty = true;
-    }
-
-    get invert(): boolean {
-        return this._invert;
-    }
-
-    set invert(v: boolean) {
-        if (v === this._invert) return;
-        this._invert = v;
         this._uniformDirty = true;
     }
 
@@ -346,6 +331,7 @@ export class PointCloud {
         this._pointCount = data.length / 4;
         this._pointsDirty = true;
         this._keepCPUData = opts.keepCPUData ?? this._keepCPUData;
+        this._scaleRevision++;
         this.clearComputedBoundsIfNeeded();
     }
 
@@ -355,6 +341,7 @@ export class PointCloud {
         this._pointCount = pointCount;
         this.pointsBuffer = buffer;
         this._pointsDirty = false;
+        this._scaleRevision++;
         this.bindGroupKey = null;
         this.clearComputedBoundsIfNeeded();
     }
@@ -408,21 +395,6 @@ export class PointCloud {
             if (d2 > r2) r2 = d2;
         }
         this.setBounds(boundsFromBoxAndSphere([minX, minY, minZ], [maxX, maxY, maxZ], [cx, cy, cz], Math.sqrt(r2)), "computed");
-    }
-
-    computeScalarRangeFromCPUData(): void {
-        const data = this._CPUData;
-        if (!data || data.length < 4) return;
-        let minS = data[3];
-        let maxS = data[3];
-        for (let i = 0; i < data.length; i += 4) {
-            const s = data[i + 3];
-            if (s < minS) minS = s;
-            if (s > maxS) maxS = s;
-        }
-        this._scalarMin = minS;
-        this._scalarMax = maxS;
-        this._uniformDirty = true;
     }
 
     getLocalBounds(): Bounds3 {
@@ -480,19 +452,16 @@ export class PointCloud {
         out[1] = minSize;
         out[2] = maxSize;
         out[3] = atten;
-        out[4] = this._scalarMin;
-        out[5] = this._scalarMax;
-        out[6] = clamp01(this._opacity);
-        out[7] = clampMin(this._gamma, 1e-6);
-        out[8] = this._invert ? 1.0 : 0.0;
-        out[9] = (this._colormap instanceof Colormap) ? 0 : colormapId(this._colormap);
-        out[10] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
-        out[11] = clamp01(this._softness);
+        packScaleTransform(this._scaleTransform, out, 4);
+        out[24] = clamp01(this._opacity);
+        out[25] = clamp01(this._softness);
+        out[26] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
+        out[27] = 0;
         const stops = this._colormapStops;
         const nStops = Math.min(8, Math.max(2, stops.length));
         for (let i = 0; i < 8; i++) {
             const src = stops[Math.min(i, nStops - 1)];
-            const o = 12 + i * 4;
+            const o = 28 + i * 4;
             out[o + 0] = src[0];
             out[o + 1] = src[1];
             out[o + 2] = src[2];

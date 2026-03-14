@@ -11,9 +11,13 @@ import standardSkinnedWGSL from "../wgsl/graphics/standard-skinned.wgsl";
 import standardSkinned8WGSL from "../wgsl/graphics/standard-skinned8.wgsl";
 import dataWGSL from "../wgsl/graphics/data.wgsl";
 import customDefaultVertexWGSL from "../wgsl/graphics/custom-default-vertex.wgsl";
+import { SCALE_UNIFORM_FLOAT_COUNT, cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from "../scaling";
+import type { ScaleSourceDescriptor, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 
 export type Color = [number, number, number];
 export type Color4 = [number, number, number, number];
+
+const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
 export enum BlendMode {
     Opaque = "opaque",
@@ -413,37 +417,11 @@ export class StandardMaterial extends Material {
     }
 }
 
-export enum DataScaleMode {
-    Linear = "linear",
-    Log = "log",
-    Symlog = "symlog"
-}
-
-export enum DataValueMode {
-    Component = "component",
-    Magnitude = "magnitude"
-}
-
 export type DataMaterialDescriptor = MaterialDescriptor & {
     data?: Float32Array;
     dataBuffer?: GPUBuffer | { buffer: GPUBuffer } | null;
     keepCPUData?: boolean;
-    componentCount?: number;
-    componentIndex?: number;
-    valueMode?: DataValueMode;
-    stride?: number;
-    offset?: number;
-    domainMin?: number;
-    domainMax?: number;
-    clipMin?: number;
-    clipMax?: number;
-    scaleMode?: DataScaleMode;
-    symlogLinThresh?: number;
-    logBase?: number;
-    tMin?: number;
-    tMax?: number;
-    invert?: boolean;
-    gamma?: number;
+    scaleTransform: ScaleTransformDescriptor;
     opacity?: number;
     shading?: number;
     colormap?: BuiltinColormapName | Colormap;
@@ -455,240 +433,40 @@ export class DataMaterial extends Material {
     private _dataDirty: boolean = false;
     private _ownsDataBuffer: boolean = false;
     dataBuffer: GPUBuffer | null = null;
-    private _componentCount: number = 1;
-    private _componentIndex: number = 0;
-    private _valueMode: DataValueMode = DataValueMode.Component;
-    private _stride: number = 1;
-    private _offset: number = 0;
-    private _domainMin: number = 0;
-    private _domainMax: number = 1;
-    private _clipMin: number = 0;
-    private _clipMax: number = 0;
-    private _scaleMode: DataScaleMode = DataScaleMode.Linear;
-    private _symlogLinThresh: number = 1;
-    private _logBase: number = 10;
-    private _tMin: number = 0;
-    private _tMax: number = 1;
-    private _invert: boolean = false;
-    private _gamma: number = 1;
+    private _elementCount: number = 0;
+    private _scaleTransform: ScaleTransform;
     private _opacity: number = 1;
     private _shading: number = 0;
     private _colormap: BuiltinColormapName | Colormap = "viridis";
+    private _scaleRevision: number = 0;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
 
-    constructor(desc: DataMaterialDescriptor = {}) {
+    constructor(desc: DataMaterialDescriptor) {
+        assert(!!desc && !!desc.scaleTransform, "DataMaterial: scaleTransform is required.");
         super({
             ...desc,
             blendMode: desc.blendMode ?? ((desc.opacity ?? 1) < 1 ? BlendMode.Transparent : BlendMode.Opaque)
         });
+        this._scaleTransform = normalizeScaleTransform(desc.scaleTransform);
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
-        if (desc.componentCount !== undefined) this._componentCount = desc.componentCount;
-        if (desc.componentIndex !== undefined) this._componentIndex = desc.componentIndex;
-        if (desc.valueMode !== undefined) this._valueMode = desc.valueMode;
-        if (desc.stride !== undefined) this._stride = desc.stride;
-        if (desc.offset !== undefined) this._offset = desc.offset;
-        if (desc.stride === undefined && desc.componentCount !== undefined) this._stride = this._componentCount;
-        if (this._stride < this._componentCount) this._stride = this._componentCount;
-        if (desc.domainMin !== undefined) this._domainMin = desc.domainMin;
-        if (desc.domainMax !== undefined) this._domainMax = desc.domainMax;
-        if (desc.clipMin !== undefined) this._clipMin = desc.clipMin;
-        if (desc.clipMax !== undefined) this._clipMax = desc.clipMax;
-        if (desc.scaleMode !== undefined) this._scaleMode = desc.scaleMode;
-        if (desc.symlogLinThresh !== undefined) this._symlogLinThresh = desc.symlogLinThresh;
-        if (desc.logBase !== undefined) this._logBase = desc.logBase;
-        if (desc.tMin !== undefined) this._tMin = desc.tMin;
-        if (desc.tMax !== undefined) this._tMax = desc.tMax;
-        if (desc.invert !== undefined) this._invert = !!desc.invert;
-        if (desc.gamma !== undefined) this._gamma = desc.gamma;
         if (desc.opacity !== undefined) this._opacity = desc.opacity;
         if (desc.shading !== undefined) this._shading = desc.shading;
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
-        if (desc.data) this.setData(desc.data, {
-            keepCPUData: this._keepCPUData,
-            componentCount: this._componentCount,
-            stride: this._stride,
-            offset: this._offset
-        });
+        if (desc.data) this.setData(desc.data, { keepCPUData: this._keepCPUData });
         if (desc.dataBuffer !== undefined && desc.dataBuffer !== null) {
-            const b = (desc.dataBuffer as any).buffer ? (desc.dataBuffer as any).buffer : desc.dataBuffer;
-            this.setDataBuffer(b as GPUBuffer, {
-                componentCount: this._componentCount,
-                stride: this._stride,
-                offset: this._offset
-            });
+            const b = (desc.dataBuffer as { buffer?: GPUBuffer }).buffer ? (desc.dataBuffer as { buffer: GPUBuffer }).buffer : (desc.dataBuffer as GPUBuffer);
+            this.setDataBuffer(b);
         }
     }
 
-    get componentCount(): number {
-        return this._componentCount;
+    get scaleTransform(): ScaleTransform {
+        return cloneScaleTransform(this._scaleTransform);
     }
 
-    set componentCount(v: number) {
-        if (v === this._componentCount) return;
-        this._componentCount = v;
-        this._dirty = true;
-    }
-
-    get componentIndex(): number {
-        return this._componentIndex;
-    }
-
-    set componentIndex(v: number) {
-        if (v === this._componentIndex) return;
-        this._componentIndex = v;
-        this._dirty = true;
-    }
-
-    get valueMode(): DataValueMode {
-        return this._valueMode;
-    }
-
-    set valueMode(v: DataValueMode) {
-        if (v === this._valueMode) return;
-        this._valueMode = v;
-        this._dirty = true;
-    }
-
-    get stride(): number {
-        return this._stride;
-    }
-
-    set stride(v: number) {
-        if (v === this._stride) return;
-        this._stride = v;
-        this._dirty = true;
-    }
-
-    get offset(): number {
-        return this._offset;
-    }
-
-    set offset(v: number) {
-        if (v === this._offset) return;
-        this._offset = v;
-        this._dirty = true;
-    }
-
-    get domainMin(): number {
-        return this._domainMin;
-    }
-
-    set domainMin(v: number) {
-        if (v === this._domainMin) return;
-        this._domainMin = v;
-        this._dirty = true;
-    }
-
-    get domainMax(): number {
-        return this._domainMax;
-    }
-
-    set domainMax(v: number) {
-        if (v === this._domainMax) return;
-        this._domainMax = v;
-        this._dirty = true;
-    }
-
-    setDomain(min: number, max: number): void {
-        this._domainMin = min;
-        this._domainMax = max;
-        this._dirty = true;
-    }
-
-    get clipMin(): number {
-        return this._clipMin;
-    }
-
-    set clipMin(v: number) {
-        if (v === this._clipMin) return;
-        this._clipMin = v;
-        this._dirty = true;
-    }
-
-    get clipMax(): number {
-        return this._clipMax;
-    }
-
-    set clipMax(v: number) {
-        if (v === this._clipMax) return;
-        this._clipMax = v;
-        this._dirty = true;
-    }
-
-    setClip(min: number, max: number): void {
-        this._clipMin = min;
-        this._clipMax = max;
-        this._dirty = true;
-    }
-
-    get scaleMode(): DataScaleMode {
-        return this._scaleMode;
-    }
-
-    set scaleMode(v: DataScaleMode) {
-        if (v === this._scaleMode) return;
-        this._scaleMode = v;
-        this._dirty = true;
-    }
-
-    get symlogLinThresh(): number {
-        return this._symlogLinThresh;
-    }
-
-    set symlogLinThresh(v: number) {
-        if (v === this._symlogLinThresh) return;
-        this._symlogLinThresh = v;
-        this._dirty = true;
-    }
-
-    get logBase(): number {
-        return this._logBase;
-    }
-
-    set logBase(v: number) {
-        if (v === this._logBase) return;
-        this._logBase = v;
-        this._dirty = true;
-    }
-
-    get tMin(): number {
-        return this._tMin;
-    }
-
-    set tMin(v: number) {
-        if (v === this._tMin) return;
-        this._tMin = v;
-        this._dirty = true;
-    }
-
-    get tMax(): number {
-        return this._tMax;
-    }
-
-    set tMax(v: number) {
-        if (v === this._tMax) return;
-        this._tMax = v;
-        this._dirty = true;
-    }
-
-    get invert(): boolean {
-        return this._invert;
-    }
-
-    set invert(v: boolean) {
-        if (v === this._invert) return;
-        this._invert = v;
-        this._dirty = true;
-    }
-
-    get gamma(): number {
-        return this._gamma;
-    }
-
-    set gamma(v: number) {
-        if (v === this._gamma) return;
-        this._gamma = v;
+    setScaleTransform(transform: ScaleTransformDescriptor | ScaleTransform): void {
+        this._scaleTransform = normalizeScaleTransform(transform);
+        this._elementCount = this.recomputeElementCount();
         this._dirty = true;
     }
 
@@ -732,30 +510,37 @@ export class DataMaterial extends Material {
         return Colormap.builtin(c);
     }
 
-    setData(data: Float32Array, opts: { keepCPUData?: boolean; componentCount?: number; stride?: number; offset?: number } = {}): void {
+    private computeElementCountFromFloatLength(floatLength: number): number {
+        const stride = Math.max(1, Math.floor(this._scaleTransform.stride));
+        const offset = Math.max(0, Math.floor(this._scaleTransform.offset));
+        if (floatLength <= offset) return 0;
+        return Math.max(0, Math.floor((floatLength - offset) / stride));
+    }
+
+    private recomputeElementCount(): number {
+        if (this._CPUData) return this.computeElementCountFromFloatLength(this._CPUData.length);
+        if (this.dataBuffer) return this.computeElementCountFromFloatLength(Math.floor(this.dataBuffer.size / 4));
+        return 0;
+    }
+
+    setData(data: Float32Array, opts: { keepCPUData?: boolean } = {}): void {
         assert(data.length > 0, "DataMaterial: data must be non-empty.");
         this._CPUData = data;
         this._dataDirty = true;
         this._keepCPUData = opts.keepCPUData ?? this._keepCPUData;
-        if (opts.componentCount !== undefined) this._componentCount = opts.componentCount;
-        if (opts.stride === undefined && opts.componentCount !== undefined) this._stride = this._componentCount;
-        if (opts.stride !== undefined) this._stride = opts.stride;
-        if (opts.offset !== undefined) this._offset = opts.offset;
-        if (this._stride < this._componentCount) this._stride = this._componentCount;
+        this._elementCount = this.computeElementCountFromFloatLength(data.length);
+        this._scaleRevision++;
         this._dirty = true;
         this.bindGroupKey = null;
     }
 
-    setDataBuffer(buffer: GPUBuffer, opts: { componentCount?: number; stride?: number; offset?: number } = {}): void {
+    setDataBuffer(buffer: GPUBuffer): void {
         this._CPUData = null;
         this.dataBuffer = buffer;
         this._ownsDataBuffer = false;
         this._dataDirty = false;
-        if (opts.componentCount !== undefined) this._componentCount = opts.componentCount;
-        if (opts.stride === undefined && opts.componentCount !== undefined) this._stride = this._componentCount;
-        if (opts.stride !== undefined) this._stride = opts.stride;
-        if (opts.offset !== undefined) this._offset = opts.offset;
-        if (this._stride < this._componentCount) this._stride = this._componentCount;
+        this._elementCount = this.computeElementCountFromFloatLength(Math.floor(buffer.size / 4));
+        this._scaleRevision++;
         this._dirty = true;
         this.bindGroupKey = null;
     }
@@ -764,78 +549,18 @@ export class DataMaterial extends Material {
         this._CPUData = null;
     }
 
-    computeDomainFromCPUData(): void {
-        const data = this._CPUData;
-        if (!data || data.length === 0) return;
-        const cc = Math.max(1, Math.min(4, this._componentCount | 0));
-        const stride = Math.max(cc, this._stride | 0);
-        const offset = Math.max(0, this._offset | 0);
-        const start = offset;
-        if (start >= data.length) return;
-        let minV = Number.POSITIVE_INFINITY;
-        let maxV = Number.NEGATIVE_INFINITY;
-        for (let i = start; i < data.length; i += stride) {
-            let v = 0;
-            if (this._valueMode === DataValueMode.Magnitude) {
-                const x = data[i + 0] ?? 0;
-                const y = (cc > 1) ? (data[i + 1] ?? 0) : 0;
-                const z = (cc > 2) ? (data[i + 2] ?? 0) : 0;
-                const w = (cc > 3) ? (data[i + 3] ?? 0) : 0;
-                v = Math.hypot(x, y, z, w);
-            } else {
-                const cidx = Math.max(0, Math.min(3, this._componentIndex | 0));
-                v = data[i + cidx] ?? 0;
-            }
-            if (!Number.isFinite(v)) continue;
-            if (v < minV) minV = v;
-            if (v > maxV) maxV = v;
-        }
-
-        if (minV === Number.POSITIVE_INFINITY || maxV === Number.NEGATIVE_INFINITY) return;
-        this._domainMin = minV;
-        this._domainMax = maxV;
-        this._dirty = true;
-    }
-
-    computeClipFromCPUData(lowPercentile: number, highPercentile: number): void {
-        const data = this._CPUData;
-        if (!data || data.length === 0) return;
-        const lp = Math.max(0, Math.min(100, lowPercentile));
-        const hp = Math.max(0, Math.min(100, highPercentile));
-        if (hp <= lp) return;
-        const cc = Math.max(1, Math.min(4, this._componentCount | 0));
-        const stride = Math.max(cc, this._stride | 0);
-        const offset = Math.max(0, this._offset | 0);
-        const start = offset;
-        if (start >= data.length) return;
-        const values: number[] = [];
-        for (let i = start; i < data.length; i += stride) {
-            let v = 0;
-            if (this._valueMode === DataValueMode.Magnitude) {
-                const x = data[i + 0] ?? 0;
-                const y = (cc > 1) ? (data[i + 1] ?? 0) : 0;
-                const z = (cc > 2) ? (data[i + 2] ?? 0) : 0;
-                const w = (cc > 3) ? (data[i + 3] ?? 0) : 0;
-                v = Math.hypot(x, y, z, w);
-            } else {
-                const cidx = Math.max(0, Math.min(3, this._componentIndex | 0));
-                v = data[i + cidx] ?? 0;
-            }
-            if (!Number.isFinite(v)) continue;
-            values.push(v);
-        }
-        if (values.length === 0) return;
-        values.sort((a, b) => a - b);
-        const idx = (p: number) => {
-            const t = (p / 100) * (values.length - 1);
-            const i0 = Math.floor(t);
-            const i1 = Math.min(values.length - 1, i0 + 1);
-            const f = t - i0;
-            return values[i0] * (1 - f) + values[i1] * f;
+    getScaleSourceDescriptor(revision: number = this._scaleRevision): ScaleSourceDescriptor | null {
+        if (!this.dataBuffer || this._elementCount <= 0) return null;
+        return {
+            buffer: this.dataBuffer,
+            count: this._elementCount,
+            componentCount: this._scaleTransform.componentCount,
+            componentIndex: this._scaleTransform.componentIndex,
+            valueMode: this._scaleTransform.valueMode,
+            stride: this._scaleTransform.stride,
+            offset: this._scaleTransform.offset,
+            revision
         };
-        this._clipMin = idx(lp);
-        this._clipMax = idx(hp);
-        this._dirty = true;
     }
 
     upload(device: GPUDevice, queue: GPUQueue): void {
@@ -861,37 +586,24 @@ export class DataMaterial extends Material {
                 this.dataBuffer = createBuffer(device, data, usage);
             }
         }
+        this._elementCount = this.computeElementCountFromFloatLength(data.length);
         if (!this._keepCPUData) this._CPUData = null;
         this._dataDirty = false;
         this.bindGroupKey = null;
     }
 
     getUniformBufferSize(): number {
-        return 80;
+        return (SCALE_UNIFORM_FLOAT_COUNT + 4) * 4;
     }
 
     getUniformData(): Float32Array {
-        const f = this.getUniformDataCache(20);
-        f[0] = Math.max(1, Math.min(4, Math.floor(this._componentCount)));
-        f[1] = Math.max(0, Math.min(3, Math.floor(this._componentIndex)));
-        f[2] = (this._valueMode === DataValueMode.Magnitude) ? 1 : 0;
-        f[3] = Math.max(Math.max(1, Math.min(4, Math.floor(this._componentCount))), Math.floor(this._stride));
-        f[4] = this._domainMin;
-        f[5] = this._domainMax;
-        f[6] = this._clipMin;
-        f[7] = this._clipMax;
-        f[8] = Math.max(0, Math.min(1, this._tMin));
-        f[9] = Math.max(0, Math.min(1, this._tMax));
-        f[10] = Math.max(1e-6, this._gamma);
-        f[11] = this._invert ? 1 : 0;
-        f[12] = (this._scaleMode === DataScaleMode.Log) ? 1 : (this._scaleMode === DataScaleMode.Symlog) ? 2 : 0;
-        f[13] = Math.max(1e-6, this._symlogLinThresh);
-        f[14] = Math.max(1.000001, this._logBase);
-        f[15] = Math.max(0, Math.floor(this._offset));
-        f[16] = Math.max(0, Math.min(1, this._opacity));
-        f[17] = Math.max(0, Math.min(1, this._shading));
-        f[18] = 0;
-        f[19] = 0;
+        const f = this.getUniformDataCache(SCALE_UNIFORM_FLOAT_COUNT + 4);
+        f.fill(0);
+        packScaleTransform(this._scaleTransform, f, 0);
+        f[SCALE_UNIFORM_FLOAT_COUNT + 0] = clamp01(this._opacity);
+        f[SCALE_UNIFORM_FLOAT_COUNT + 1] = clamp01(this._shading);
+        f[SCALE_UNIFORM_FLOAT_COUNT + 2] = 0;
+        f[SCALE_UNIFORM_FLOAT_COUNT + 3] = 0;
         return f;
     }
 
@@ -920,6 +632,7 @@ export class DataMaterial extends Material {
         this.dataBuffer = null;
         this._CPUData = null;
         this._dataDirty = false;
+        this._elementCount = 0;
     }
 }
 

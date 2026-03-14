@@ -18,6 +18,7 @@ import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialD
 import { Texture2D } from "../graphics/texture";
 import type { Texture2DDescriptor } from "../graphics/texture";
 import { pythonInterop } from "../python";
+import { ScaleService } from "../scaling";
 import { mat4, vec3, quat, frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
 import { Camera, PerspectiveCamera, OrthographicCamera } from "../world/camera";
 import { NavigationControls, OrbitControls, TrackballControls } from "../world/controls";
@@ -39,6 +40,7 @@ export type WasmGPUDescriptor = RendererDescriptor & {
 export class WasmGPU {
     private renderer: Renderer;
     readonly compute: Compute;
+    readonly scale: ScaleService;
     private _performanceStats: PerformanceStats | null = null;
     private _isRunning: boolean = false;
     private _lastTime: number = 0;
@@ -49,6 +51,7 @@ export class WasmGPU {
         this.renderer = renderer;
         const gpu = renderer.gpu;
         this.compute = new Compute(gpu.device, gpu.queue, desc as ComputeDescriptor);
+        this.scale = new ScaleService(this.compute);
     }
 
     static async create(canvas: HTMLCanvasElement, descriptor: WasmGPUDescriptor = {}): Promise<WasmGPU> {
@@ -339,7 +342,7 @@ export class WasmGPU {
         standard: (options?: StandardMaterialDescriptor): StandardMaterial => {
             return new StandardMaterial(options);
         },
-        data: (options?: DataMaterialDescriptor): DataMaterial => {
+        data: (options: DataMaterialDescriptor): DataMaterial => {
             return new DataMaterial(options);
         },
         custom: (options: CustomMaterialDescriptor): CustomMaterial => {
@@ -361,11 +364,11 @@ export class WasmGPU {
         return new Mesh(geometry, material);
     }
 
-    createPointCloud(descriptor: PointCloudDescriptor = {}): PointCloud {
+    createPointCloud(descriptor: PointCloudDescriptor): PointCloud {
         return new PointCloud(descriptor);
     }
 
-    createGlyphField(descriptor: GlyphFieldDescriptor = {}): GlyphField {
+    createGlyphField(descriptor: GlyphFieldDescriptor): GlyphField {
         return new GlyphField(descriptor);
     }
 
@@ -454,6 +457,7 @@ export class WasmGPU {
     destroy(): void {
         this.stop();
         this.destroyPerformanceStats();
+        this.scale.clearCache();
         this.compute.destroy();
         this.renderer.destroy();
     }

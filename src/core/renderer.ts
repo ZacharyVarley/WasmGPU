@@ -2835,7 +2835,7 @@ export class Renderer {
                 {
                     binding: 1,
                     visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform", minBindingSize: 176 }
+                    buffer: { type: "uniform", minBindingSize: 240 }
                 },
                 {
                     binding: 2,
@@ -2969,7 +2969,7 @@ export class Renderer {
                 {
                     binding: 4,
                     visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform", minBindingSize: 176 }
+                    buffer: { type: "uniform", minBindingSize: 240 }
                 },
                 {
                     binding: 5,

@@ -1,6 +1,8 @@
 import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
+import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from "../scaling";
+import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { Geometry } from "../graphics/geometry";
 import { assert } from "../utils";
 import { wasmInterop, type WasmPtr } from "../wasm";
@@ -39,11 +41,8 @@ export type GlyphFieldDescriptor = {
     colorMode?: GlyphColorMode;
     colormap?: GlyphColormap | Colormap;
     colormapStops?: Color4[];
-    scalarMin?: number;
-    scalarMax?: number;
+    scaleTransform: ScaleTransformDescriptor;
     opacity?: number;
-    gamma?: number;
-    invert?: boolean;
     lit?: boolean;
     solidColor?: Color4;
     visible?: boolean;
@@ -52,12 +51,10 @@ export type GlyphFieldDescriptor = {
     ndShape?: number[];
 };
 
-const UNIFORM_FLOAT_COUNT = 44;
+const UNIFORM_FLOAT_COUNT = (5 * 4) + 4 + 4 + (8 * 4);
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
 const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-
-const clampMin = (x: number, min: number): number => x < min ? min : x;
 
 const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
     if (!shape) return null;
@@ -97,6 +94,15 @@ const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4
         out.push([c[0], c[1], c[2], c[3]]);
     }
     return out;
+};
+
+const normalizeGlyphScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform): ScaleTransform => {
+    return normalizeScaleTransform({
+        componentCount: 4,
+        componentIndex: 0,
+        stride: 4,
+        ...transform
+    });
 };
 
 const colorModeId = (mode: GlyphColorMode): number => {
@@ -349,15 +355,15 @@ export class GlyphField {
     private _colorMode: GlyphColorMode = "rgba";
     private _colormap: GlyphColormap | Colormap = "viridis";
     private _colormapStops: Color4[] = [[0.26700, 0.00487, 0.32942, 1.0], [0.99325, 0.90616, 0.14394, 1.0]];
-    private _scalarMin: number = 0.0;
-    private _scalarMax: number = 1.0;
+    private _scaleTransform: ScaleTransform = normalizeGlyphScaleTransform({});
+    private _scaleRevision: number = 0;
     private _opacity: number = 1.0;
-    private _gamma: number = 1.0;
-    private _invert: boolean = false;
     private _lit: boolean = false;
     private _solidColor: Color4 = [1, 1, 1, 1];
 
-    constructor(desc: GlyphFieldDescriptor = {}) {
+    constructor(desc: GlyphFieldDescriptor) {
+        assert(!!desc && !!desc.scaleTransform, "GlyphField: scaleTransform is required.");
+        this._scaleTransform = normalizeGlyphScaleTransform(desc.scaleTransform);
         if (desc.name !== undefined) this.name = desc.name;
         if (desc.visible !== undefined) this.visible = !!desc.visible;
         this.shape = desc.shape ?? "ellipsoid";
@@ -370,11 +376,7 @@ export class GlyphField {
         if (desc.colorMode !== undefined) this._colorMode = desc.colorMode;
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
         if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
-        if (desc.scalarMin !== undefined) this._scalarMin = desc.scalarMin;
-        if (desc.scalarMax !== undefined) this._scalarMax = desc.scalarMax;
         if (desc.opacity !== undefined) this._opacity = desc.opacity;
-        if (desc.gamma !== undefined) this._gamma = desc.gamma;
-        if (desc.invert !== undefined) this._invert = !!desc.invert;
         if (desc.lit !== undefined) this._lit = !!desc.lit;
         if (desc.solidColor !== undefined) this._solidColor = [desc.solidColor[0], desc.solidColor[1], desc.solidColor[2], desc.solidColor[3]];
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
@@ -444,6 +446,40 @@ export class GlyphField {
     set ndShape(shape: ReadonlyArray<number> | null) {
         this._ndShape = normalizeNdShape(shape);
     }
+    get scaleTransform(): ScaleTransform {
+        return cloneScaleTransform(this._scaleTransform);
+    }
+
+    setScaleTransform(transform: ScaleTransformDescriptor | ScaleTransform): void {
+        this._scaleTransform = normalizeGlyphScaleTransform(transform);
+        this._uniformDirty = true;
+    }
+
+    applyScaleStats(stats: ScaleStatsResult): void {
+        const next = cloneScaleTransform(this._scaleTransform);
+        if (Number.isFinite(stats.min)) next.domainMin = stats.min;
+        if (Number.isFinite(stats.max)) next.domainMax = stats.max;
+        if (stats.percentileMin !== null && stats.percentileMax !== null) {
+            next.clampMin = stats.percentileMin;
+            next.clampMax = stats.percentileMax;
+        }
+        this._scaleTransform = normalizeGlyphScaleTransform(next);
+        this._uniformDirty = true;
+    }
+
+    getScaleSourceDescriptor(revision: number = this._scaleRevision): ScaleSourceDescriptor | null {
+        if (!this.attributesBuffer || this._instanceCount <= 0) return null;
+        return {
+            buffer: this.attributesBuffer,
+            count: this._instanceCount,
+            componentCount: this._scaleTransform.componentCount,
+            componentIndex: this._scaleTransform.componentIndex,
+            valueMode: this._scaleTransform.valueMode,
+            stride: this._scaleTransform.stride,
+            offset: this._scaleTransform.offset,
+            revision
+        };
+    }
 
     set instanceCount(v: number) {
         const n = v | 0;
@@ -451,6 +487,7 @@ export class GlyphField {
         assert(n >= 0, "GlyphField: instanceCount must be >= 0.");
         this._instanceCount = n;
         this._dataDirty = true;
+        this._scaleRevision++;
     }
 
     get colorMode(): GlyphColorMode {
@@ -493,27 +530,6 @@ export class GlyphField {
         if (c === "custom") return Colormap.builtin("grayscale");
         return Colormap.builtin(c);
     }
-
-    get scalarMin(): number {
-        return this._scalarMin;
-    }
-
-    set scalarMin(v: number) {
-        if (v === this._scalarMin) return;
-        this._scalarMin = v;
-        this._uniformDirty = true;
-    }
-
-    get scalarMax(): number {
-        return this._scalarMax;
-    }
-
-    set scalarMax(v: number) {
-        if (v === this._scalarMax) return;
-        this._scalarMax = v;
-        this._uniformDirty = true;
-    }
-
     get opacity(): number {
         return this._opacity;
     }
@@ -521,27 +537,6 @@ export class GlyphField {
     set opacity(v: number) {
         if (v === this._opacity) return;
         this._opacity = v;
-        this._uniformDirty = true;
-    }
-
-    get gamma(): number {
-        return this._gamma;
-    }
-
-    set gamma(v: number) {
-        if (v === this._gamma) return;
-        this._gamma = v;
-        this._uniformDirty = true;
-    }
-
-    get invert(): boolean {
-        return this._invert;
-    }
-
-    set invert(v: boolean) {
-        const b = !!v;
-        if (b === this._invert) return;
-        this._invert = b;
         this._uniformDirty = true;
     }
 
@@ -566,8 +561,8 @@ export class GlyphField {
     }
 
     markDataDirty(): void {
-        if (this._usingExternalBuffers) return;
-        this._dataDirty = true;
+        if (!this._usingExternalBuffers) this._dataDirty = true;
+        this._scaleRevision++;
     }
 
     markUniformsDirty(): void {
@@ -612,6 +607,7 @@ export class GlyphField {
         this._keepCPUData = opts.keepCPUData ?? this._keepCPUData;
         this.clearComputedBoundsIfNeeded();
         this._dataDirty = true;
+        this._scaleRevision++;
         this.bindGroupKey = null;
     }
 
@@ -631,6 +627,7 @@ export class GlyphField {
         this._usingExternalBuffers = false;
         this.clearComputedBoundsIfNeeded();
         this._dataDirty = true;
+        this._scaleRevision++;
         this.bindGroupKey = null;
     }
 
@@ -654,6 +651,7 @@ export class GlyphField {
         this._usingExternalBuffers = true;
         this.clearComputedBoundsIfNeeded();
         this._dataDirty = false;
+        this._scaleRevision++;
         this.bindGroupKey = null;
     }
 
@@ -756,23 +754,21 @@ export class GlyphField {
 
     getUniformData(): Float32Array {
         const out = new Float32Array(UNIFORM_FLOAT_COUNT);
-        out[0] = this._scalarMin;
-        out[1] = this._scalarMax;
-        out[2] = clamp01(this._opacity);
-        out[3] = clampMin(this._gamma, 1e-6);
-        out[4] = this._invert ? 1.0 : 0.0;
-        out[5] = this._solidColor[3];
-        out[6] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
-        out[7] = colorModeId(this._colorMode);
-        out[8] = this._lit ? 1.0 : 0.0;
-        out[9] = this._solidColor[0];
-        out[10] = this._solidColor[1];
-        out[11] = this._solidColor[2];
+        out.fill(0);
+        packScaleTransform(this._scaleTransform, out, 0);
+        out[20] = clamp01(this._opacity);
+        out[21] = (typeof this._colormap === "string" && this._colormap === "custom") ? Math.min(8, Math.max(2, this._colormapStops.length)) : 0;
+        out[22] = colorModeId(this._colorMode);
+        out[23] = this._lit ? 1.0 : 0.0;
+        out[24] = this._solidColor[0];
+        out[25] = this._solidColor[1];
+        out[26] = this._solidColor[2];
+        out[27] = this._solidColor[3];
         const stops = this._colormapStops;
         const nStops = Math.min(8, Math.max(2, stops.length));
         for (let i = 0; i < 8; i++) {
             const src = stops[Math.min(i, nStops - 1)];
-            const o = 12 + i * 4;
+            const o = 28 + i * 4;
             out[o + 0] = src[0];
             out[o + 1] = src[1];
             out[o + 2] = src[2];

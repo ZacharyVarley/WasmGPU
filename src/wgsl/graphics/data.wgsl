@@ -1,8 +1,93 @@
+fn scale_is_nan(v: f32) -> bool {
+    let u = bitcast<u32>(v);
+    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u;
+}
+
+fn scale_is_inf(v: f32) -> bool {
+    let u = bitcast<u32>(v);
+    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) == 0u;
+}
+
+fn scale_is_finite(v: f32) -> bool {
+    return !scale_is_nan(v) && !scale_is_inf(v);
+}
+
+fn scale_clamp01(x: f32) -> f32 {
+    return clamp(x, 0.0, 1.0);
+}
+
+fn scale_log_base(x: f32, base: f32) -> f32 {
+    let b = max(base, 1.000001);
+    return log(x) / log(b);
+}
+
+fn scale_apply_mode(x: f32, modeId: u32, linthresh: f32, base: f32) -> f32 {
+    if (modeId == 0u) {
+        return x;
+    }
+    if (modeId == 1u) {
+        return scale_log_base(max(x, 1e-20), base);
+    }
+    let lt = max(linthresh, 1e-20);
+    let s = select(-1.0, 1.0, x >= 0.0);
+    let y = scale_log_base(1.0 + abs(x) / lt, base);
+    return s * y;
+}
+
+fn scale_select_value(v: vec4f, componentCountIn: u32, componentIndexIn: u32, valueMode: u32) -> f32 {
+    let componentCount = max(1u, min(4u, componentCountIn));
+    let componentIndex = min(3u, componentIndexIn);
+    if (valueMode == 1u) {
+        if (componentCount == 1u) { return abs(v.x); }
+        if (componentCount == 2u) { return length(v.xy); }
+        if (componentCount == 3u) { return length(v.xyz); }
+        return length(v);
+    }
+    if (componentIndex == 0u) { return v.x; }
+    if (componentIndex == 1u) { return v.y; }
+    if (componentIndex == 2u) { return v.z; }
+    return v.w;
+}
+
+fn scale_apply_transform(rawValue: f32, domain: vec4f, clampConfig: vec4f, params: vec4f, flags: vec4f) -> f32 {
+    if (!scale_is_finite(rawValue)) {
+        return 0.0;
+    }
+    var v = rawValue;
+    let clampMode = u32(domain.w + 0.5);
+    let clampMin = clampConfig.x;
+    let clampMax = clampConfig.y;
+    if (clampMode != 0u && clampMax > clampMin) {
+        v = clamp(v, clampMin, clampMax);
+    }
+    var d0 = domain.x;
+    var d1 = domain.y;
+    if (d1 <= d0 && clampMax > clampMin) {
+        d0 = clampMin;
+        d1 = clampMax;
+    }
+    let modeId = u32(params.x + 0.5);
+    let base = params.y;
+    let linthresh = params.z;
+    let gamma = max(params.w, 1e-6);
+    let a = scale_apply_mode(d0, modeId, linthresh, base);
+    let b = scale_apply_mode(d1, modeId, linthresh, base);
+    let x = scale_apply_mode(v, modeId, linthresh, base);
+    let denom = max(1e-20, b - a);
+    var t = scale_clamp01((x - a) / denom);
+    t = pow(t, gamma);
+    if (flags.x > 0.5) {
+        t = 1.0 - t;
+    }
+    return scale_clamp01(t);
+}
+
 struct MaterialUniforms {
-    dataLayout: vec4f,
-    range0: vec4f,
-    range1: vec4f,
+    scaleSource: vec4f,
+    scaleDomain: vec4f,
+    scaleClamp: vec4f,
     scaleParams: vec4f,
+    scaleFlags: vec4f,
     colorParams: vec4f
 };
 
@@ -53,41 +138,9 @@ struct LightingUniforms {
 @group(0) @binding(1) var<uniform> model: ModelUniforms;
 @group(0) @binding(2) var<uniform> lighting: LightingUniforms;
 
-fn isNan(val: f32) -> bool {
-    let u = bitcast<u32>(val);
-    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u;
-}
-
-fn isInf(val: f32) -> bool {
-    let u = bitcast<u32>(val);
-    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) == 0u;
-}
-
-fn clamp01(x: f32) -> f32 {
-    return clamp(x, 0.0, 1.0);
-}
-
 fn srgbFromLinear(c: vec3f) -> vec3f {
     let a = vec3f(0.055);
     return select(12.92 * c, (1.0 + a) * pow(c, vec3f(1.0 / 2.4)) - a, c > vec3f(0.0031308));
-}
-
-fn logBase(x: f32, base: f32) -> f32 {
-    let b = max(base, 1.000001);
-    return log(x) / log(b);
-}
-
-fn applyScale(x: f32, scaleMode: u32, linthresh: f32, base: f32) -> f32 {
-    if (scaleMode == 0u) {
-        return x;
-    }
-    if (scaleMode == 1u) {
-        return logBase(max(x, 1e-20), base);
-    }
-    let lt = max(linthresh, 1e-20);
-    let s = select(-1.0, 1.0, x >= 0.0);
-    let y = logBase(1.0 + abs(x) / lt, base);
-    return s * y;
 }
 
 fn luminance(rgb: vec3f) -> f32 {
@@ -101,9 +154,9 @@ fn vs_main(in: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOu
     out.position = camera.viewProjection * worldPos4;
     out.worldPos = worldPos4.xyz;
     out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);
-    let componentCount = max(1u, min(4u, u32(material.dataLayout.x + 0.5)));
-    let stride = max(1u, u32(material.dataLayout.w + 0.5));
-    let dataOffset = u32(material.scaleParams.w + 0.5);
+    let componentCount = max(1u, min(4u, u32(material.scaleSource.x + 0.5)));
+    let stride = max(1u, u32(material.scaleSource.w + 0.5));
+    let dataOffset = u32(material.scaleDomain.z + 0.5);
     let base = vertexIndex * stride + dataOffset;
     var x: f32 = data[base + 0u];
     var y: f32 = 0.0;
@@ -118,67 +171,16 @@ fn vs_main(in: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOu
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let componentCount = max(1u, min(4u, u32(material.dataLayout.x + 0.5)));
-    let componentIndex = min(3u, u32(material.dataLayout.y + 0.5));
-    let valueMode = u32(material.dataLayout.z + 0.5);
-    var v: f32 = 0.0;
-    if (valueMode == 1u) {
-        if (componentCount == 1u) {
-            v = abs(in.dataValue.x);
-        } else if (componentCount == 2u) {
-            v = length(in.dataValue.xy);
-        } else if (componentCount == 3u) {
-            v = length(in.dataValue.xyz);
-        } else {
-            v = length(in.dataValue);
-        }
-    } else {
-        v = select(
-                select(
-                    select(
-                        in.dataValue.x,
-                        in.dataValue.y,
-                        componentIndex == 1u
-                    ),
-                    in.dataValue.z,
-                    componentIndex == 2u
-                ),
-                in.dataValue.w,
-                componentIndex == 3u
-        );
-    }
-    if (isNan(v) || isInf(v)) {
+    let componentCount = max(1u, min(4u, u32(material.scaleSource.x + 0.5)));
+    let componentIndex = min(3u, u32(material.scaleSource.y + 0.5));
+    let valueMode = u32(material.scaleSource.z + 0.5);
+    let v = scale_select_value(in.dataValue, componentCount, componentIndex, valueMode);
+    if (!scale_is_finite(v)) {
         discard;
     }
-    let clipMin = material.range0.z;
-    let clipMax = material.range0.w;
-    if (clipMax > clipMin) {
-        v = clamp(v, clipMin, clipMax);
-    }
-    var domainMin = material.range0.x;
-    var domainMax = material.range0.y;
-    if (domainMax <= domainMin && clipMax > clipMin) {
-        domainMin = clipMin;
-        domainMax = clipMax;
-    }
-    let scaleMode = u32(material.scaleParams.x + 0.5);
-    let linthresh = material.scaleParams.y;
-    let base = material.scaleParams.z;
-    let a = applyScale(domainMin, scaleMode, linthresh, base);
-    let b = applyScale(domainMax, scaleMode, linthresh, base);
-    let x = applyScale(v, scaleMode, linthresh, base);
-    let denom = max(1e-20, b - a);
-    var t = clamp01((x - a) / denom);
-    let gamma = max(material.range1.z, 1e-6);
-    t = pow(t, gamma);
-    if (material.range1.w > 0.5) {
-        t = 1.0 - t;
-    }
-    let t0 = clamp01(material.range1.x);
-    let t1 = clamp01(material.range1.y);
-    let tc = clamp01(t0 + t * (t1 - t0));
-    var cmap = textureSample(colormapTex, colormapSampler, tc);
-    let shading = clamp01(material.colorParams.y);
+    let t = scale_apply_transform(v, vec4f(material.scaleDomain.x, material.scaleDomain.y, 0.0, material.scaleDomain.w), material.scaleClamp, material.scaleParams, material.scaleFlags);
+    var cmap = textureSample(colormapTex, colormapSampler, t);
+    let shading = scale_clamp01(material.colorParams.y);
     if (shading > 0.0) {
         let N = normalize(in.normal);
         var lightFactor: f32 = luminance(lighting.ambient.rgb);
@@ -201,7 +203,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let shadedRgb = cmap.rgb * lightFactor;
         cmap = vec4f(mix(cmap.rgb, shadedRgb, shading), cmap.a);
     }
-    let opacity = clamp01(material.colorParams.x);
+    let opacity = scale_clamp01(material.colorParams.x);
     let finalA = cmap.a * opacity;
     let finalRgb = clamp(cmap.rgb, vec3f(0.0), vec3f(1.0));
     cmap = vec4f(finalRgb, finalA);

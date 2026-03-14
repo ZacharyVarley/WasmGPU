@@ -1,6 +1,6 @@
 import { alignTo, assert } from "../utils";
 import { StorageBuffer } from "./buffer";
-import { ComputePipeline, storageBufferLayout, type BufferResource } from "./pipeline";
+import { ComputePipeline, storageBufferLayout, uniformBufferLayout, type BufferResource } from "./pipeline";
 import type { ComputeDispatchCommand } from "./dispatch";
 import { encodeDispatchBatch, validateWorkgroupsForDevice } from "./dispatch";
 import { ceilDiv, makeWorkgroupCounts, workgroups1D } from "./workgroups";
@@ -25,6 +25,11 @@ import sortRadixFlagsU32WGSL from "../wgsl/compute/sort-radix-flags-u32.wgsl";
 import sortRadixScatterU32WGSL from "../wgsl/compute/sort-radix-scatter-u32.wgsl";
 import copyF32WGSL from "../wgsl/compute/copy-f32.wgsl";
 import copyU32WGSL from "../wgsl/compute/copy-u32.wgsl";
+import scaleExtractF32WGSL from "../wgsl/compute/scale-extract-f32.wgsl";
+import scaleHistogramF32WGSL from "../wgsl/compute/scale-histogram-f32.wgsl";
+import scaleRemapF32WGSL from "../wgsl/compute/scale-remap-f32.wgsl";
+import { normalizeScaleTransform, packScaleTransform, scaleClampModeToId, scaleModeToId, scaleValueModeToId } from "../scaling/transform";
+import type { ScaleTransform, ScaleValueMode } from "../scaling/types";
 
 export type KernelDispatchOptions = {
     encoder?: GPUCommandEncoder;
@@ -71,6 +76,36 @@ export type RadixSortOptions = KernelDispatchOptions & {
 export type CopyOptions = KernelDispatchOptions & {
     count?: number;
     out?: StorageBuffer;
+};
+
+export type ScaleExtractOptions = KernelDispatchOptions & {
+    count: number;
+    componentCount?: number;
+    componentIndex?: number;
+    valueMode?: ScaleValueMode;
+    stride?: number;
+    offset?: number;
+    values?: StorageBuffer;
+    flags?: StorageBuffer;
+};
+
+export type ScaleExtractResult = {
+    values: StorageBuffer;
+    flags: StorageBuffer;
+};
+
+export type ScaleHistogramOptions = KernelDispatchOptions & {
+    count?: number;
+    bins?: StorageBuffer;
+    clear?: boolean;
+    minValue: number;
+    maxValue: number;
+};
+
+export type ScaleRemapOptions = KernelDispatchOptions & {
+    count?: number;
+    out?: StorageBuffer;
+    transform: ScaleTransform;
 };
 
 export type CompactResult = {
@@ -539,6 +574,70 @@ export class ComputeKernels {
         });
     }
 
+    private getScaleExtractF32Pipeline(): ComputePipeline {
+        const key = "kernels:scale:extractF32";
+        return this.getPipeline(key, () => {
+            return new ComputePipeline(this.device, {
+                label: key,
+                code: scaleExtractF32WGSL,
+                entryPoint: "main",
+                bindGroups: [
+                    {
+                        label: `${key}:bg0`,
+                        entries: [
+                            storageBufferLayout({ binding: 0, readOnly: true }),
+                            storageBufferLayout({ binding: 1, readOnly: false }),
+                            storageBufferLayout({ binding: 2, readOnly: false }),
+                            uniformBufferLayout({ binding: 3 })
+                        ]
+                    }
+                ]
+            });
+        });
+    }
+
+    private getScaleHistogramF32Pipeline(): ComputePipeline {
+        const key = "kernels:scale:histogramF32";
+        return this.getPipeline(key, () => {
+            return new ComputePipeline(this.device, {
+                label: key,
+                code: scaleHistogramF32WGSL,
+                entryPoint: "main",
+                bindGroups: [
+                    {
+                        label: `${key}:bg0`,
+                        entries: [
+                            storageBufferLayout({ binding: 0, readOnly: true }),
+                            storageBufferLayout({ binding: 1, readOnly: false }),
+                            uniformBufferLayout({ binding: 2 })
+                        ]
+                    }
+                ]
+            });
+        });
+    }
+
+    private getScaleRemapF32Pipeline(): ComputePipeline {
+        const key = "kernels:scale:remapF32";
+        return this.getPipeline(key, () => {
+            return new ComputePipeline(this.device, {
+                label: key,
+                code: scaleRemapF32WGSL,
+                entryPoint: "main",
+                bindGroups: [
+                    {
+                        label: `${key}:bg0`,
+                        entries: [
+                            storageBufferLayout({ binding: 0, readOnly: true }),
+                            storageBufferLayout({ binding: 1, readOnly: false }),
+                            uniformBufferLayout({ binding: 2 })
+                        ]
+                    }
+                ]
+            });
+        });
+    }
+
     private encodeCopyF32(commands: ComputeDispatchCommand[], src: BufferResource, count: number, dst: BufferResource, labelPrefix: string): void {
         assert(Number.isInteger(count) && count >= 0, `encodeCopyF32: count must be an integer >= 0 (got ${count})`);
         if (count === 0) return;
@@ -636,6 +735,179 @@ export class ComputeKernels {
         const commands: ComputeDispatchCommand[] = [];
         this.encodeCopyF32(commands, src, count, out, "copyF32");
         this.execute(commands, opts);
+        return out;
+    }
+
+    extractScaleValuesF32(src: BufferResource, opts: ScaleExtractOptions): ScaleExtractResult {
+        assert(!opts.encoder, "extractScaleValuesF32 does not support opts.encoder");
+        const count = opts.count;
+        assert(Number.isInteger(count) && count >= 0, `extractScaleValuesF32: count must be an integer >= 0 (got ${count})`);
+        const componentCount = Math.max(1, Math.min(4, Math.floor(opts.componentCount ?? 1)));
+        const componentIndex = Math.max(0, Math.min(3, Math.floor(opts.componentIndex ?? 0)));
+        const stride = Math.max(componentCount, Math.floor(opts.stride ?? componentCount));
+        const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+        const valueMode = opts.valueMode ?? "component";
+        assert(valueMode === "component" || valueMode === "magnitude", `extractScaleValuesF32: invalid valueMode ${String(valueMode)}`);
+        const requiredSourceFloats = count > 0 ? (offset + ((count - 1) * stride) + componentCount) : 0;
+        const srcByteLength = src instanceof StorageBuffer ? src.byteLength : resolveGpuBuffer(src).size;
+        assert((requiredSourceFloats * 4) <= srcByteLength, `extractScaleValuesF32: source range exceeds source buffer capacity (required ${requiredSourceFloats} f32, capacity ${Math.floor(srcByteLength / 4)} f32)`);
+        const values = opts.values ?? new StorageBuffer(this.device, this.queue, {
+            label: "scale:extract:values",
+            byteLength: count * 4,
+            copySrc: true
+        });
+        const flags = opts.flags ?? new StorageBuffer(this.device, this.queue, {
+            label: "scale:extract:flags",
+            byteLength: count * 4,
+            copySrc: true
+        });
+        assert(values.byteLength >= count * 4, "extractScaleValuesF32: values buffer too small for count");
+        assert(flags.byteLength >= count * 4, "extractScaleValuesF32: flags buffer too small for count");
+        if (count === 0) return { values, flags };
+        const params = this.device.createBuffer({
+            size: 32,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            label: "scale:extract:params"
+        });
+        this.queue.writeBuffer(params, 0, new Uint32Array([
+            count >>> 0,
+            componentCount >>> 0,
+            componentIndex >>> 0,
+            scaleValueModeToId(valueMode) >>> 0,
+            stride >>> 0,
+            offset >>> 0,
+            0,
+            0
+        ]));
+        const commands: ComputeDispatchCommand[] = [];
+        const pipeline = this.getScaleExtractF32Pipeline();
+        const bg = pipeline.createBindGroup(0, {
+            0: this.bindSized(src, requiredSourceFloats * 4),
+            1: this.bindSized(values, count * 4),
+            2: this.bindSized(flags, count * 4),
+            3: { buffer: params, size: 32 }
+        }, "scale:extract:bg");
+        commands.push({
+            pipeline,
+            bindGroups: [bg],
+            workgroups: workgroups1D(count, 256),
+            label: "scale:extract"
+        });
+        this.execute(commands, opts);
+        params.destroy();
+        return { values, flags };
+    }
+
+    histogramF32(values: StorageBuffer, binCount: number, opts: ScaleHistogramOptions): StorageBuffer {
+        assert(!opts.encoder, "histogramF32 does not support opts.encoder");
+        assert(Number.isInteger(binCount) && binCount >= 0, `histogramF32: binCount must be an integer >= 0 (got ${binCount})`);
+        const count = this.resolveCount(values, 4, opts.count);
+        const bins = opts.bins ?? new StorageBuffer(this.device, this.queue, {
+            label: "histogramF32:bins",
+            byteLength: binCount * 4,
+            copySrc: true
+        });
+        assert(bins.byteLength >= binCount * 4, "histogramF32: bins buffer is too small for binCount");
+        const commands: ComputeDispatchCommand[] = [];
+        if (binCount > 0 && (opts.clear ?? true)) {
+            const pipelineClear = this.getHistogramClearPipeline();
+            const bgClear = pipelineClear.createBindGroup(0, {
+                0: this.bindSized(bins, binCount * 4)
+            }, "histogramF32:clear:bg");
+            commands.push({
+                pipeline: pipelineClear,
+                bindGroups: [bgClear],
+                workgroups: workgroups1D(binCount, 256),
+                label: "histogramF32:clear"
+            });
+        }
+        let params: GPUBuffer | null = null;
+        if (count > 0 && binCount > 0 && Number.isFinite(opts.minValue) && Number.isFinite(opts.maxValue) && opts.maxValue > opts.minValue) {
+            params = this.device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                label: "histogramF32:params"
+            });
+            const raw = new ArrayBuffer(16);
+            const dv = new DataView(raw);
+            dv.setUint32(0, count >>> 0, true);
+            dv.setUint32(4, binCount >>> 0, true);
+            dv.setFloat32(8, opts.minValue, true);
+            dv.setFloat32(12, opts.maxValue, true);
+            this.queue.writeBuffer(params, 0, raw);
+
+            const pipelineHist = this.getScaleHistogramF32Pipeline();
+            const bgHist = pipelineHist.createBindGroup(0, {
+                0: this.bindSized(values, count * 4),
+                1: this.bindSized(bins, binCount * 4),
+                2: { buffer: params, size: 16 }
+            }, "histogramF32:hist:bg");
+            commands.push({
+                pipeline: pipelineHist,
+                bindGroups: [bgHist],
+                workgroups: workgroups1D(count, 256),
+                label: "histogramF32:accum"
+            });
+        }
+        this.execute(commands, opts);
+        params?.destroy();
+        return bins;
+    }
+
+    remapScaleF32(input: StorageBuffer, opts: ScaleRemapOptions): StorageBuffer {
+        assert(!opts.encoder, "remapScaleF32 does not support opts.encoder");
+        const count = this.resolveCount(input, 4, opts.count);
+        const out = opts.out ?? new StorageBuffer(this.device, this.queue, {
+            label: "scale:remap:out",
+            byteLength: count * 4,
+            copySrc: true
+        });
+        assert(out.byteLength >= count * 4, "remapScaleF32: out buffer is too small for requested count");
+        if (count === 0) return out;
+        const transform = normalizeScaleTransform(opts.transform);
+        const packed = new Float32Array(20);
+        packScaleTransform(transform, packed, 0);
+        const params = this.device.createBuffer({
+            size: 80,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            label: "scale:remap:params"
+        });
+        const raw = new ArrayBuffer(80);
+        const dv = new DataView(raw);
+        dv.setUint32(0, count >>> 0, true);
+        const f32 = new Float32Array(raw);
+        f32[4] = packed[4];
+        f32[5] = packed[5];
+        f32[6] = 0;
+        f32[7] = scaleClampModeToId(transform.clampMode);
+        f32[8] = packed[8];
+        f32[9] = packed[9];
+        f32[10] = packed[10];
+        f32[11] = packed[11];
+        f32[12] = scaleModeToId(transform.mode);
+        f32[13] = packed[13];
+        f32[14] = packed[14];
+        f32[15] = packed[15];
+        f32[16] = packed[16];
+        f32[17] = 0;
+        f32[18] = 0;
+        f32[19] = 0;
+        this.queue.writeBuffer(params, 0, raw);
+        const pipeline = this.getScaleRemapF32Pipeline();
+        const bg = pipeline.createBindGroup(0, {
+            0: this.bindSized(input, count * 4),
+            1: this.bindSized(out, count * 4),
+            2: { buffer: params, size: 80 }
+        }, "scale:remap:bg");
+        this.execute([
+            {
+                pipeline,
+                bindGroups: [bg],
+                workgroups: workgroups1D(count, 256),
+                label: "scale:remap"
+            }
+        ], opts);
+        params.destroy();
         return out;
     }
 
