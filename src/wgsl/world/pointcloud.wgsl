@@ -217,8 +217,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let uv = in.pointCoord;
     let r2 = dot(uv, uv);
     if (r2 > 1.0) { discard; }
-    let softness = scale_clamp01(pc.visual.y);
-    let edge = smoothstep(1.0, max(0.0, 1.0 - softness), r2);
-    let alpha = (1.0 - edge) * in.col.a;
-    return vec4f(in.col.rgb, alpha);
+    let falloff = (1.0 - r2);
+    let alpha = falloff * falloff;
+    return vec4f(in.col.rgb, in.col.a * alpha);
 }
