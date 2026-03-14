@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 const WORKGROUP_SIZE: u32 = 256u;
 const ELEMENTS_PER_WORKGROUP: u32 = 512u;
 

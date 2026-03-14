@@ -1,16 +1,21 @@
 /*
-./scripts/build-rust-wasm.js builds the Rust-based WebAssembly driver of WasmGPU.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+/*
+    ./scripts/build-rust-wasm.js builds the Rust-based WebAssembly driver of WasmGPU.
 
-It generates:
-    - ./build/wasm.wasm (WebAssembly binary)
-    - ./build/wasm.wat  (WebAssembly text format)
-    - ./build/wasm.js   (JavaScript bridge)
-    - ./build/wasm.d.ts (TypeScript declarations)
-It downloads:
-    - ./tools/wabt/1.0.37/ (WABT for generating wasm.wat with wasm2wat.exe)
-    - ./tools/binaryen/version_126/ (Binaryen for optimizing wasm.wasm with wasm-opt.exe)
+    It generates:
+        - ./build/wasm.wasm (WebAssembly binary)
+        - ./build/wasm.wat  (WebAssembly text format)
+        - ./build/wasm.js   (JavaScript bridge)
+        - ./build/wasm.d.ts (TypeScript declarations)
+    It downloads:
+        - ./tools/wabt/1.0.37/ (WABT for generating wasm.wat with wasm2wat.exe)
+        - ./tools/binaryen/version_126/ (Binaryen for optimizing wasm.wasm with wasm-opt.exe)
 
-This file is intentionally self-contained so building WasmGPU with `npm run build` is as straightforward as possible.
+    This file is intentionally self-contained so building WasmGPU with `npm run build` is as straightforward as possible.
 */
 
 import { execSync } from "node:child_process";

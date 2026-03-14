@@ -1,4 +1,10 @@
-﻿@group(1) @binding(0) var<storage, read> positions: array<vec4<f32>>;
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+@group(1) @binding(0) var<storage, read> positions: array<vec4<f32>>;
 @group(1) @binding(1) var<storage, read> rotations: array<vec4<f32>>;
 @group(1) @binding(2) var<storage, read> scales: array<vec4<f32>>;
 

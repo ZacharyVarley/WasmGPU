@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 fn scale_is_nan(v: f32) -> bool {
     let u = bitcast<u32>(v);
     return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u;

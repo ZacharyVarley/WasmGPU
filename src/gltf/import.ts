@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 import { wasm, mat4f, meshf, WasmPtr } from "../wasm";
 import { Geometry } from "../graphics/geometry";
 import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color } from "../graphics/material";
