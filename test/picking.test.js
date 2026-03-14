@@ -79,6 +79,9 @@ assert.ok(typeof Engine.prototype.pickLasso === "function", "Missing API: WasmGP
 assert.ok(typeof Engine.createSelectionStore === "function", "Missing API: WasmGPU.createSelectionStore()");
 assert.ok(SelectionStore, "Missing export: SelectionStore");
 
+const pointScaleTransform = { componentCount: 4, componentIndex: 3, stride: 4, offset: 0 };
+const glyphScaleTransform = { componentCount: 4, componentIndex: 0, stride: 4, offset: 0 };
+
 const canvas = makeCanvas(512, 512);
 const wgpu = await Engine.create(canvas, { antialias: false, frustumCulling: false, canvasFormat: "rgba8unorm" });
 const scene = wgpu.createScene([0, 0, 0]);
@@ -100,7 +103,8 @@ const cloud = wgpu.createPointCloud({
     ndShape: [2, 2],
     basePointSize: 10,
     depthWrite: true,
-    blendMode: "opaque"
+    blendMode: "opaque",
+    scaleTransform: pointScaleTransform
 });
 cloud.transform.setPosition(0, 0, 0);
 
@@ -124,7 +128,8 @@ const field = wgpu.createGlyphField({
         4.5, 5.5, 6.5, 7.5
     ]),
     keepCPUData: true,
-    ndShape: [1, 2]
+    ndShape: [1, 2],
+    scaleTransform: glyphScaleTransform
 });
 
 const cloudNoCPU = wgpu.createPointCloud({
@@ -133,7 +138,8 @@ const cloudNoCPU = wgpu.createPointCloud({
         -2, -2, 0, 0.9
     ]),
     keepCPUData: false,
-    ndShape: [2, 1]
+    ndShape: [2, 1],
+    scaleTransform: pointScaleTransform
 });
 cloudNoCPU.upload(wgpu.gpu.device, wgpu.gpu.queue);
 

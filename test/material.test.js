@@ -153,24 +153,16 @@ const occ = create1x1(device.queue, [255, 0, 0, 255], false);
 
 // DataMaterial
 {
-    const tryConstruct = () => {
-        const attempts = [];
-
-        attempts.push(() => new DataMaterial());
-        attempts.push(() => new DataMaterial({}));
-
-        for (const fn of attempts) {
-            try {
-                const m = fn();
-                if (m) return m;
-            } catch {
-                // try next
-            }
+    const m = new DataMaterial({
+        scaleTransform: {
+            componentCount: 1,
+            componentIndex: 0,
+            stride: 1,
+            offset: 0,
+            mode: "linear",
+            clampMode: "none"
         }
-        throw new Error("Failed to construct DataMaterial with either new DataMaterial() or new DataMaterial({}).");
-    };
-
-    const m = tryConstruct();
+    });
     assert.ok(typeof m.getUniformBufferSize === "function", "DataMaterial should implement getUniformBufferSize()");
     assert.ok(typeof m.getUniformData === "function", "DataMaterial should implement getUniformData()");
     assert.ok(typeof m.createBindGroupLayout === "function", "DataMaterial should implement createBindGroupLayout()");

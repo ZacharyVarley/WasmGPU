@@ -47,6 +47,9 @@ const { NavigationControls, OrbitControls, TrackballControls, PerspectiveCamera,
 assert.ok(NavigationControls, "Missing export: NavigationControls");
 assert.ok(AxisConventions && AxisConventions.Y_UP_RH, "Missing export: AxisConventions");
 
+const pointScaleTransform = { componentCount: 4, componentIndex: 3, stride: 4, offset: 0 };
+const glyphScaleTransform = { componentCount: 4, componentIndex: 0, stride: 4, offset: 0 };
+
 {
     const canvas = makeCanvas();
     const camera = new PerspectiveCamera({ fov: 60, aspect: 4 / 3, near: 0.1, far: 200 });
@@ -165,7 +168,8 @@ assert.ok(AxisConventions && AxisConventions.Y_UP_RH, "Missing export: AxisConve
     mesh.transform.setPosition(-4, 0, 0);
     const pointCloud = new PointCloud({
         data: new Float32Array([2, -1, 1, 0.2, 5, 1, 2, 0.8]),
-        keepCPUData: true
+        keepCPUData: true,
+        scaleTransform: pointScaleTransform
     });
     const glyphField = new GlyphField({
         geometry: Geometry.box(1, 1, 1),
@@ -174,7 +178,8 @@ assert.ok(AxisConventions && AxisConventions.Y_UP_RH, "Missing export: AxisConve
         rotations: new Float32Array([0, 0, 0, 1]),
         scales: new Float32Array([1, 2, 1, 0]),
         attributes: new Float32Array([0, 0, 0, 0]),
-        keepCPUData: true
+        keepCPUData: true,
+        scaleTransform: glyphScaleTransform
     });
     scene.add(mesh).add(pointCloud).add(glyphField);
     const bounds = scene.getBounds();
@@ -202,14 +207,14 @@ assert.ok(AxisConventions && AxisConventions.Y_UP_RH, "Missing export: AxisConve
 }
 
 {
-    const explicit = new PointCloud({ pointCount: 4, boundsMin: [-1, -2, -3], boundsMax: [4, 5, 6] });
+    const explicit = new PointCloud({ pointCount: 4, boundsMin: [-1, -2, -3], boundsMax: [4, 5, 6], scaleTransform: pointScaleTransform });
     const explicitBounds = explicit.getBounds();
     arraysApproxEqual(explicitBounds.boxMin, [-1, -2, -3], 1e-6, "Explicit point-cloud bounds min mismatch");
     arraysApproxEqual(explicitBounds.boxMax, [4, 5, 6], 1e-6, "Explicit point-cloud bounds max mismatch");
 
     const scene = new Scene();
     scene.add(explicit);
-    scene.add(new PointCloud({ pointCount: 8 }));
+    scene.add(new PointCloud({ pointCount: 8, scaleTransform: pointScaleTransform }));
     const bounds = scene.getBounds();
     assert.strictEqual(bounds.empty, false, "Partial scene with one bounded contributor should still have finite bounds");
     assert.strictEqual(bounds.partial, true, "Scene bounds should report partial when visible contributors lack bounds");
