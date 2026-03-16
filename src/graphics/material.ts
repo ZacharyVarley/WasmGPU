@@ -433,6 +433,8 @@ export type DataMaterialDescriptor = MaterialDescriptor & {
     colormap?: BuiltinColormapName | Colormap;
 };
 
+export type DataMaterialVisualChangeKind = "scale" | "colormap" | "visual";
+
 export class DataMaterial extends Material {
     private _CPUData: Float32Array | null = null;
     private _keepCPUData: boolean = false;
@@ -445,6 +447,7 @@ export class DataMaterial extends Material {
     private _shading: number = 0;
     private _colormap: BuiltinColormapName | Colormap = "viridis";
     private _scaleRevision: number = 0;
+    private readonly _visualChangeListeners: Set<(kind: DataMaterialVisualChangeKind) => void> = new Set();
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
 
@@ -474,6 +477,7 @@ export class DataMaterial extends Material {
         this._scaleTransform = normalizeScaleTransform(transform);
         this._elementCount = this.recomputeElementCount();
         this._dirty = true;
+        this.emitVisualChange("scale");
     }
 
     get opacity(): number {
@@ -503,6 +507,14 @@ export class DataMaterial extends Material {
     set colormap(v: BuiltinColormapName | Colormap) {
         this._colormap = v;
         this.bindGroupKey = null;
+        this.emitVisualChange("colormap");
+    }
+
+    onVisualChange(listener: (kind: DataMaterialVisualChangeKind) => void): () => void {
+        this._visualChangeListeners.add(listener);
+        return () => {
+            this._visualChangeListeners.delete(listener);
+        };
     }
 
     getColormapKey(): string {
@@ -632,6 +644,14 @@ export class DataMaterial extends Material {
         return dataWGSL;
     }
 
+    private emitVisualChange(kind: DataMaterialVisualChangeKind): void {
+        for (const listener of this._visualChangeListeners) {
+            try {
+                listener(kind);
+            } catch { /* ignore */ }
+        }
+    }
+
     destroy(): void {
         super.destroy();
         if (this._ownsDataBuffer) this.dataBuffer?.destroy();
@@ -639,6 +659,7 @@ export class DataMaterial extends Material {
         this._CPUData = null;
         this._dataDirty = false;
         this._elementCount = 0;
+        this._visualChangeListeners.clear();
     }
 }
 

@@ -14,6 +14,8 @@ import { Bounds3, boundsFromBox, boundsFromBoxAndSphere, boundsFromSphere, empty
 
 export type PointCloudColormap = BuiltinColormapName | "custom";
 
+export type PointCloudVisualChangeKind = "scale" | "colormap" | "visual";
+
 export type PointCloudDescriptor = {
     data?: Float32Array;
     pointsBuffer?: GPUBuffer | { buffer: GPUBuffer };
@@ -121,6 +123,7 @@ export class PointCloud {
     private _ndShape: number[] | null = null;
     private _boundsSource: BoundsSourceMode = "none";
     private _scaleRevision: number = 0;
+    private readonly _visualChangeListeners: Set<(kind: PointCloudVisualChangeKind) => void> = new Set();
     pointsBuffer: GPUBuffer | null = null;
     uniformBuffer: GPUBuffer | null = null;
     bindGroup: GPUBindGroup | null = null;
@@ -212,6 +215,7 @@ export class PointCloud {
     setScaleTransform(transform: ScaleTransformDescriptor | ScaleTransform): void {
         this._scaleTransform = normalizePointCloudScaleTransform(transform);
         this._uniformDirty = true;
+        this.emitVisualChange("scale");
     }
 
     applyScaleStats(stats: ScaleStatsResult): void {
@@ -224,6 +228,12 @@ export class PointCloud {
         }
         this._scaleTransform = normalizePointCloudScaleTransform(next);
         this._uniformDirty = true;
+        this.emitVisualChange("scale");
+    }
+
+    onVisualChange(listener: (kind: PointCloudVisualChangeKind) => void): () => void {
+        this._visualChangeListeners.add(listener);
+        return () => this._visualChangeListeners.delete(listener);
     }
 
     getScaleSourceDescriptor(revision: number = this._scaleRevision): ScaleSourceDescriptor | null {
@@ -298,6 +308,7 @@ export class PointCloud {
         this._colormap = v;
         this._uniformDirty = true;
         this.bindGroupKey = null;
+        this.emitVisualChange("colormap");
     }
 
     get colormapStops(): ReadonlyArray<Color4> {
@@ -307,6 +318,7 @@ export class PointCloud {
     set colormapStops(stops: ReadonlyArray<Color4>) {
         this._colormapStops = normalizeStops(stops);
         this._uniformDirty = true;
+        this.emitVisualChange("colormap");
     }
 
     getColormapKey(): string {
@@ -484,6 +496,14 @@ export class PointCloud {
         this._uniformDirty = false;
     }
 
+    private emitVisualChange(kind: PointCloudVisualChangeKind): void {
+        for (const listener of this._visualChangeListeners) {
+            try {
+                listener(kind);
+            } catch { /* ignore */ }
+        }
+    }
+
     destroy(): void {
         this.pointsBuffer?.destroy();
         this.uniformBuffer?.destroy();
@@ -494,6 +514,7 @@ export class PointCloud {
         this._CPUData = null;
         this._ndShape = null;
         this._pointCount = 0;
+        this._visualChangeListeners.clear();
         this.transform.dispose();
     }
 }

@@ -23,6 +23,8 @@ import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial
 import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
 import type { Texture2DDescriptor } from "../graphics/texture";
+import { OverlaySystem, AxisTriadLayer, GridLayer, LegendLayer } from "../overlay";
+import type { OverlaySystemDescriptor, AxisTriadLayerDescriptor, GridLayerDescriptor, LegendLayerDescriptor } from "../overlay";
 import { pythonInterop } from "../python";
 import { ScaleService } from "../scaling";
 import { mat4, vec3, quat, frameArena, initWebAssembly, wasmInterop, WasmHeapArena } from "../wasm";
@@ -281,6 +283,21 @@ export class WasmGPU {
         },
         trackball: (camera: Camera, domElement: HTMLCanvasElement, options?: TrackballControlsDescriptor): TrackballControls => {
             return new TrackballControls(camera, domElement, options);
+        }
+    };
+
+    readonly createOverlay = {
+        system: (options: Omit<OverlaySystemDescriptor, "canvas"> = {}): OverlaySystem => {
+            return new OverlaySystem({ canvas: this.renderer.canvas, ...options });
+        },
+        axisTriad: (descriptor: AxisTriadLayerDescriptor = {}): AxisTriadLayer => {
+            return new AxisTriadLayer(descriptor);
+        },
+        grid: (descriptor: GridLayerDescriptor = {}): GridLayer => {
+            return new GridLayer(descriptor);
+        },
+        legend: (descriptor: LegendLayerDescriptor): LegendLayer => {
+            return new LegendLayer(descriptor);
         }
     };
 

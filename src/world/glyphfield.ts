@@ -16,6 +16,8 @@ import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds 
 
 export type GlyphColormap = BuiltinColormapName | "custom";
 
+export type GlyphFieldVisualChangeKind = "scale" | "colormap" | "visual";
+
 export type GlyphColorMode = "rgba" | "scalar" | "solid";
 
 export type GlyphShape = "ellipsoid" | "arrow" | "custom";
@@ -363,6 +365,7 @@ export class GlyphField {
     private _colormapStops: Color4[] = [[0.26700, 0.00487, 0.32942, 1.0], [0.99325, 0.90616, 0.14394, 1.0]];
     private _scaleTransform: ScaleTransform = normalizeGlyphScaleTransform({});
     private _scaleRevision: number = 0;
+    private readonly _visualChangeListeners: Set<(kind: GlyphFieldVisualChangeKind) => void> = new Set();
     private _opacity: number = 1.0;
     private _lit: boolean = false;
     private _solidColor: Color4 = [1, 1, 1, 1];
@@ -459,6 +462,7 @@ export class GlyphField {
     setScaleTransform(transform: ScaleTransformDescriptor | ScaleTransform): void {
         this._scaleTransform = normalizeGlyphScaleTransform(transform);
         this._uniformDirty = true;
+        this.emitVisualChange("scale");
     }
 
     applyScaleStats(stats: ScaleStatsResult): void {
@@ -471,6 +475,12 @@ export class GlyphField {
         }
         this._scaleTransform = normalizeGlyphScaleTransform(next);
         this._uniformDirty = true;
+        this.emitVisualChange("scale");
+    }
+
+    onVisualChange(listener: (kind: GlyphFieldVisualChangeKind) => void): () => void {
+        this._visualChangeListeners.add(listener);
+        return () => this._visualChangeListeners.delete(listener);
     }
 
     getScaleSourceDescriptor(revision: number = this._scaleRevision): ScaleSourceDescriptor | null {
@@ -514,6 +524,7 @@ export class GlyphField {
         this._colormap = v;
         this._uniformDirty = true;
         this.bindGroupKey = null;
+        this.emitVisualChange("colormap");
     }
 
     get colormapStops(): Color4[] {
@@ -523,6 +534,7 @@ export class GlyphField {
     set colormapStops(v: Color4[]) {
         this._colormapStops = normalizeStops(v);
         this._uniformDirty = true;
+        this.emitVisualChange("colormap");
     }
 
     getColormapKey(): string {
@@ -791,6 +803,14 @@ export class GlyphField {
         this._uniformDirty = false;
     }
 
+    private emitVisualChange(kind: GlyphFieldVisualChangeKind): void {
+        for (const listener of this._visualChangeListeners) {
+            try {
+                listener(kind);
+            } catch { /* ignore */ }
+        }
+    }
+
     destroy(): void {
         this.positionsBuffer?.destroy();
         this.rotationsBuffer?.destroy();
@@ -810,6 +830,7 @@ export class GlyphField {
         this._attributesCPU = null;
         this._ndShape = null;
         this._instanceCount = 0;
+        this._visualChangeListeners.clear();
         this.transform.dispose();
     }
 }

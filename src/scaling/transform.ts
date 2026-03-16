@@ -37,45 +37,27 @@ export const scaleValueModeToId = (mode: ScaleValueMode): number => valueModeToI
 
 export const cloneScaleTransform = (transform: ScaleTransform): ScaleTransform => {
     return {
-        mode: transform.mode,
-        clampMode: transform.clampMode,
-        valueMode: transform.valueMode,
-        componentCount: transform.componentCount,
-        componentIndex: transform.componentIndex,
-        stride: transform.stride,
-        offset: transform.offset,
-        domainMin: transform.domainMin,
-        domainMax: transform.domainMax,
-        clampMin: transform.clampMin,
-        clampMax: transform.clampMax,
-        percentileLow: transform.percentileLow,
-        percentileHigh: transform.percentileHigh,
-        logBase: transform.logBase,
-        symlogLinThresh: transform.symlogLinThresh,
-        gamma: transform.gamma,
-        invert: transform.invert
+        mode: transform.mode, clampMode: transform.clampMode, valueMode: transform.valueMode,
+        componentCount: transform.componentCount, componentIndex: transform.componentIndex,
+        stride: transform.stride, offset: transform.offset,
+        domainMin: transform.domainMin, domainMax: transform.domainMax,
+        clampMin: transform.clampMin, clampMax: transform.clampMax,
+        percentileLow: transform.percentileLow, percentileHigh: transform.percentileHigh,
+        logBase: transform.logBase, symlogLinThresh: transform.symlogLinThresh,
+        gamma: transform.gamma, invert: transform.invert
     };
 };
 
 export const defaultScaleTransform = (): ScaleTransform => {
     return {
-        mode: "linear",
-        clampMode: "none",
-        valueMode: "component",
-        componentCount: 1,
-        componentIndex: 0,
-        stride: 1,
-        offset: 0,
-        domainMin: 0,
-        domainMax: 1,
-        clampMin: 0,
-        clampMax: 1,
-        percentileLow: 2,
-        percentileHigh: 98,
-        logBase: 10,
-        symlogLinThresh: 1,
-        gamma: 1,
-        invert: false
+        mode: "linear", clampMode: "none", valueMode: "component",
+        componentCount: 1, componentIndex: 0,
+        stride: 1, offset: 0,
+        domainMin: 0, domainMax: 1,
+        clampMin: 0, clampMax: 1,
+        percentileLow: 2, percentileHigh: 98,
+        logBase: 10, symlogLinThresh: 1,
+        gamma: 1, invert: false
     };
 };
 
@@ -102,25 +84,7 @@ export const normalizeScaleTransform = (descriptor: ScaleTransformDescriptor | S
     const symlogLinThresh = Math.max(1e-20, finiteOr(descriptor.symlogLinThresh, defaults.symlogLinThresh));
     const gamma = Math.max(1e-6, finiteOr(descriptor.gamma, defaults.gamma));
     const invert = !!descriptor.invert;
-    return {
-        mode,
-        clampMode,
-        valueMode,
-        componentCount,
-        componentIndex,
-        stride,
-        offset,
-        domainMin,
-        domainMax,
-        clampMin,
-        clampMax,
-        percentileLow,
-        percentileHigh,
-        logBase,
-        symlogLinThresh,
-        gamma,
-        invert
-    };
+    return { mode, clampMode, valueMode, componentCount, componentIndex, stride, offset, domainMin, domainMax, clampMin, clampMax, percentileLow, percentileHigh, logBase, symlogLinThresh, gamma, invert };
 };
 
 export const packScaleTransform = (transformIn: ScaleTransform, out: Float32Array, offset: number = 0): void => {
@@ -161,17 +125,38 @@ const applyScaleMode = (x: number, mode: ScaleMode, symlogLinThresh: number, bas
     return sign * y;
 };
 
+const invertScaleMode = (x: number, mode: ScaleMode, symlogLinThresh: number, base: number): number => {
+    if (mode === "linear") return x;
+    if (mode === "log") return Math.pow(Math.max(base, 1.000001), x);
+    const lt = Math.max(symlogLinThresh, 1e-20);
+    const sign = x >= 0 ? 1 : -1;
+    const y = Math.pow(Math.max(base, 1.000001), Math.abs(x)) - 1.0;
+    return sign * (y * lt);
+};
+
+const resolveScaleDomain = (transform: ScaleTransform): { domainMin: number; domainMax: number; clampMin: number; clampMax: number; hasClamp: boolean; } => {
+    const hasClamp = transform.clampMode !== "none" && transform.clampMax > transform.clampMin;
+    let domainMin = transform.domainMin;
+    let domainMax = transform.domainMax;
+    if (domainMax <= domainMin && hasClamp) {
+        domainMin = transform.clampMin;
+        domainMax = transform.clampMax;
+    }
+    return { domainMin, domainMax, clampMin: transform.clampMin, clampMax: transform.clampMax, hasClamp };
+};
+
+export const resolveScaleTransformDomainCPU = (transformIn: ScaleTransform): { domainMin: number; domainMax: number; clampMin: number; clampMax: number; hasClamp: boolean; } => {
+    return resolveScaleDomain(normalizeScaleTransform(transformIn));
+};
+
 export const applyScaleTransformCPU = (value: number, transformIn: ScaleTransform): number => {
     const transform = normalizeScaleTransform(transformIn);
     if (!Number.isFinite(value)) return Number.NaN;
     let v = value;
-    if (transform.clampMode !== "none" && transform.clampMax > transform.clampMin) v = clamp(v, transform.clampMin, transform.clampMax);
-    let d0 = transform.domainMin;
-    let d1 = transform.domainMax;
-    if (d1 <= d0 && transform.clampMax > transform.clampMin) {
-        d0 = transform.clampMin;
-        d1 = transform.clampMax;
-    }
+    const domain = resolveScaleDomain(transform);
+    if (domain.hasClamp) v = clamp(v, domain.clampMin, domain.clampMax);
+    const d0 = domain.domainMin;
+    const d1 = domain.domainMax;
     const a = applyScaleMode(d0, transform.mode, transform.symlogLinThresh, transform.logBase);
     const b = applyScaleMode(d1, transform.mode, transform.symlogLinThresh, transform.logBase);
     const x = applyScaleMode(v, transform.mode, transform.symlogLinThresh, transform.logBase);
@@ -180,4 +165,18 @@ export const applyScaleTransformCPU = (value: number, transformIn: ScaleTransfor
     t = Math.pow(t, transform.gamma);
     if (transform.invert) t = 1 - t;
     return clamp01(t);
+};
+
+export const invertScaleTransformCPU = (tIn: number, transformIn: ScaleTransform): number => {
+    const transform = normalizeScaleTransform(transformIn);
+    const domain = resolveScaleDomain(transform);
+    let t = clamp01(tIn);
+    if (transform.invert) t = 1.0 - t;
+    t = Math.pow(t, 1.0 / Math.max(transform.gamma, 1e-6));
+    const a = applyScaleMode(domain.domainMin, transform.mode, transform.symlogLinThresh, transform.logBase);
+    const b = applyScaleMode(domain.domainMax, transform.mode, transform.symlogLinThresh, transform.logBase);
+    const x = a + (b - a) * t;
+    let v = invertScaleMode(x, transform.mode, transform.symlogLinThresh, transform.logBase);
+    if (domain.hasClamp) v = clamp(v, domain.clampMin, domain.clampMax);
+    return v;
 };

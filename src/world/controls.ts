@@ -96,6 +96,8 @@ export type OrbitControlsMouseButtons = NavigationControlsMouseButtons;
 export type TrackballControlsMouseButtons = NavigationControlsMouseButtons;
 export type OrbitControlsDescriptor = NavigationControlsDescriptor;
 export type TrackballControlsDescriptor = NavigationControlsDescriptor;
+export type NavigationControlsChangeListener = () => void;
+export type NavigationControlsInteractionListener = (active: boolean) => void;
 
 export type SetViewOptions = {
     target?: Vec3;
@@ -253,6 +255,10 @@ export class NavigationControls {
     private _savedUp: Vec3 = [0, 1, 0];
     private _savedProjection: ProjectionState = { type: "perspective", near: 0.1, far: 1000 };
     private readonly _wheelListenerOptions: AddEventListenerOptions = { passive: false };
+    private readonly _changeListeners: Set<NavigationControlsChangeListener> = new Set();
+    private readonly _interactionListeners: Set<NavigationControlsInteractionListener> = new Set();
+    private _interactionActive: boolean = false;
+    private _wheelInteractionTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(camera: Camera, domElement: HTMLCanvasElement, desc: NavigationControlsDescriptor = {}) {
         this.camera = camera;
@@ -296,12 +302,30 @@ export class NavigationControls {
 
     dispose(): void {
         this.cancelTransition();
+        this.clearWheelInteractionTimer();
+        this.setInteractionState(false);
         this.domElement.removeEventListener("pointerdown", this.onPointerDown);
         this.domElement.removeEventListener("pointermove", this.onPointerMove);
         this.domElement.removeEventListener("pointerup", this.onPointerUp);
         this.domElement.removeEventListener("pointercancel", this.onPointerUp);
         this.domElement.removeEventListener("wheel", this.onWheel, this._wheelListenerOptions);
         this.domElement.removeEventListener("contextmenu", this.onContextMenu);
+        this._changeListeners.clear();
+        this._interactionListeners.clear();
+    }
+
+    onChange(listener: NavigationControlsChangeListener): () => void {
+        this._changeListeners.add(listener);
+        return () => {
+            this._changeListeners.delete(listener);
+        };
+    }
+
+    onInteractionState(listener: NavigationControlsInteractionListener): () => void {
+        this._interactionListeners.add(listener);
+        return () => {
+            this._interactionListeners.delete(listener);
+        };
     }
 
     get mode(): NavigationMode {
@@ -370,6 +394,7 @@ export class NavigationControls {
         this.camera = camera;
         this.cancelTransition();
         this.syncFromCamera();
+        this.emitChange();
         return this;
     }
 
@@ -418,6 +443,7 @@ export class NavigationControls {
         this.applyPose(this._savedPosition, this._savedTarget, this._savedUp);
         this.applyProjectionState(this._savedProjection);
         this.syncFromCamera();
+        this.emitChange();
     }
 
     setTarget(x: number, y: number, z: number): this;
@@ -438,10 +464,12 @@ export class NavigationControls {
         const dt = dtSeconds > 0 ? dtSeconds : (1 / 60);
         if (this._transition) {
             this.updateTransition(dt);
+            this.emitChange();
             return;
         }
         if (this._mode === "orbit") this.updateOrbit(dt);
         else this.updateTrackball(dt);
+        this.emitChange();
     }
 
     setView(view: InspectionView, options: SetViewOptions = {}): this {
@@ -501,6 +529,7 @@ export class NavigationControls {
         else if (event.button === this.mouseButtons.pan) this._state = "pan";
         else if (event.button === this.mouseButtons.zoom) this._state = "zoom";
         else this._state = "none";
+        if (this._state !== "none") this.setInteractionState(true);
         if (this._state === "rotate" && this._mode === "trackball") this._trackballRotateStart = this.getTrackballVector(event.clientX, event.clientY);
         event.preventDefault();
     };
@@ -539,6 +568,7 @@ export class NavigationControls {
         this.domElement.releasePointerCapture(this._pointerId);
         this._pointerId = null;
         this._state = "none";
+        this.setInteractionState(false);
         event.preventDefault();
     };
 
@@ -549,6 +579,8 @@ export class NavigationControls {
         this._zoomCursorClientX = event.clientX;
         this._zoomCursorClientY = event.clientY;
         this._zoomCursorValid = true;
+        this.setInteractionState(true);
+        this.scheduleWheelInteractionEnd();
         event.preventDefault();
         event.stopPropagation();
     };
@@ -634,6 +666,7 @@ export class NavigationControls {
             this.applyPose(position, target, up);
             this.applyProjectionState(projection);
             this.syncFromCamera();
+            this.emitChange();
             return;
         }
         this._transition = {
@@ -697,6 +730,38 @@ export class NavigationControls {
         this.camera.transform.setPosition(position[0], position[1], position[2]);
         this.camera.lookAtWithUp(this.target, this._trackballUp);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
+    }
+
+    private emitChange(): void {
+        for (const listener of this._changeListeners) {
+            try {
+                listener();
+            } catch { /* ignore */ }
+        }
+    }
+
+    private setInteractionState(active: boolean): void {
+        if (this._interactionActive === active) return;
+        this._interactionActive = active;
+        for (const listener of this._interactionListeners) {
+            try {
+                listener(active);
+            } catch { /* ignore */ }
+        }
+    }
+
+    private clearWheelInteractionTimer(): void {
+        if (this._wheelInteractionTimer === null) return;
+        clearTimeout(this._wheelInteractionTimer);
+        this._wheelInteractionTimer = null;
+    }
+
+    private scheduleWheelInteractionEnd(): void {
+        this.clearWheelInteractionTimer();
+        this._wheelInteractionTimer = setTimeout(() => {
+            this._wheelInteractionTimer = null;
+            if (this._pointerId === null && this._state === "none") this.setInteractionState(false);
+        }, 120);
     }
 
     private applyDolly(damping: number, basis: Basis3): void {

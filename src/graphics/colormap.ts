@@ -146,16 +146,16 @@ const BUILTIN_RGBA8_BASE64: Record<BuiltinColormapName, string> = {
             + "/P6k/w=="
 };
 
-function clamp01(x: number): number {
+const clamp01 = (x: number): number => {
     return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+};
 
-function srgbToLinearChannel(c: number): number {
+const srgbToLinearChannel = (c: number): number => {
     if (c <= 0.04045) return c / 12.92;
     return Math.pow((c + 0.055) / 1.055, 2.4);
-}
+};
 
-function decodeBase64ToU8(b64: string): Uint8Array {
+const decodeBase64ToU8 = (b64: string): Uint8Array => {
     if (typeof (globalThis as any).atob === "function") {
         const bin = (globalThis as any).atob(b64) as string;
         const out = new Uint8Array(bin.length);
@@ -165,18 +165,18 @@ function decodeBase64ToU8(b64: string): Uint8Array {
     const B = (globalThis as any).Buffer as any;
     if (B && typeof B.from === "function") return Uint8Array.from(B.from(b64, "base64"));
     throw new Error("Colormap: No base64 decoder available (expected atob() or Buffer).");
-}
+};
 
-function ensureBuiltinRGBA8Linear(name: BuiltinColormapName): Uint8Array {
+const ensureBuiltinRGBA8Linear = (name: BuiltinColormapName): Uint8Array => {
     const anyMap = BUILTIN_RGBA8_BASE64 as any;
     const cached = anyMap[name] as unknown;
     if (cached instanceof Uint8Array) return cached;
     const decoded = decodeBase64ToU8(BUILTIN_RGBA8_BASE64[name]);
     anyMap[name] = decoded;
     return decoded;
-}
+};
 
-function normalizeStops(stops: ReadonlyArray<ColormapStop>): Array<{ t: number; color: Color4 }> {
+const normalizeStops = (stops: ReadonlyArray<ColormapStop>): Array<{ t: number; color: Color4 }> => {
     assert(stops.length >= 2, "Colormap: expected at least 2 stops.");
     const out: Array<{ t: number; color: Color4 }> = [];
     let implicitIndex = 0;
@@ -192,13 +192,13 @@ function normalizeStops(stops: ReadonlyArray<ColormapStop>): Array<{ t: number; 
     const last = out.length - 1;
     if (out[last].t < 1) out.push({ t: 1, color: out[last].color });
     return out;
-}
+};
 
-function lerp(a: number, b: number, t: number): number {
+const lerp = (a: number, b: number, t: number): number => {
     return a + (b - a) * t;
-}
+};
 
-function sampleStopsLinear(stops: ReadonlyArray<{ t: number; color: Color4 }>, t: number): Color4 {
+const sampleStopsLinear = (stops: ReadonlyArray<{ t: number; color: Color4 }>, t: number): Color4 => {
     const x = clamp01(t);
     if (x <= stops[0].t) return stops[0].color;
     const last = stops.length - 1;
@@ -218,9 +218,9 @@ function sampleStopsLinear(stops: ReadonlyArray<{ t: number; color: Color4 }>, t
         }
     }
     return stops[last].color;
-}
+};
 
-function toRGBA8Linear(colors: ReadonlyArray<Color4>, colorSpace: "srgb" | "linear"): Uint8Array {
+const toRGBA8Linear = (colors: ReadonlyArray<Color4>, colorSpace: "srgb" | "linear"): Uint8Array => {
     const out = new Uint8Array(colors.length * 4);
     for (let i = 0; i < colors.length; i++) {
         let r = clamp01(colors[i][0]);
@@ -238,9 +238,34 @@ function toRGBA8Linear(colors: ReadonlyArray<Color4>, colorSpace: "srgb" | "line
         out[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * 255)));
     }
     return out;
-}
+};
 
-function createTexture1DFromRGBA8(device: GPUDevice, queue: GPUQueue, rgba8: Uint8Array, width: number, label: string): GPUTexture {
+const sampleRGBA8Nearest = (rgba8: Uint8Array, width: number, t: number): Color4 => {
+    const x = Math.min(width - 1, Math.max(0, Math.round(clamp01(t) * (width - 1))));
+    return [
+        rgba8[x * 4 + 0] / 255,
+        rgba8[x * 4 + 1] / 255,
+        rgba8[x * 4 + 2] / 255,
+        rgba8[x * 4 + 3] / 255
+    ];
+};
+
+const sampleRGBA8Linear = (rgba8: Uint8Array, width: number, t: number): Color4 => {
+    const tx = clamp01(t) * Math.max(0, width - 1);
+    const i0 = Math.min(width - 1, Math.max(0, Math.floor(tx)));
+    const i1 = Math.min(width - 1, i0 + 1);
+    const f = tx - i0;
+    const o0 = i0 * 4;
+    const o1 = i1 * 4;
+    return [
+        lerp(rgba8[o0 + 0] / 255, rgba8[o1 + 0] / 255, f),
+        lerp(rgba8[o0 + 1] / 255, rgba8[o1 + 1] / 255, f),
+        lerp(rgba8[o0 + 2] / 255, rgba8[o1 + 2] / 255, f),
+        lerp(rgba8[o0 + 3] / 255, rgba8[o1 + 3] / 255, f)
+    ];
+};
+
+const createTexture1DFromRGBA8 = (device: GPUDevice, queue: GPUQueue, rgba8: Uint8Array, width: number, label: string): GPUTexture => {
     assert(width > 0, "Colormap: width must be > 0.");
     assert((rgba8.length >>> 0) === (width * 4), "Colormap: rgba8 length must be width*4.");
     const texture = device.createTexture({
@@ -264,9 +289,9 @@ function createTexture1DFromRGBA8(device: GPUDevice, queue: GPUQueue, rgba8: Uin
         { width, height: 1, depthOrArrayLayers: 1 }
     );
     return texture;
-}
+};
 
-function createSampler(device: GPUDevice, filter: ColormapFilter): GPUSampler {
+const createSampler = (device: GPUDevice, filter: ColormapFilter): GPUSampler => {
     return device.createSampler({
         addressModeU: "clamp-to-edge",
         addressModeV: "clamp-to-edge",
@@ -275,7 +300,7 @@ function createSampler(device: GPUDevice, filter: ColormapFilter): GPUSampler {
         minFilter: filter === "linear" ? "linear" : "nearest",
         mipmapFilter: "nearest"
     });
-}
+};
 
 let _nextColormapId = 1;
 
@@ -348,6 +373,22 @@ export class Colormap {
 
     get filter(): ColormapFilter {
         return this._filter;
+    }
+
+    get canSampleCPU(): boolean {
+        return this._rgba8Linear !== null;
+    }
+
+    getRGBA8LinearLUT(): Uint8Array {
+        if (!this._rgba8Linear) throw new Error("Colormap: CPU sampling is unavailable for external GPU-only colormaps.");
+        return this._rgba8Linear.slice();
+    }
+
+    sampleCPU(t: number): Color4 {
+        const rgba8 = this._rgba8Linear;
+        if (!rgba8) throw new Error("Colormap: CPU sampling is unavailable for external GPU-only colormaps.");
+        if (this._filter === "nearest") return sampleRGBA8Nearest(rgba8, this._width, t);
+        return sampleRGBA8Linear(rgba8, this._width, t);
     }
 
     getGPUResources(device: GPUDevice, queue: GPUQueue): ColormapGPUResources {
