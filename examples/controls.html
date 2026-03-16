@@ -108,6 +108,28 @@
             });
             scene.add(points);
 
+            const overlaySystem = wgpu.createOverlay.system({
+                controls, camera: perspective, scene,
+                zIndex: 6, interactionThrottleMs: 30, autoUpdate: true
+            });
+            const worldTriad = wgpu.createOverlay.axisTriad({
+                id: "overlay-world-triad", anchor: { kind: "world", position: [0, 0, 0] },
+                lengthWorld: 3.2, lineWidthPx: 2, labels: ["X", "Y", "Z"]
+            });
+            const screenTriad = wgpu.createOverlay.axisTriad({
+                id: "overlay-screen-triad", anchor: { kind: "screen", corner: "bottom-right", offsetPx: [-26, -26] },
+                sizePx: 52, lineWidthPx: 2, labels: ["x", "y", "z"]
+            });
+            const worldGrid = wgpu.createOverlay.grid({
+                id: "overlay-grid", plane: "xz", origin: [0, 0, 0], extentMode: "scene-fit",
+                targetMinorSpacingPx: 28, majorStepFactor: 5, maxLines: 180, maxLabels: 50
+            });
+            const legend = wgpu.createOverlay.legend({
+                id: "overlay-legend", title: "PointCloud Scalar", source: points, anchor: { kind: "screen", corner: "top-right", offsetPx: [-14, 14] },
+                widthPx: 24, heightPx: 220, tickCount: 8, strictParity: true
+            });
+            overlaySystem.addLayer(worldGrid).addLayer(worldTriad).addLayer(screenTriad).addLayer(legend);
+
             const selection = wgpu.createSelectionStore();
             let hoverHit = null;
 
@@ -167,6 +189,7 @@
 
             const applyScaleTransformFromUI = () => {
                 points.setScaleTransform(getScaleTransformFromUI());
+                overlaySystem.invalidate("scale");
                 refreshScalePane();
             };
 
@@ -482,6 +505,8 @@
                 next.transform.copyFrom(activeCamera.transform);
                 activeCamera = next;
                 controls.setCamera(activeCamera);
+                overlaySystem.setView(activeCamera, scene);
+                overlaySystem.invalidate("camera");
                 updateProjection();
                 fitCurrent(currentView, true);
                 updateHud();
@@ -652,6 +677,8 @@
             window.addEventListener("resize", updateProjection);
             updateProjection();
             fitCurrent(currentView, false);
+            overlaySystem.setView(activeCamera, scene);
+            overlaySystem.invalidate("camera");
             updateHud();
             setupScalePane();
 
@@ -659,6 +686,7 @@
                 updateProjection();
                 controls.update(dt);
                 wgpu.render(scene, activeCamera);
+                overlaySystem.update({ camera: activeCamera, scene });
             });
         </script>
     </body>
