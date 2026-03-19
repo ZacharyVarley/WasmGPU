@@ -67,6 +67,48 @@ const drawLine = (node: HTMLDivElement, x0: number, y0: number, x1: number, y1: 
     node.style.transform = `translateY(${-0.5 * Math.max(1, widthPx)}px) rotate(${Math.atan2(dy, dx)}rad)`;
 };
 
+const signedZero = (x: number, eps: number): number => Math.abs(x) <= eps ? 0 : x;
+
+const isNear = (a: number, b: number, eps: number): boolean => Math.abs(a - b) <= eps;
+
+const tickEpsilon = (span: number, step: number): number => Math.max(1e-9, Math.abs(span) * 1e-9, Math.abs(step) * 1e-6);
+
+const isMajorTick = (value: number, majorStep: number, eps: number): boolean => {
+    if (!Number.isFinite(majorStep) || majorStep <= eps) return false;
+    const q = value / majorStep;
+    return Math.abs(q - Math.round(q)) <= 1e-4;
+};
+
+const countInteriorTicks = (min: number, max: number, step: number): number => {
+    const span = Math.max(0, max - min);
+    const eps = tickEpsilon(span, step);
+    if (step <= eps) return 0;
+    let count = 0;
+    let value = Math.ceil((min + eps) / step) * step;
+    const limit = max - eps;
+    for (let i = 0; i < 1_000_000 && value <= limit; i++, value += step) {
+        if (value > min + eps && value < max - eps) count++;
+    }
+    return count;
+};
+
+const buildEdgeAlignedTicks = (min: number, max: number, step: number): number[] => {
+    const span = Math.max(0, max - min);
+    const eps = tickEpsilon(span, step);
+    if (span <= eps) return [min];
+    const ticks: number[] = [min];
+    if (step > eps) {
+        let value = Math.ceil((min + eps) / step) * step;
+        const limit = max - eps;
+        for (let i = 0; i < 1_000_000 && value <= limit; i++, value += step) {
+            if (value <= min + eps || value >= max - eps) continue;
+            ticks.push(signedZero(value, eps));
+        }
+    }
+    ticks.push(max);
+    return ticks;
+};
+
 export class GridLayer implements OverlayLayer {
     readonly id: string;
     private readonly plane: GridPlane;
@@ -152,29 +194,56 @@ export class GridLayer implements OverlayLayer {
         const { uMin, uMax, vMin, vMax } = this.resolveExtent(ctx);
         const spanU = Math.max(1e-6, uMax - uMin);
         const spanV = Math.max(1e-6, vMax - vMin);
-        const pxPerUnit = this.estimatePixelsPerUnit(ctx) || 1;
-        let minorStep = niceStep(this.targetMinorSpacingPx / Math.max(1e-6, pxPerUnit));
-        const approxCount = Math.ceil(spanU / minorStep) + Math.ceil(spanV / minorStep);
-        if (approxCount > this.maxLines) {
-            const factor = Math.ceil(approxCount / this.maxLines);
-            minorStep *= factor;
+        const pxPerUnit = this.estimatePixelsPerUnitAxes(ctx);
+        let minorStepU = niceStep(this.targetMinorSpacingPx / Math.max(1e-6, pxPerUnit.u));
+        let minorStepV = niceStep(this.targetMinorSpacingPx / Math.max(1e-6, pxPerUnit.v));
+        const reservedBoundaryLines = (spanU > 1e-9 ? 2 : 1) + (spanV > 1e-9 ? 2 : 1);
+        const maxInteriorLines = Math.max(0, this.maxLines - reservedBoundaryLines);
+        let interiorU = countInteriorTicks(uMin, uMax, minorStepU);
+        let interiorV = countInteriorTicks(vMin, vMax, minorStepV);
+        for (let i = 0; i < 32 && (interiorU + interiorV) > maxInteriorLines; i++) {
+            if (interiorU >= interiorV) minorStepU = niceStep(minorStepU * 1.5);
+            else minorStepV = niceStep(minorStepV * 1.5);
+            interiorU = countInteriorTicks(uMin, uMax, minorStepU);
+            interiorV = countInteriorTicks(vMin, vMax, minorStepV);
         }
-        const majorStep = minorStep * this.majorStepFactor;
-        const majorSpacingPx = majorStep * pxPerUnit;
-        const labelStride = Math.max(1, Math.ceil(this.minLabelSpacingPx / Math.max(1e-6, majorSpacingPx)));
-        const eps = minorStep * 1e-6;
+        const majorStepU = minorStepU * this.majorStepFactor;
+        const majorStepV = minorStepV * this.majorStepFactor;
+        const majorSpacingPxU = majorStepU * pxPerUnit.u;
+        const majorSpacingPxV = majorStepV * pxPerUnit.v;
+        let labelStrideU = Math.max(1, Math.ceil(this.minLabelSpacingPx / Math.max(1e-6, majorSpacingPxU)));
+        let labelStrideV = Math.max(1, Math.ceil(this.minLabelSpacingPx / Math.max(1e-6, majorSpacingPxV)));
+        const uTicks = buildEdgeAlignedTicks(uMin, uMax, minorStepU);
+        const vTicks = buildEdgeAlignedTicks(vMin, vMax, minorStepV);
+        const edgeEpsU = tickEpsilon(spanU, minorStepU);
+        const edgeEpsV = tickEpsilon(spanV, minorStepV);
+        const majorEpsU = Math.max(edgeEpsU, Math.abs(majorStepU) * 1e-6);
+        const majorEpsV = Math.max(edgeEpsV, Math.abs(majorStepV) * 1e-6);
+        const axisEpsU = Math.max(edgeEpsU, Math.abs(minorStepU) * 1e-3);
+        const axisEpsV = Math.max(edgeEpsV, Math.abs(minorStepV) * 1e-3);
+        const majorCountU = uTicks.reduce((n, u) => n + (isMajorTick(u, majorStepU, majorEpsU) ? 1 : 0), 0);
+        const majorCountV = vTicks.reduce((n, v) => n + (isMajorTick(v, majorStepV, majorEpsV) ? 1 : 0), 0);
+        for (let i = 0; i < 32; i++) {
+            const estLabelsU = majorCountU > 0 ? Math.ceil(majorCountU / labelStrideU) : 0;
+            const estLabelsV = majorCountV > 0 ? Math.ceil(majorCountV / labelStrideV) : 0;
+            if ((estLabelsU + estLabelsV) <= this.maxLabels) break;
+            if (estLabelsU >= estLabelsV) labelStrideU++;
+            else labelStrideV++;
+        }
         this.linePool.beginFrame();
         this.labelPool.beginFrame();
         let uMajorIndex = 0;
-        for (let u = Math.floor((uMin + eps) / minorStep) * minorStep; u <= uMax + eps; u += minorStep) {
+        for (let i = 0; i < uTicks.length; i++) {
+            const u = uTicks[i];
             const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, u, vMin));
             const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, u, vMax));
             if (!p0 || !p1 || (!p0.inFront && !p1.inFront)) continue;
-            const major = Math.abs((u / majorStep) - Math.round(u / majorStep)) < 1e-4;
-            const axis = Math.abs(u) < eps;
+            const major = isMajorTick(u, majorStepU, majorEpsU);
+            const axis = Math.abs(u) <= axisEpsU;
+            const edge = isNear(u, uMin, edgeEpsU) || isNear(u, uMax, edgeEpsU);
             const line = this.linePool.acquire();
-            drawLine(line, p0.x, p0.y, p1.x, p1.y, axis ? this.axisColor : (major ? this.majorColor : this.minorColor), major || axis ? this.lineWidthMajorPx : this.lineWidthMinorPx);
-            if (major && (uMajorIndex % labelStride === 0)) {
+            drawLine(line, p0.x, p0.y, p1.x, p1.y, axis ? this.axisColor : ((major || edge) ? this.majorColor : this.minorColor), (major || axis || edge) ? this.lineWidthMajorPx : this.lineWidthMinorPx);
+            if (major && (uMajorIndex % labelStrideU === 0)) {
                 const label = this.labelPool.acquire();
                 label.textContent = formatTick(u);
                 label.style.left = `${p0.x + 4}px`;
@@ -183,15 +252,17 @@ export class GridLayer implements OverlayLayer {
             if (major) uMajorIndex++;
         }
         let vMajorIndex = 0;
-        for (let v = Math.floor((vMin + eps) / minorStep) * minorStep; v <= vMax + eps; v += minorStep) {
+        for (let i = 0; i < vTicks.length; i++) {
+            const v = vTicks[i];
             const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, uMin, v));
             const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, uMax, v));
             if (!p0 || !p1 || (!p0.inFront && !p1.inFront)) continue;
-            const major = Math.abs((v / majorStep) - Math.round(v / majorStep)) < 1e-4;
-            const axis = Math.abs(v) < eps;
+            const major = isMajorTick(v, majorStepV, majorEpsV);
+            const axis = Math.abs(v) <= axisEpsV;
+            const edge = isNear(v, vMin, edgeEpsV) || isNear(v, vMax, edgeEpsV);
             const line = this.linePool.acquire();
-            drawLine(line, p0.x, p0.y, p1.x, p1.y, axis ? this.axisColor : (major ? this.majorColor : this.minorColor), major || axis ? this.lineWidthMajorPx : this.lineWidthMinorPx);
-            if (major && (vMajorIndex % labelStride === 0)) {
+            drawLine(line, p0.x, p0.y, p1.x, p1.y, axis ? this.axisColor : ((major || edge) ? this.majorColor : this.minorColor), (major || axis || edge) ? this.lineWidthMajorPx : this.lineWidthMinorPx);
+            if (major && (vMajorIndex % labelStrideV === 0)) {
                 const label = this.labelPool.acquire();
                 label.textContent = formatTick(v);
                 label.style.left = `${p0.x + 4}px`;
@@ -223,12 +294,17 @@ export class GridLayer implements OverlayLayer {
         };
     }
 
-    private estimatePixelsPerUnit(ctx: OverlayUpdateContext): number {
+    private estimatePixelsPerUnitAxes(ctx: OverlayUpdateContext): { u: number; v: number; } {
         const axes = axesForPlane(this.plane);
         const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, this.origin);
-        const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, [this.origin[0] + axes.u[0], this.origin[1] + axes.u[1], this.origin[2] + axes.u[2]]);
-        if (!p0 || !p1) return 1;
-        const d = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        return clamp(d, 1e-6, 1e9);
+        if (!p0) return { u: 1, v: 1 };
+        const pu = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, [this.origin[0] + axes.u[0], this.origin[1] + axes.u[1], this.origin[2] + axes.u[2]]);
+        const pv = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, [this.origin[0] + axes.v[0], this.origin[1] + axes.v[1], this.origin[2] + axes.v[2]]);
+        const du = pu ? Math.hypot(pu.x - p0.x, pu.y - p0.y) : 1;
+        const dv = pv ? Math.hypot(pv.x - p0.x, pv.y - p0.y) : 1;
+        return {
+            u: clamp(du, 1e-6, 1e9),
+            v: clamp(dv, 1e-6, 1e9)
+        };
     }
 }
