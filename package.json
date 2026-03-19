@@ -27,8 +27,10 @@
     "build:ts": "tsc --noEmit --project ./tsconfig.json",
     "build:es": "node ./esbuild.config.js",
     "build": "npm run build:rs && npm run build:ts && npm run build:es",
-    "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
     "test": "node --test ./test/*.test.js",
+    "dev": "npm run build && npm run test",
+    "restore": "git restore build dist",
+    "docs": "typedoc --options ./typedoc.json --favicon ./assets/favicon.png",
     "start": "npx serve ."
   },
   "repository": {
