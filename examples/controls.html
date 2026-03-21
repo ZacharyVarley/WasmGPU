@@ -21,6 +21,11 @@
             .scale-controls button { cursor: pointer; }
             .scale-controls .wide { grid-column: 1 / span 2; }
             .pane.scale { position: fixed; right: 10px; top: 10px; width: 340px; min-height: 120px; z-index: 5; }
+            .annotation-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 8px; }
+            .annotation-controls label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+            .annotation-controls input, .annotation-controls select, .annotation-controls button { font: 11px monospace; padding: 3px; background: rgba(10, 16, 28, 0.95); color: #d8e2ef; border: 1px solid rgba(180, 210, 255, 0.25); }
+            .annotation-controls button { cursor: pointer; }
+            .annotation-controls .wide { grid-column: 1 / span 2; }
         </style>
     </head>
     <body>
@@ -29,11 +34,12 @@
         <div class="hud">
             <div class="pane nav"></div>
             <div class="pane pick"></div>
+            <div class="pane annotation"></div>
             <div class="pane scale"></div>
         </div>
         <script src="../dist/WasmGPU.iife.min.js"></script>
         <script type="module">
-            const canvas = document.querySelector("canvas.main"), overlay = document.querySelector("canvas.overlay"), overlayctx = overlay.getContext("2d"), navHud = document.querySelector(".nav"), pickHud = document.querySelector(".pick"), scaleHud = document.querySelector(".scale");
+            const canvas = document.querySelector("canvas.main"), overlay = document.querySelector("canvas.overlay"), overlayctx = overlay.getContext("2d"), navHud = document.querySelector(".nav"), pickHud = document.querySelector(".pick"), annotationHud = document.querySelector(".annotation"), scaleHud = document.querySelector(".scale");
             const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
             const scene = wgpu.createScene([0.02, 0.03, 0.04]);
             const perspective = wgpu.createCamera.perspective({ fov: 50, near: 0.05, far: 500 });
@@ -130,6 +136,22 @@
             });
             overlaySystem.addLayer(worldGrid).addLayer(worldTriad).addLayer(screenTriad).addLayer(legend);
 
+            const annotation = wgpu.createAnnotation.toolkit({
+                scene, camera: perspective, controls, overlaySystem,
+                pointerTarget: canvas, autoBindPointerEvents: false,
+                markerRenderer: { markerScale: 0.22, maxInstances: 512 },
+                labelLayer: {
+                    maxLabels: 256,
+                    readoutAnchor: { kind: "screen", corner: "top-left", offsetPx: [362, 12] },
+                    readoutWidthPx: 340
+                },
+                units: {
+                    worldUnitsPerUnit: 1,
+                    symbol: "wu", decimals: 4, autoMetric: true,
+                    angleUnit: "deg", angleDecimals: 2
+                }
+            });
+
             const selection = wgpu.createSelectionStore();
             let hoverHit = null;
 
@@ -152,6 +174,8 @@
                 status: "idle"
             };
             const scaleUI = {};
+            const annotationState = { action: "idle" };
+            const annotationUI = {};
 
             const readNumber = (el, fallback) => {
                 const v = Number(el.value);
@@ -339,6 +363,192 @@
                 refreshScalePane();
             };
 
+            const metricPrefixes = [
+                { symbol: "p", factor: 1e-12 },
+                { symbol: "n", factor: 1e-9 },
+                { symbol: "u", factor: 1e-6 },
+                { symbol: "m", factor: 1e-3 },
+                { symbol: "", factor: 1 },
+                { symbol: "k", factor: 1e3 },
+                { symbol: "M", factor: 1e6 },
+                { symbol: "G", factor: 1e9 },
+                { symbol: "T", factor: 1e12 }
+            ];
+
+            const clampInt = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v)));
+
+            const formatValue = (value, decimals) => {
+                if (!Number.isFinite(value)) return "nan";
+                const d = clampInt(decimals, 0, 12);
+                const abs = Math.abs(value);
+                if (abs >= 1e7 || (abs > 0 && abs < 1e-5)) return value.toExponential(Math.max(1, Math.min(6, d)));
+                const fixed = value.toFixed(d);
+                return fixed.includes(".") ? fixed.replace(/(\.\d*?[1-9])0+$/g, "$1").replace(/\.0+$/g, "") : fixed;
+            };
+
+            const formatDistance = (distanceWorld, units) => {
+                if (!Number.isFinite(distanceWorld)) return `nan ${units.symbol}`;
+                const base = distanceWorld / Math.max(1e-12, units.worldUnitsPerUnit);
+                if (!units.autoMetric) return `${formatValue(base, units.decimals)} ${units.symbol}`;
+                if (Math.abs(base) <= 1e-12) return `${formatValue(0, units.decimals)} ${units.symbol}`;
+                const exponent = Math.max(-12, Math.min(12, Math.floor(Math.log10(Math.abs(base)) / 3) * 3));
+                let prefix = metricPrefixes.find((p) => Math.log10(p.factor) === exponent);
+                if (!prefix) prefix = metricPrefixes[4];
+                const value = base / prefix.factor;
+                return `${formatValue(value, units.decimals)} ${prefix.symbol}${units.symbol}`;
+            };
+
+            const formatAngle = (radians, units) => {
+                if (!Number.isFinite(radians)) return `nan ${units.angleUnit}`;
+                if (units.angleUnit === "rad") return `${formatValue(radians, units.angleDecimals)} rad`;
+                return `${formatValue(radians * 180 / Math.PI, units.angleDecimals)} deg`;
+            };
+
+            const readAnnotationUnitsFromUI = () => {
+                return {
+                    worldUnitsPerUnit: Math.max(1e-12, readNumber(annotationUI.worldUnitsPerUnit, 1)),
+                    symbol: annotationUI.symbol.value.trim() || "wu",
+                    decimals: clampInt(readNumber(annotationUI.decimals, 4), 0, 12),
+                    autoMetric: !!annotationUI.autoMetric.checked,
+                    angleUnit: annotationUI.angleUnit.value,
+                    angleDecimals: clampInt(readNumber(annotationUI.angleDecimals, 2), 0, 12)
+                };
+            };
+
+            const summarizeProbe = (probe, title) => {
+                if (!probe.hit) return [`${title}: miss`];
+                const lines = [
+                    `${title}: hit`,
+                    `kind: ${probe.kind}`,
+                    `objectId: ${probe.objectId}`,
+                    `elementIndex: ${probe.elementIndex}`,
+                    `world: ${fmtVec3(probe.worldPosition)}`,
+                    `ndIndex: ${fmtNd(probe.ndIndex)}`
+                ];
+                if (probe.attributes) {
+                    if (probe.attributes.scalar !== undefined && probe.attributes.scalar !== null) lines.push(`scalar: ${fmt(probe.attributes.scalar, 6)}`);
+                    if (probe.attributes.vector) lines.push(`vector: ${fmtVec4(probe.attributes.vector)}`);
+                    if (probe.attributes.packedPoint) lines.push(`packedPoint: ${fmtVec4(probe.attributes.packedPoint)}`);
+                } else lines.push("attributes: null");
+                return lines;
+            };
+
+            const summarizeAnnotationRecord = (record, units) => {
+                if (record.kind === "marker") return `${record.id} marker @ ${fmtVec3(record.anchor.position)}`;
+                if (record.kind === "distance") return `${record.id} distance = ${formatDistance(record.distanceWorld, units)}`;
+                return `${record.id} angle = ${formatAngle(record.angleRadians, units)}`;
+            };
+
+            const refreshAnnotationPane = () => {
+                if (!annotationUI.status) return;
+                const units = readAnnotationUnitsFromUI();
+                const records = annotation.getAnnotations();
+                const selectedId = annotation.selectionProbe.annotationId ?? "none";
+                const staged = annotation.pendingCount;
+                const stageTarget = annotation.mode === "distance" ? 2 : annotation.mode === "angle" ? 3 : annotation.mode === "marker" ? 1 : 0;
+                const recent = records.slice(Math.max(0, records.length - 7)).map((r) => summarizeAnnotationRecord(r, units));
+                annotationUI.status.textContent = [
+                    "Annotation / Measurement Toolkit",
+                    `mode: ${annotation.mode}`,
+                    `status: ${annotationState.action}`,
+                    `count: ${records.length}`,
+                    `selection annotation: ${selectedId}`,
+                    `staging: ${staged}${stageTarget > 0 ? ` / ${stageTarget}` : ""}`,
+                    `units: 1 ${units.symbol} = ${fmt(units.worldUnitsPerUnit, 6)} world units`,
+                    `autoMetric: ${units.autoMetric}`,
+                    "",
+                    ...summarizeProbe(annotation.hoverProbe, "probe.hover"),
+                    "",
+                    ...summarizeProbe(annotation.selectionProbe, "probe.selection"),
+                    "",
+                    "recent annotations:",
+                    ...(recent.length > 0 ? recent : ["(none)"]),
+                    "",
+                    "Shortcuts:",
+                    "M marker",
+                    "V distance",
+                    "G angle",
+                    "Esc cancel -> idle",
+                    "Delete remove selected",
+                    "Shift+Delete clear all"
+                ].join("\n");
+            };
+
+            const setAnnotationMode = (mode) => {
+                annotationState.action = `mode -> ${mode}`;
+                annotation.setMode(mode);
+                refreshAnnotationPane();
+            };
+
+            const setupAnnotationPane = () => {
+                annotationHud.innerHTML = `
+                <div class="annotation-controls">
+                    <button id="ann-idle">idle</button>
+                    <button id="ann-marker">marker</button>
+                    <button id="ann-distance">distance</button>
+                    <button id="ann-angle">angle</button>
+                    <button id="ann-cancel" class="wide">cancel measure</button>
+                    <button id="ann-remove" class="wide">remove selected annotation</button>
+                    <button id="ann-clear" class="wide">clear annotations</button>
+                    <label>world / unit<input id="ann-world-units" type="number" step="any" min="0.000000000001" value="1"></label>
+                    <label>symbol<input id="ann-symbol" type="text" value="wu"></label>
+                    <label>decimals<input id="ann-decimals" type="number" step="1" min="0" max="12" value="4"></label>
+                    <label>auto metric<input id="ann-auto" type="checkbox" checked></label>
+                    <label>angle unit<select id="ann-angle-unit"><option value="deg">deg</option><option value="rad">rad</option></select></label>
+                    <label>angle decimals<input id="ann-angle-decimals" type="number" step="1" min="0" max="12" value="2"></label>
+                    <button id="ann-units" class="wide">apply units</button>
+                </div>
+                <div id="annotation-status"></div>`;
+                annotationUI.worldUnitsPerUnit = annotationHud.querySelector("#ann-world-units");
+                annotationUI.symbol = annotationHud.querySelector("#ann-symbol");
+                annotationUI.decimals = annotationHud.querySelector("#ann-decimals");
+                annotationUI.autoMetric = annotationHud.querySelector("#ann-auto");
+                annotationUI.angleUnit = annotationHud.querySelector("#ann-angle-unit");
+                annotationUI.angleDecimals = annotationHud.querySelector("#ann-angle-decimals");
+                annotationUI.status = annotationHud.querySelector("#annotation-status");
+
+                const applyUnits = () => {
+                    annotation.setUnits(readAnnotationUnitsFromUI());
+                    annotationState.action = "units updated";
+                    refreshAnnotationPane();
+                };
+
+                annotationHud.querySelector("#ann-idle").addEventListener("click", () => setAnnotationMode("idle"));
+                annotationHud.querySelector("#ann-marker").addEventListener("click", () => setAnnotationMode("marker"));
+                annotationHud.querySelector("#ann-distance").addEventListener("click", () => setAnnotationMode("distance"));
+                annotationHud.querySelector("#ann-angle").addEventListener("click", () => setAnnotationMode("angle"));
+                annotationHud.querySelector("#ann-cancel").addEventListener("click", () => {
+                    annotationState.action = "cancelled";
+                    annotation.cancel();
+                    refreshAnnotationPane();
+                });
+                annotationHud.querySelector("#ann-remove").addEventListener("click", () => {
+                    const removed = annotation.removeSelectionAnnotation();
+                    annotationState.action = removed ? "removed selected annotation" : "no selected annotation";
+                    refreshAnnotationPane();
+                });
+                annotationHud.querySelector("#ann-clear").addEventListener("click", () => {
+                    annotation.clearAnnotations();
+                    annotationState.action = "cleared annotations";
+                    refreshAnnotationPane();
+                });
+                annotationHud.querySelector("#ann-units").addEventListener("click", applyUnits);
+                [
+                    annotationUI.worldUnitsPerUnit,
+                    annotationUI.symbol,
+                    annotationUI.decimals,
+                    annotationUI.autoMetric,
+                    annotationUI.angleUnit,
+                    annotationUI.angleDecimals
+                ].forEach((el) => el.addEventListener("change", applyUnits));
+                annotation.onAnnotationsChange(() => refreshAnnotationPane());
+                annotation.onModeChange(() => refreshAnnotationPane());
+                annotation.onHoverReadout(() => refreshAnnotationPane());
+                annotation.onSelectionReadout(() => refreshAnnotationPane());
+                annotation.onStagingChange(() => refreshAnnotationPane());
+                applyUnits();
+            };
+
             const syncOverlaySize = () => {
                 const w = Math.max(1, canvas.clientWidth | 0);
                 const h = Math.max(1, canvas.clientHeight | 0);
@@ -464,7 +674,14 @@
                     "A/D left/right",
                     "Q/E top/bottom",
                     "X fit to bounds",
-                    "C toggle orthographic"
+                    "C toggle orthographic",
+                    "",
+                    "Annotation Shortcuts",
+                    "M marker",
+                    "V distance",
+                    "G angle",
+                    "Esc cancel",
+                    "Del remove / Shift+Del clear"
                 ].join("\n");
                 const selected = selectedPointEntries();
                 const head = selected.slice(0, 6).map((entry) => `#${entry.elementIndex}  nd=${fmtNd(entry.ndIndex)}`);
@@ -492,6 +709,7 @@
                     ...(head.length > 0 ? head : ["(none)"]),
                     ...tail
                 ].join("\n");
+                refreshAnnotationPane();
             };
 
             const fitCurrent = (view = currentView, animate = true) => {
@@ -506,6 +724,7 @@
                 activeCamera = next;
                 controls.setCamera(activeCamera);
                 overlaySystem.setView(activeCamera, scene);
+                annotation.setView(activeCamera, scene);
                 overlaySystem.invalidate("camera");
                 updateProjection();
                 fitCurrent(currentView, true);
@@ -545,6 +764,8 @@
             };
 
             window.addEventListener("keydown", (event) => {
+                const targetTag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
+                if (targetTag === "input" || targetTag === "select" || targetTag === "textarea") return;
                 const key = event.key.toLowerCase();
                 if (key === "1") { controls.setMode("orbit"); updateHud(); }
                 else if (key === "2") { controls.setMode("trackball"); updateHud(); }
@@ -556,6 +777,24 @@
                 else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); updateHud(); }
                 else if (key === "x") { fitCurrent(currentView, true); }
                 else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); }
+                else if (key === "m") { setAnnotationMode("marker"); updateHud(); }
+                else if (key === "v") { setAnnotationMode("distance"); updateHud(); }
+                else if (key === "g") { setAnnotationMode("angle"); updateHud(); }
+                else if (event.key === "Escape") {
+                    annotationState.action = "cancelled";
+                    annotation.cancel();
+                    updateHud();
+                } else if (event.key === "Delete") {
+                    if (event.shiftKey) {
+                        annotation.clearAnnotations();
+                        annotationState.action = "cleared annotations";
+                    } else {
+                        const removed = annotation.removeSelectionAnnotation();
+                        annotationState.action = removed ? "removed selected annotation" : "no selected annotation";
+                    }
+                    updateHud();
+                    event.preventDefault();
+                }
             });
 
             canvas.addEventListener("pointerdown", (event) => {
@@ -574,6 +813,7 @@
                 if (isLasso) suppressContextMenuOnce = true;
                 hoverPickToken++;
                 hoverHit = null;
+                annotation.ingestHoverHit(null);
                 controls.enabled = false;
                 canvas.setPointerCapture(regionPointerId);
                 drawOverlay();
@@ -646,10 +886,12 @@
                 wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
                     if (token !== hoverPickToken) return;
                     hoverHit = hit;
+                    annotation.ingestHoverHit(hit);
                     updateHud();
                 }).catch(() => {
                     if (token !== hoverPickToken) return;
                     hoverHit = null;
+                    annotation.ingestHoverHit(null);
                     updateHud();
                 });
             });
@@ -657,6 +899,7 @@
             canvas.addEventListener("pointerleave", () => {
                 hoverPickToken++;
                 hoverHit = null;
+                annotation.ingestHoverHit(null);
                 updateHud();
             });
 
@@ -667,7 +910,15 @@
                 }
                 if (regionActive) return;
                 const { x, y } = getRelativePointer(event);
+                if (annotation.mode !== "idle") {
+                    const created = await annotation.pickAtAndCommit(x, y);
+                    if (created) annotationState.action = `created ${created.kind} (${created.id})`;
+                    else annotationState.action = `mode ${annotation.mode} staging=${annotation.pendingCount}`;
+                    updateHud();
+                    return;
+                }
                 const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
+                annotation.ingestSelectionHit(hit);
                 const mode = selectionModeFromClickEvent(event);
                 if (hit) selection.apply(mode, hit);
                 else if (mode === "replace") selection.clear();
@@ -678,9 +929,11 @@
             updateProjection();
             fitCurrent(currentView, false);
             overlaySystem.setView(activeCamera, scene);
+            annotation.setView(activeCamera, scene);
             overlaySystem.invalidate("camera");
-            updateHud();
             setupScalePane();
+            setupAnnotationPane();
+            updateHud();
 
             wgpu.run((dt) => {
                 updateProjection();
