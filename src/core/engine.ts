@@ -23,6 +23,8 @@ import { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial
 import type { UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, CustomMaterialDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
 import type { Texture2DDescriptor } from "../graphics/texture";
+import { AnnotationToolkit } from "../overlay";
+import type { AnnotationToolkitDescriptor } from "../overlay";
 import { OverlaySystem, AxisTriadLayer, GridLayer, LegendLayer } from "../overlay";
 import type { OverlaySystemDescriptor, AxisTriadLayerDescriptor, GridLayerDescriptor, LegendLayerDescriptor } from "../overlay";
 import { pythonInterop } from "../python";
@@ -298,6 +300,18 @@ export class WasmGPU {
         },
         legend: (descriptor: LegendLayerDescriptor): LegendLayer => {
             return new LegendLayer(descriptor);
+        }
+    };
+
+    readonly createAnnotation = {
+        toolkit: (options: AnnotationToolkitDescriptor = {}): AnnotationToolkit => {
+            return new AnnotationToolkit({
+                pick: this.pick.bind(this),
+                createOverlay: this.createOverlay
+            }, {
+                canvas: this.renderer.canvas,
+                ...options
+            });
         }
     };
 
