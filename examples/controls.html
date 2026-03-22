@@ -11,64 +11,49 @@
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
-            canvas.main, canvas.overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-            canvas.overlay { pointer-events: none; }
-            .hud { position: fixed; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; width: 340px; z-index: 5; }
-            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; width: 100%; }
-            .scale-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 8px; }
-            .scale-controls label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
-            .scale-controls input, .scale-controls select, .scale-controls button { font: 11px monospace; padding: 3px; background: rgba(10, 16, 28, 0.95); color: #d8e2ef; border: 1px solid rgba(180, 210, 255, 0.25); }
-            .scale-controls button { cursor: pointer; }
-            .scale-controls .wide { grid-column: 1 / span 2; }
-            .pane.scale { position: fixed; right: 10px; top: 10px; width: 340px; min-height: 120px; z-index: 5; }
-            .annotation-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 8px; }
-            .annotation-controls label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
-            .annotation-controls input, .annotation-controls select, .annotation-controls button { font: 11px monospace; padding: 3px; background: rgba(10, 16, 28, 0.95); color: #d8e2ef; border: 1px solid rgba(180, 210, 255, 0.25); }
-            .annotation-controls button { cursor: pointer; }
-            .annotation-controls .wide { grid-column: 1 / span 2; }
+            canvas.main { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+            .topbar { position: fixed; left: 10px; right: 10px; top: 10px; display: flex; gap: 8px; flex-wrap: wrap; z-index: 8; }
+            .topbar a { text-decoration: none; color: #d8e2ef; padding: 6px 8px; border: 1px solid rgba(180, 210, 255, 0.26); background: rgba(8, 14, 24, 0.84); }
+            .topbar a.active { background: rgba(50, 95, 150, 0.46); }
+            .hud { position: fixed; left: 10px; top: 52px; display: flex; flex-direction: column; gap: 10px; width: 340px; z-index: 6; }
+            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; }
         </style>
     </head>
     <body>
         <canvas class="main"></canvas>
-        <canvas class="overlay"></canvas>
+        <div class="topbar">
+            <a class="active" href="./controls.html">controls</a>
+            <a href="./picking.html">picking</a>
+            <a href="./scaling.html">scaling</a>
+            <a href="./overlay.html">overlay</a>
+        </div>
         <div class="hud">
             <div class="pane nav"></div>
-            <div class="pane pick"></div>
-            <div class="pane annotation"></div>
-            <div class="pane scale"></div>
         </div>
         <script src="../dist/WasmGPU.iife.min.js"></script>
         <script type="module">
-            const canvas = document.querySelector("canvas.main"), overlay = document.querySelector("canvas.overlay"), overlayctx = overlay.getContext("2d"), navHud = document.querySelector(".nav"), pickHud = document.querySelector(".pick"), annotationHud = document.querySelector(".annotation"), scaleHud = document.querySelector(".scale");
-            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
-            const scene = wgpu.createScene([0.02, 0.03, 0.04]);
-            const perspective = wgpu.createCamera.perspective({ fov: 50, near: 0.05, far: 500 });
-            const orthographic = wgpu.createCamera.orthographic({ left: -10, right: 10, top: 10, bottom: -10, near: 0.05, far: 500 });
-            perspective.transform.setPosition(26, 12, 26);
-            perspective.lookAt(0, 0, 0);
-            orthographic.transform.copyFrom(perspective.transform);
+            const canvas = document.querySelector("canvas.main");
+            const navHud = document.querySelector(".nav");
 
-            const controls = wgpu.createControls.navigation(perspective, canvas, {
-                mode: "orbit", target: [0, 0, 0],
-                enableDamping: true, dampingFactor: 0.1, zoomOnCursor: true,
-                minDistance: 0.5, maxDistance: 400
-            });
+            const fmt = (n, d = 2) => Number.isFinite(n) ? n.toFixed(d) : "nan";
+            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
 
-            const generate = (n) => {
-                const data = new Float32Array(n * 4);
+            const generatePointCloudData = (count) => {
+                const data = new Float32Array(count * 4);
                 const min = [Infinity, Infinity, Infinity];
                 const max = [-Infinity, -Infinity, -Infinity];
-                for (let i = 0; i < n; i++) {
-                    const u = i / Math.max(1, n - 1);
+                for (let i = 0; i < count; i++) {
+                    const u = i / Math.max(1, count - 1);
                     const strand = i % 3;
                     const theta = (u * 28.0) + (strand * 2.09439510239) + (Math.sin(u * 60.0) * 0.35);
                     const radius = 2.0 + (17.0 * u) + (1.75 * Math.sin((u * 18.0) + strand));
-                    const jitterX = (Math.random() - 0.5) * 0.85, jitterY = (Math.random() - 0.5) * 0.85, jitterZ = (Math.random() - 0.5) * 0.85;
+                    const jitterX = (Math.random() - 0.5) * 0.85;
+                    const jitterY = (Math.random() - 0.5) * 0.85;
+                    const jitterZ = (Math.random() - 0.5) * 0.85;
                     const x = (radius * Math.cos(theta)) + jitterX;
                     const y = (-14.0 + (28.0 * u)) + (3.0 * Math.sin((theta * 0.45) + strand)) + jitterY;
                     const z = (0.42 * radius * Math.sin(theta)) + (8.0 * Math.sin((u * 7.0) + strand)) + jitterZ;
-                    const skewBase = Math.pow(10, (u * 6.0) - 3.0);
-                    const scalar = skewBase * (1.0 + (0.35 * Math.sin(theta + (u * 6.0))));
+                    const scalar = Math.pow(10, (u * 6.0) - 3.0) * (1.0 + (0.35 * Math.sin(theta + (u * 6.0))));
                     const o = i * 4;
                     data[o + 0] = x;
                     data[o + 1] = y;
@@ -84,13 +69,40 @@
                 return { data, boundsMin: min, boundsMax: max };
             };
 
-            const data = generate(100000);
+            // WasmGPU: engine + scene bootstrap for navigation-only demo.
+            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
+            const scene = wgpu.createScene([0.02, 0.03, 0.04]);
+            const perspective = wgpu.createCamera.perspective({ fov: 50, near: 0.05, far: 500 });
+            const orthographic = wgpu.createCamera.orthographic({ left: -10, right: 10, top: 10, bottom: -10, near: 0.05, far: 500 });
+            perspective.transform.setPosition(26, 12, 26);
+            perspective.lookAt(0, 0, 0);
+            orthographic.transform.copyFrom(perspective.transform);
+
+            // WasmGPU: navigation controls are the focus of this page.
+            const controls = wgpu.createControls.navigation(perspective, canvas, {
+                mode: "orbit",
+                target: [0, 0, 0],
+                enableDamping: true,
+                dampingFactor: 0.1,
+                zoomOnCursor: true,
+                minDistance: 0.5,
+                maxDistance: 400
+            });
+
+            // WasmGPU: shared point-cloud dataset used across all split demos.
+            const source = generatePointCloudData(100000);
             const points = wgpu.createPointCloud({
-                data: data.data, keepCPUData: true,
+                data: source.data,
+                keepCPUData: true,
                 ndShape: [1000, 100],
-                boundsMin: data.boundsMin, boundsMax: data.boundsMax,
-                basePointSize: 5.0, minPointSize: 1.0, maxPointSize: 10.0,
-                sizeAttenuation: 1.8, softness: 0.3, opacity: 1,
+                boundsMin: source.boundsMin,
+                boundsMax: source.boundsMax,
+                basePointSize: 5.0,
+                minPointSize: 1.0,
+                maxPointSize: 10.0,
+                sizeAttenuation: 1.8,
+                softness: 0.3,
+                opacity: 1,
                 scaleTransform: {
                     componentCount: 4,
                     componentIndex: 3,
@@ -110,836 +122,79 @@
                     gamma: 1,
                     invert: false
                 },
-                blendMode: "additive", colormap: "turbo"
+                blendMode: "additive",
+                colormap: "turbo"
             });
             scene.add(points);
 
-            const overlaySystem = wgpu.createOverlay.system({
-                controls, camera: perspective, scene,
-                zIndex: 6, interactionThrottleMs: 30, autoUpdate: true
-            });
-            const worldTriad = wgpu.createOverlay.axisTriad({
-                id: "overlay-world-triad", anchor: { kind: "world", position: [0, 0, 0] },
-                lengthWorld: 3.2, lineWidthPx: 2, labels: ["X", "Y", "Z"]
-            });
-            const screenTriad = wgpu.createOverlay.axisTriad({
-                id: "overlay-screen-triad", anchor: { kind: "screen", corner: "bottom-right", offsetPx: [-26, -26] },
-                sizePx: 52, lineWidthPx: 2, labels: ["x", "y", "z"]
-            });
-            const worldGrid = wgpu.createOverlay.grid({
-                id: "overlay-grid", plane: "xz", origin: [0, 0, 0], extentMode: "scene-fit",
-                targetMinorSpacingPx: 28, majorStepFactor: 5, maxLines: 180, maxLabels: 50
-            });
-            const legend = wgpu.createOverlay.legend({
-                id: "overlay-legend", title: "PointCloud Scalar", source: points, anchor: { kind: "screen", corner: "top-right", offsetPx: [-14, 14] },
-                widthPx: 24, heightPx: 220, tickCount: 8, strictParity: true
-            });
-            overlaySystem.addLayer(worldGrid).addLayer(worldTriad).addLayer(screenTriad).addLayer(legend);
-
-            const annotation = wgpu.createAnnotation.toolkit({
-                scene, camera: perspective, controls, overlaySystem,
-                pointerTarget: canvas, autoBindPointerEvents: false,
-                markerRenderer: { markerScale: 0.22, maxInstances: 512 },
-                labelLayer: {
-                    maxLabels: 256,
-                    readoutAnchor: { kind: "screen", corner: "top-left", offsetPx: [362, 12] },
-                    readoutWidthPx: 340
-                },
-                units: {
-                    worldUnitsPerUnit: 1,
-                    symbol: "wu", decimals: 4, autoMetric: true,
-                    angleUnit: "deg", angleDecimals: 2
-                }
-            });
-
-            const selection = wgpu.createSelectionStore();
-            let hoverHit = null;
-
             let activeCamera = perspective;
             let currentView = "front";
-            let hoverPickToken = 0;
-            let suppressClickOnce = false;
-            let suppressContextMenuOnce = false;
-            let regionActive = false;
-            let regionMode = null;
-            let regionPointerId = null;
-            let regionStart = null;
-            let regionCurrent = null;
-            let regionPath = [];
-            let regionSummary = null;
-
-            const scaleState = {
-                stats: null,
-                busy: false,
-                status: "idle"
-            };
-            const scaleUI = {};
-            const annotationState = { action: "idle" };
-            const annotationUI = {};
-
-            const readNumber = (el, fallback) => {
-                const v = Number(el.value);
-                return Number.isFinite(v) ? v : fallback;
-            };
-
-            const getScaleTransformFromUI = () => {
-                const componentIndex = Math.max(0, Math.min(3, Math.round(readNumber(scaleUI.componentIndex, 3))));
-                const domainMin = readNumber(scaleUI.domainMin, 1e-3);
-                const domainMax = readNumber(scaleUI.domainMax, 1e3);
-                const clampMin = readNumber(scaleUI.clampMin, domainMin);
-                const clampMax = readNumber(scaleUI.clampMax, domainMax);
-                const percentileLow = Math.max(0, Math.min(100, readNumber(scaleUI.percentileLow, 2)));
-                const percentileHigh = Math.max(percentileLow + 1e-3, Math.min(100, readNumber(scaleUI.percentileHigh, 98)));
-                return {
-                    componentCount: 4,
-                    componentIndex,
-                    valueMode: scaleUI.valueMode.value,
-                    stride: 4,
-                    offset: 0,
-                    mode: scaleUI.mode.value,
-                    clampMode: scaleUI.clampMode.value,
-                    domainMin,
-                    domainMax,
-                    clampMin,
-                    clampMax,
-                    percentileLow,
-                    percentileHigh,
-                    logBase: Math.max(1.000001, readNumber(scaleUI.logBase, 10)),
-                    symlogLinThresh: Math.max(1e-6, readNumber(scaleUI.symlogLinThresh, 1)),
-                    gamma: Math.max(1e-6, readNumber(scaleUI.gamma, 1)),
-                    invert: !!scaleUI.invert.checked
-                };
-            };
-
-            const applyScaleTransformFromUI = () => {
-                points.setScaleTransform(getScaleTransformFromUI());
-                overlaySystem.invalidate("scale");
-                refreshScalePane();
-            };
-
-            const statsSummaryLines = () => {
-                if (!scaleState.stats) return ["stats: none"];
-                const s = scaleState.stats;
-                const pMin = s.percentileMin === null ? "null" : fmt(s.percentileMin, 6);
-                const pMax = s.percentileMax === null ? "null" : fmt(s.percentileMax, 6);
-                return [
-                    `stats.count: ${s.count}`,
-                    `stats.finiteCount: ${s.finiteCount}`,
-                    `stats.min/max: ${fmt(s.min, 6)} / ${fmt(s.max, 6)}`,
-                    `stats.percentileMin/max: ${pMin} / ${pMax}`,
-                    `stats.bins: ${s.histogramBins ?? "null"}`
-                ];
-            };
-
-            const refreshScalePane = () => {
-                if (!scaleUI.status) return;
-                const transform = points.scaleTransform;
-                scaleUI.status.textContent = [
-                    "Scaling (GPU shared transform)",
-                    `status: ${scaleState.busy ? "working" : scaleState.status}`,
-                    `active mode/clamp: ${transform.mode} / ${transform.clampMode}`,
-                    `active domain: ${fmt(transform.domainMin, 6)} to ${fmt(transform.domainMax, 6)}`,
-                    `active clamp: ${fmt(transform.clampMin, 6)} to ${fmt(transform.clampMax, 6)}`,
-                    ...statsSummaryLines(),
-                    "",
-                    "Live remap updates uniforms only (no JS re-upload)."
-                ].join("\n");
-            };
-
-            const requestScaleStats = async (withPercentiles) => {
-                const source = points.getScaleSourceDescriptor();
-                if (!source) {
-                    scaleState.status = "stats unavailable";
-                    refreshScalePane();
-                    return;
-                }
-                scaleState.busy = true;
-                scaleState.status = withPercentiles ? "requesting min/max + percentiles" : "requesting min/max";
-                refreshScalePane();
-                try {
-                    const request = {
-                        source,
-                        ...(withPercentiles ? {
-                            percentiles: {
-                                low: readNumber(scaleUI.percentileLow, 2),
-                                high: readNumber(scaleUI.percentileHigh, 98),
-                                bins: Math.max(16, Math.floor(readNumber(scaleUI.histogramBins, 2048)))
-                            }
-                        } : {})
-                    };
-                    const stats = await wgpu.scale.requestStats(request);
-                    scaleState.stats = stats;
-                    scaleState.status = withPercentiles ? "stats + percentiles ready" : "stats ready";
-                    scaleUI.domainMin.value = String(stats.min);
-                    scaleUI.domainMax.value = String(stats.max);
-                    if (withPercentiles && stats.percentileMin !== null && stats.percentileMax !== null) {
-                        scaleUI.clampMode.value = "percentile";
-                        scaleUI.clampMin.value = String(stats.percentileMin);
-                        scaleUI.clampMax.value = String(stats.percentileMax);
-                    }
-                    applyScaleTransformFromUI();
-                } catch (error) {
-                    scaleState.status = `stats failed: ${error?.message ?? "unknown error"}`;
-                } finally {
-                    scaleState.busy = false;
-                    refreshScalePane();
-                }
-            };
-
-            const invalidateScaleCache = () => {
-                const source = points.getScaleSourceDescriptor();
-                if (!source) {
-                    scaleState.status = "invalidate skipped (no source)";
-                    refreshScalePane();
-                    return;
-                }
-                wgpu.scale.invalidate(source);
-                scaleState.status = "cache invalidated";
-                refreshScalePane();
-            };
-
-            const setupScalePane = () => {
-                scaleHud.innerHTML = `
-                <div class="scale-controls">
-                    <label>mode<select id="scale-mode"><option value="linear">linear</option><option value="log">log</option><option value="symlog">symlog</option></select></label>
-                    <label>clamp<select id="scale-clamp"><option value="none">none</option><option value="range">range</option><option value="percentile">percentile</option></select></label>
-                    <label>value<select id="scale-value"><option value="component">component</option><option value="magnitude">magnitude</option></select></label>
-                    <label>component<input id="scale-component" type="number" step="1" min="0" max="3" value="3"></label>
-                    <label>domain min<input id="scale-domain-min" type="number" step="any" value="0.001"></label>
-                    <label>domain max<input id="scale-domain-max" type="number" step="any" value="1000"></label>
-                    <label>clamp min<input id="scale-clamp-min" type="number" step="any" value="0.001"></label>
-                    <label>clamp max<input id="scale-clamp-max" type="number" step="any" value="1000"></label>
-                    <label>p low (%)<input id="scale-percentile-low" type="number" step="0.1" min="0" max="100" value="2"></label>
-                    <label>p high (%)<input id="scale-percentile-high" type="number" step="0.1" min="0" max="100" value="98"></label>
-                    <label>log base<input id="scale-log-base" type="number" step="any" min="1.000001" value="10"></label>
-                    <label>symlog lin<input id="scale-symlog" type="number" step="any" min="0.000001" value="1"></label>
-                    <label>gamma<input id="scale-gamma" type="number" step="any" min="0.000001" value="1"></label>
-                    <label>invert<input id="scale-invert" type="checkbox"></label>
-                    <label>hist bins<input id="scale-bins" type="number" step="1" min="16" value="2048"></label>
-                    <button class="wide" id="scale-apply">apply transform</button>
-                    <button class="wide" id="scale-stats">GPU min/max -> domain</button>
-                    <button class="wide" id="scale-stats-p">GPU percentiles -> clamp</button>
-                    <button class="wide" id="scale-invalidate">invalidate stats cache</button>
-                </div>
-                <div id="scale-status"></div>`;
-                scaleUI.mode = scaleHud.querySelector("#scale-mode");
-                scaleUI.clampMode = scaleHud.querySelector("#scale-clamp");
-                scaleUI.valueMode = scaleHud.querySelector("#scale-value");
-                scaleUI.componentIndex = scaleHud.querySelector("#scale-component");
-                scaleUI.domainMin = scaleHud.querySelector("#scale-domain-min");
-                scaleUI.domainMax = scaleHud.querySelector("#scale-domain-max");
-                scaleUI.clampMin = scaleHud.querySelector("#scale-clamp-min");
-                scaleUI.clampMax = scaleHud.querySelector("#scale-clamp-max");
-                scaleUI.percentileLow = scaleHud.querySelector("#scale-percentile-low");
-                scaleUI.percentileHigh = scaleHud.querySelector("#scale-percentile-high");
-                scaleUI.logBase = scaleHud.querySelector("#scale-log-base");
-                scaleUI.symlogLinThresh = scaleHud.querySelector("#scale-symlog");
-                scaleUI.gamma = scaleHud.querySelector("#scale-gamma");
-                scaleUI.invert = scaleHud.querySelector("#scale-invert");
-                scaleUI.histogramBins = scaleHud.querySelector("#scale-bins");
-                scaleUI.status = scaleHud.querySelector("#scale-status");
-                const triggerApply = () => applyScaleTransformFromUI();
-                [
-                    scaleUI.mode,
-                    scaleUI.clampMode,
-                    scaleUI.valueMode,
-                    scaleUI.componentIndex,
-                    scaleUI.domainMin,
-                    scaleUI.domainMax,
-                    scaleUI.clampMin,
-                    scaleUI.clampMax,
-                    scaleUI.percentileLow,
-                    scaleUI.percentileHigh,
-                    scaleUI.logBase,
-                    scaleUI.symlogLinThresh,
-                    scaleUI.gamma,
-                    scaleUI.invert
-                ].forEach((el) => el.addEventListener("change", triggerApply));
-                scaleHud.querySelector("#scale-apply").addEventListener("click", triggerApply);
-                scaleHud.querySelector("#scale-stats").addEventListener("click", () => requestScaleStats(false));
-                scaleHud.querySelector("#scale-stats-p").addEventListener("click", () => requestScaleStats(true));
-                scaleHud.querySelector("#scale-invalidate").addEventListener("click", invalidateScaleCache);
-                applyScaleTransformFromUI();
-                refreshScalePane();
-            };
-
-            const metricPrefixes = [
-                { symbol: "p", factor: 1e-12 },
-                { symbol: "n", factor: 1e-9 },
-                { symbol: "u", factor: 1e-6 },
-                { symbol: "m", factor: 1e-3 },
-                { symbol: "", factor: 1 },
-                { symbol: "k", factor: 1e3 },
-                { symbol: "M", factor: 1e6 },
-                { symbol: "G", factor: 1e9 },
-                { symbol: "T", factor: 1e12 }
-            ];
-
-            const clampInt = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v)));
-
-            const formatValue = (value, decimals) => {
-                if (!Number.isFinite(value)) return "nan";
-                const d = clampInt(decimals, 0, 12);
-                const abs = Math.abs(value);
-                if (abs >= 1e7 || (abs > 0 && abs < 1e-5)) return value.toExponential(Math.max(1, Math.min(6, d)));
-                const fixed = value.toFixed(d);
-                return fixed.includes(".") ? fixed.replace(/(\.\d*?[1-9])0+$/g, "$1").replace(/\.0+$/g, "") : fixed;
-            };
-
-            const formatDistance = (distanceWorld, units) => {
-                if (!Number.isFinite(distanceWorld)) return `nan ${units.symbol}`;
-                const base = distanceWorld / Math.max(1e-12, units.worldUnitsPerUnit);
-                if (!units.autoMetric) return `${formatValue(base, units.decimals)} ${units.symbol}`;
-                if (Math.abs(base) <= 1e-12) return `${formatValue(0, units.decimals)} ${units.symbol}`;
-                const exponent = Math.max(-12, Math.min(12, Math.floor(Math.log10(Math.abs(base)) / 3) * 3));
-                let prefix = metricPrefixes.find((p) => Math.log10(p.factor) === exponent);
-                if (!prefix) prefix = metricPrefixes[4];
-                const value = base / prefix.factor;
-                return `${formatValue(value, units.decimals)} ${prefix.symbol}${units.symbol}`;
-            };
-
-            const formatAngle = (radians, units) => {
-                if (!Number.isFinite(radians)) return `nan ${units.angleUnit}`;
-                if (units.angleUnit === "rad") return `${formatValue(radians, units.angleDecimals)} rad`;
-                return `${formatValue(radians * 180 / Math.PI, units.angleDecimals)} deg`;
-            };
-
-            const readAnnotationUnitsFromUI = () => {
-                return {
-                    worldUnitsPerUnit: Math.max(1e-12, readNumber(annotationUI.worldUnitsPerUnit, 1)),
-                    symbol: annotationUI.symbol.value.trim() || "wu",
-                    decimals: clampInt(readNumber(annotationUI.decimals, 4), 0, 12),
-                    autoMetric: !!annotationUI.autoMetric.checked,
-                    angleUnit: annotationUI.angleUnit.value,
-                    angleDecimals: clampInt(readNumber(annotationUI.angleDecimals, 2), 0, 12)
-                };
-            };
-
-            const summarizeProbe = (probe, title) => {
-                if (!probe.hit) return [`${title}: miss`];
-                const lines = [
-                    `${title}: hit`,
-                    `kind: ${probe.kind}`,
-                    `objectId: ${probe.objectId}`,
-                    `elementIndex: ${probe.elementIndex}`,
-                    `world: ${fmtVec3(probe.worldPosition)}`,
-                    `ndIndex: ${fmtNd(probe.ndIndex)}`
-                ];
-                if (probe.attributes) {
-                    if (probe.attributes.scalar !== undefined && probe.attributes.scalar !== null) lines.push(`scalar: ${fmt(probe.attributes.scalar, 6)}`);
-                    if (probe.attributes.vector) lines.push(`vector: ${fmtVec4(probe.attributes.vector)}`);
-                    if (probe.attributes.packedPoint) lines.push(`packedPoint: ${fmtVec4(probe.attributes.packedPoint)}`);
-                } else lines.push("attributes: null");
-                return lines;
-            };
-
-            const summarizeAnnotationRecord = (record, units) => {
-                if (record.kind === "marker") return `${record.id} marker @ ${fmtVec3(record.anchor.position)}`;
-                if (record.kind === "distance") return `${record.id} distance = ${formatDistance(record.distanceWorld, units)}`;
-                return `${record.id} angle = ${formatAngle(record.angleRadians, units)}`;
-            };
-
-            const refreshAnnotationPane = () => {
-                if (!annotationUI.status) return;
-                const units = readAnnotationUnitsFromUI();
-                const records = annotation.getAnnotations();
-                const selectedId = annotation.selectionProbe.annotationId ?? "none";
-                const staged = annotation.pendingCount;
-                const stageTarget = annotation.mode === "distance" ? 2 : annotation.mode === "angle" ? 3 : annotation.mode === "marker" ? 1 : 0;
-                const recent = records.slice(Math.max(0, records.length - 7)).map((r) => summarizeAnnotationRecord(r, units));
-                annotationUI.status.textContent = [
-                    "Annotation / Measurement Toolkit",
-                    `mode: ${annotation.mode}`,
-                    `status: ${annotationState.action}`,
-                    `count: ${records.length}`,
-                    `selection annotation: ${selectedId}`,
-                    `staging: ${staged}${stageTarget > 0 ? ` / ${stageTarget}` : ""}`,
-                    `units: 1 ${units.symbol} = ${fmt(units.worldUnitsPerUnit, 6)} world units`,
-                    `autoMetric: ${units.autoMetric}`,
-                    "",
-                    ...summarizeProbe(annotation.hoverProbe, "probe.hover"),
-                    "",
-                    ...summarizeProbe(annotation.selectionProbe, "probe.selection"),
-                    "",
-                    "recent annotations:",
-                    ...(recent.length > 0 ? recent : ["(none)"]),
-                    "",
-                    "Shortcuts:",
-                    "M marker",
-                    "V distance",
-                    "G angle",
-                    "Esc cancel -> idle",
-                    "Delete remove selected",
-                    "Shift+Delete clear all"
-                ].join("\n");
-            };
-
-            const setAnnotationMode = (mode) => {
-                annotationState.action = `mode -> ${mode}`;
-                annotation.setMode(mode);
-                refreshAnnotationPane();
-            };
-
-            const setupAnnotationPane = () => {
-                annotationHud.innerHTML = `
-                <div class="annotation-controls">
-                    <button id="ann-idle">idle</button>
-                    <button id="ann-marker">marker</button>
-                    <button id="ann-distance">distance</button>
-                    <button id="ann-angle">angle</button>
-                    <button id="ann-cancel" class="wide">cancel measure</button>
-                    <button id="ann-remove" class="wide">remove selected annotation</button>
-                    <button id="ann-clear" class="wide">clear annotations</button>
-                    <label>world / unit<input id="ann-world-units" type="number" step="any" min="0.000000000001" value="1"></label>
-                    <label>symbol<input id="ann-symbol" type="text" value="wu"></label>
-                    <label>decimals<input id="ann-decimals" type="number" step="1" min="0" max="12" value="4"></label>
-                    <label>auto metric<input id="ann-auto" type="checkbox" checked></label>
-                    <label>angle unit<select id="ann-angle-unit"><option value="deg">deg</option><option value="rad">rad</option></select></label>
-                    <label>angle decimals<input id="ann-angle-decimals" type="number" step="1" min="0" max="12" value="2"></label>
-                    <button id="ann-units" class="wide">apply units</button>
-                </div>
-                <div id="annotation-status"></div>`;
-                annotationUI.worldUnitsPerUnit = annotationHud.querySelector("#ann-world-units");
-                annotationUI.symbol = annotationHud.querySelector("#ann-symbol");
-                annotationUI.decimals = annotationHud.querySelector("#ann-decimals");
-                annotationUI.autoMetric = annotationHud.querySelector("#ann-auto");
-                annotationUI.angleUnit = annotationHud.querySelector("#ann-angle-unit");
-                annotationUI.angleDecimals = annotationHud.querySelector("#ann-angle-decimals");
-                annotationUI.status = annotationHud.querySelector("#annotation-status");
-
-                const applyUnits = () => {
-                    annotation.setUnits(readAnnotationUnitsFromUI());
-                    annotationState.action = "units updated";
-                    refreshAnnotationPane();
-                };
-
-                annotationHud.querySelector("#ann-idle").addEventListener("click", () => setAnnotationMode("idle"));
-                annotationHud.querySelector("#ann-marker").addEventListener("click", () => setAnnotationMode("marker"));
-                annotationHud.querySelector("#ann-distance").addEventListener("click", () => setAnnotationMode("distance"));
-                annotationHud.querySelector("#ann-angle").addEventListener("click", () => setAnnotationMode("angle"));
-                annotationHud.querySelector("#ann-cancel").addEventListener("click", () => {
-                    annotationState.action = "cancelled";
-                    annotation.cancel();
-                    refreshAnnotationPane();
-                });
-                annotationHud.querySelector("#ann-remove").addEventListener("click", () => {
-                    const removed = annotation.removeSelectionAnnotation();
-                    annotationState.action = removed ? "removed selected annotation" : "no selected annotation";
-                    refreshAnnotationPane();
-                });
-                annotationHud.querySelector("#ann-clear").addEventListener("click", () => {
-                    annotation.clearAnnotations();
-                    annotationState.action = "cleared annotations";
-                    refreshAnnotationPane();
-                });
-                annotationHud.querySelector("#ann-units").addEventListener("click", applyUnits);
-                [
-                    annotationUI.worldUnitsPerUnit,
-                    annotationUI.symbol,
-                    annotationUI.decimals,
-                    annotationUI.autoMetric,
-                    annotationUI.angleUnit,
-                    annotationUI.angleDecimals
-                ].forEach((el) => el.addEventListener("change", applyUnits));
-                annotation.onAnnotationsChange(() => refreshAnnotationPane());
-                annotation.onModeChange(() => refreshAnnotationPane());
-                annotation.onHoverReadout(() => refreshAnnotationPane());
-                annotation.onSelectionReadout(() => refreshAnnotationPane());
-                annotation.onStagingChange(() => refreshAnnotationPane());
-                applyUnits();
-            };
-
-            const syncOverlaySize = () => {
-                const w = Math.max(1, canvas.clientWidth | 0);
-                const h = Math.max(1, canvas.clientHeight | 0);
-                if (overlay.width !== w || overlay.height !== h) {
-                    overlay.width = w;
-                    overlay.height = h;
-                }
-            };
-
-            const clearOverlay = () => {
-                syncOverlaySize();
-                overlayctx.clearRect(0, 0, overlay.width, overlay.height);
-            };
-
-            const drawOverlay = () => {
-                clearOverlay();
-                if (!regionActive || !regionStart || !regionCurrent || !regionMode) return;
-                overlayctx.save();
-                overlayctx.strokeStyle = "rgba(120, 220, 255, 0.95)";
-                overlayctx.fillStyle = "rgba(80, 160, 255, 0.14)";
-                overlayctx.lineWidth = 1.5;
-                overlayctx.setLineDash(regionMode === "lasso" ? [6, 4] : [8, 4]);
-                if (regionMode === "rect") {
-                    const x = Math.min(regionStart.x, regionCurrent.x);
-                    const y = Math.min(regionStart.y, regionCurrent.y);
-                    const w = Math.abs(regionCurrent.x - regionStart.x);
-                    const h = Math.abs(regionCurrent.y - regionStart.y);
-                    overlayctx.fillRect(x, y, w, h);
-                    overlayctx.strokeRect(x, y, w, h);
-                } else {
-                    const path = regionPath.length > 0 ? regionPath : [regionStart, regionCurrent];
-                    overlayctx.beginPath();
-                    overlayctx.moveTo(path[0].x, path[0].y);
-                    for (let i = 1; i < path.length; i++) overlayctx.lineTo(path[i].x, path[i].y);
-                    overlayctx.lineTo(regionCurrent.x, regionCurrent.y);
-                    overlayctx.closePath();
-                    overlayctx.fill();
-                    overlayctx.stroke();
-                }
-                overlayctx.restore();
-            };
 
             const updateProjection = () => {
                 if (activeCamera.type === "perspective") activeCamera.updateAspect(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
-                syncOverlaySize();
-            };
-
-            const fmt = (n, d = 3) => Number.isFinite(n) ? n.toFixed(d) : "nan";
-            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
-            const fmtVec4 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}, ${fmt(v[3])}]`;
-            const fmtNd = (v) => v ? `[${v.join(", ")}]` : "null";
-
-            const describeHit = (hit) => {
-                if (!hit) return ["Hover: miss"];
-                const lines = [
-                    `Hover: hit`,
-                    `kind: ${hit.kind}`,
-                    `objectId: ${hit.objectId}`,
-                    `elementIndex: ${hit.elementIndex}`,
-                    `world: ${fmtVec3(hit.worldPosition)}`,
-                    `ndIndex: ${fmtNd(hit.ndIndex)}`
-                ];
-                if (hit.attributes) {
-                    if (hit.attributes.scalar !== undefined && hit.attributes.scalar !== null) lines.push(`scalar: ${fmt(hit.attributes.scalar, 5)}`);
-                    if (hit.attributes.vector) lines.push(`vector: ${fmtVec4(hit.attributes.vector)}`);
-                    if (hit.attributes.packedPoint) lines.push(`packedPoint: ${fmtVec4(hit.attributes.packedPoint)}`);
-                } else lines.push("attributes: null");
-                return lines;
-            };
-
-            const getRelativePointer = (event) => {
-                const rect = canvas.getBoundingClientRect();
-                return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-            };
-
-            const selectionModeFromClickEvent = (event) => {
-                if (event.shiftKey) return "add";
-                if (event.ctrlKey || event.metaKey) return "toggle";
-                return "replace";
-            };
-
-            const selectionModeFromRegionEvent = (event) => {
-                if (event.ctrlKey || event.metaKey) return "add";
-                if (event.altKey) return "toggle";
-                return "replace";
-            };
-
-            const selectedPointEntries = () => selection.values().filter((entry) => entry.kind === "pointcloud" && entry.object === points);
-
-            const regionStatusLines = () => {
-                if (regionActive && regionStart && regionCurrent && regionMode) {
-                    const w = Math.abs(regionCurrent.x - regionStart.x);
-                    const h = Math.abs(regionCurrent.y - regionStart.y);
-                    const pts = regionMode === "lasso" ? regionPath.length : 2;
-                    return [
-                        `region: active ${regionMode}`,
-                        `size: ${fmt(w, 1)} x ${fmt(h, 1)} px`,
-                        `pathPoints: ${pts}`
-                    ];
-                }
-                if (regionSummary) {
-                    return [
-                        `region: ${regionSummary.mode} committed`,
-                        `bounds: ${fmt(regionSummary.bounds.width, 1)} x ${fmt(regionSummary.bounds.height, 1)} px`,
-                        `hits: ${regionSummary.hits}`,
-                        `truncated: ${regionSummary.truncated}`,
-                        `sampledPixels: ${regionSummary.sampledPixels}`
-                    ];
-                }
-                return ["region: idle"];
-            };
-
-            const updateHud = () => {
-                navHud.textContent = [
-                    `Mode: ${controls.mode}`,
-                    `Camera: ${activeCamera.type}`,
-                    `View: ${currentView ?? "free"}`,
-                    "",
-                    "Navigation",
-                    "1 orbit",
-                    "2 trackball",
-                    "W/S front/back",
-                    "A/D left/right",
-                    "Q/E top/bottom",
-                    "X fit to bounds",
-                    "C toggle orthographic",
-                    "",
-                    "Annotation Shortcuts",
-                    "M marker",
-                    "V distance",
-                    "G angle",
-                    "Esc cancel",
-                    "Del remove / Shift+Del clear"
-                ].join("\n");
-                const selected = selectedPointEntries();
-                const head = selected.slice(0, 6).map((entry) => `#${entry.elementIndex}  nd=${fmtNd(entry.ndIndex)}`);
-                const tail = selected.length > head.length ? [`... +${selected.length - head.length} more`] : [];
-                pickHud.textContent = [
-                    "Picking / Selection",
-                    "hover: pointer move",
-                    "leftclick: replace",
-                    "shift+leftclick: add",
-                    "ctrl+leftclick: toggle",
-                    "",
-                    "Region Queries",
-                    "shift+leftdrag: rect replace",
-                    "shift+ctrl+leftdrag: rect add",
-                    "shift+alt+leftdrag: rect toggle",
-                    "shift+rightdrag: lasso replace",
-                    "shift+ctrl+rightdrag: lasso add",
-                    "shift+alt+rightdrag: lasso toggle",
-                    ...regionStatusLines(),
-                    "",
-                    ...describeHit(hoverHit),
-                    "",
-                    `selectionCount: ${selection.size}`,
-                    "selected point indices:",
-                    ...(head.length > 0 ? head : ["(none)"]),
-                    ...tail
-                ].join("\n");
-                refreshAnnotationPane();
             };
 
             const fitCurrent = (view = currentView, animate = true) => {
                 updateProjection();
                 if (view) controls.viewBounds(view, scene, { animate, duration: 0.5, padding: 1.2 });
-                else controls.fitScene(scene, { animate, duration: 1, padding: 1 });
+                else controls.fitScene(scene, { animate, duration: 1.0, padding: 1.0 });
             };
 
-            const switchCamera = (next) => {
-                if (next === activeCamera) return;
-                next.transform.copyFrom(activeCamera.transform);
-                activeCamera = next;
+            const switchCamera = (nextCamera) => {
+                if (nextCamera === activeCamera) return;
+                nextCamera.transform.copyFrom(activeCamera.transform);
+                activeCamera = nextCamera;
                 controls.setCamera(activeCamera);
-                overlaySystem.setView(activeCamera, scene);
-                annotation.setView(activeCamera, scene);
-                overlaySystem.invalidate("camera");
                 updateProjection();
                 fitCurrent(currentView, true);
                 updateHud();
             };
 
-            const endRegion = () => {
-                regionActive = false;
-                regionMode = null;
-                regionPointerId = null;
-                regionStart = null;
-                regionCurrent = null;
-                regionPath = [];
-                controls.enabled = true;
-                clearOverlay();
-            };
-
-            const commitRegion = async (event) => {
-                if (!regionMode || !regionStart || !regionCurrent) return;
-                const mode = selectionModeFromRegionEvent(event);
-                let result = null;
-                if (regionMode === "rect") {
-                    result = await wgpu.pickRect(scene, activeCamera, regionStart.x, regionStart.y, regionCurrent.x, regionCurrent.y, { includeAttributes: true });
-                } else {
-                    const lasso = regionPath.length >= 3 ? regionPath : [regionStart, regionCurrent, { x: regionStart.x, y: regionCurrent.y }];
-                    result = await wgpu.pickLasso(scene, activeCamera, lasso, { includeAttributes: true });
-                }
-                if (result.hits.length > 0) selection.apply(mode, result.hits);
-                else if (mode === "replace") selection.clear();
-                regionSummary = {
-                    mode: result.mode,
-                    bounds: result.bounds,
-                    hits: result.hits.length,
-                    truncated: result.truncated,
-                    sampledPixels: result.sampledPixels
-                };
+            const updateHud = () => {
+                navHud.textContent = [
+                    "Controls & Navigation",
+                    `mode: ${controls.mode}`,
+                    `camera: ${activeCamera.type}`,
+                    `view: ${currentView}`,
+                    `cameraPos: ${fmtVec3(activeCamera.position)}`,
+                    `target: ${fmtVec3(controls.target)}`,
+                    "",
+                    "1 orbit",
+                    "2 trackball",
+                    "W/S front/back",
+                    "A/D left/right",
+                    "Q/E top/bottom",
+                    "X fit current view",
+                    "C toggle orthographic"
+                ].join("\n");
             };
 
             window.addEventListener("keydown", (event) => {
-                const targetTag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
-                if (targetTag === "input" || targetTag === "select" || targetTag === "textarea") return;
                 const key = event.key.toLowerCase();
-                if (key === "1") { controls.setMode("orbit"); updateHud(); }
-                else if (key === "2") { controls.setMode("trackball"); updateHud(); }
-                else if (key === "w") { currentView = "front"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "s") { currentView = "back"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "a") { currentView = "left"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "d") { currentView = "right"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "q") { currentView = "top"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); updateHud(); }
-                else if (key === "x") { fitCurrent(currentView, true); }
-                else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); }
-                else if (key === "m") { setAnnotationMode("marker"); updateHud(); }
-                else if (key === "v") { setAnnotationMode("distance"); updateHud(); }
-                else if (key === "g") { setAnnotationMode("angle"); updateHud(); }
-                else if (event.key === "Escape") {
-                    annotationState.action = "cancelled";
-                    annotation.cancel();
-                    updateHud();
-                } else if (event.key === "Delete") {
-                    if (event.shiftKey) {
-                        annotation.clearAnnotations();
-                        annotationState.action = "cleared annotations";
-                    } else {
-                        const removed = annotation.removeSelectionAnnotation();
-                        annotationState.action = removed ? "removed selected annotation" : "no selected annotation";
-                    }
-                    updateHud();
-                    event.preventDefault();
-                }
-            });
-
-            canvas.addEventListener("pointerdown", (event) => {
-                if (!event.shiftKey) return;
-                const isRect = event.button === 0;
-                const isLasso = event.button === 2;
-                if (!isRect && !isLasso) return;
-                const pt = getRelativePointer(event);
-                regionActive = true;
-                regionMode = isRect ? "rect" : "lasso";
-                regionPointerId = event.pointerId;
-                regionStart = pt;
-                regionCurrent = pt;
-                regionPath = [pt];
-                regionSummary = null;
-                if (isLasso) suppressContextMenuOnce = true;
-                hoverPickToken++;
-                hoverHit = null;
-                annotation.ingestHoverHit(null);
-                controls.enabled = false;
-                canvas.setPointerCapture(regionPointerId);
-                drawOverlay();
-                updateHud();
-                event.preventDefault();
-                event.stopPropagation();
-            }, true);
-
-            canvas.addEventListener("pointermove", (event) => {
-                if (!regionActive || event.pointerId !== regionPointerId) return;
-                const pt = getRelativePointer(event);
-                regionCurrent = pt;
-                if (regionMode === "lasso") {
-                    const prev = regionPath[regionPath.length - 1];
-                    if (!prev || Math.hypot(pt.x - prev.x, pt.y - prev.y) >= 2) regionPath.push(pt);
-                }
-                drawOverlay();
-                updateHud();
-                event.preventDefault();
-                event.stopPropagation();
-            }, true);
-
-            canvas.addEventListener("pointerup", async (event) => {
-                if (!regionActive || event.pointerId !== regionPointerId) return;
-                const pt = getRelativePointer(event);
-                regionCurrent = pt;
-                if (regionMode === "lasso") {
-                    const prev = regionPath[regionPath.length - 1];
-                    if (!prev || Math.hypot(pt.x - prev.x, pt.y - prev.y) >= 1) regionPath.push(pt);
-                }
-                try {
-                    await commitRegion(event);
-                } catch {
-                    regionSummary = null;
-                } finally {
-                    try { canvas.releasePointerCapture(regionPointerId); } catch { /* ignore */ }
-                    endRegion();
-                    suppressClickOnce = true;
-                    updateHud();
-                }
-                event.preventDefault();
-                event.stopPropagation();
-            }, true);
-
-            canvas.addEventListener("pointercancel", (event) => {
-                if (!regionActive || event.pointerId !== regionPointerId) return;
-                try { canvas.releasePointerCapture(regionPointerId); } catch { /* ignore */ }
-                endRegion();
-                updateHud();
-                event.preventDefault();
-                event.stopPropagation();
-            }, true);
-
-            canvas.addEventListener("contextmenu", (event) => {
-                if (suppressContextMenuOnce) {
-                    suppressContextMenuOnce = false;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    return;
-                }
-                if (!regionActive || regionMode !== "lasso") return;
-                event.preventDefault();
-                event.stopPropagation();
-            }, true);
-
-            canvas.addEventListener("pointermove", (event) => {
-                if (regionActive) return;
-                const { x, y } = getRelativePointer(event);
-                const token = ++hoverPickToken;
-                wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
-                    if (token !== hoverPickToken) return;
-                    hoverHit = hit;
-                    annotation.ingestHoverHit(hit);
-                    updateHud();
-                }).catch(() => {
-                    if (token !== hoverPickToken) return;
-                    hoverHit = null;
-                    annotation.ingestHoverHit(null);
-                    updateHud();
-                });
-            });
-
-            canvas.addEventListener("pointerleave", () => {
-                hoverPickToken++;
-                hoverHit = null;
-                annotation.ingestHoverHit(null);
-                updateHud();
-            });
-
-            canvas.addEventListener("click", async (event) => {
-                if (suppressClickOnce) {
-                    suppressClickOnce = false;
-                    return;
-                }
-                if (regionActive) return;
-                const { x, y } = getRelativePointer(event);
-                if (annotation.mode !== "idle") {
-                    const created = await annotation.pickAtAndCommit(x, y);
-                    if (created) annotationState.action = `created ${created.kind} (${created.id})`;
-                    else annotationState.action = `mode ${annotation.mode} staging=${annotation.pendingCount}`;
-                    updateHud();
-                    return;
-                }
-                const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
-                annotation.ingestSelectionHit(hit);
-                const mode = selectionModeFromClickEvent(event);
-                if (hit) selection.apply(mode, hit);
-                else if (mode === "replace") selection.clear();
+                if (key === "1") controls.setMode("orbit");
+                else if (key === "2") controls.setMode("trackball");
+                else if (key === "w") { currentView = "front"; fitCurrent(currentView, true); }
+                else if (key === "s") { currentView = "back"; fitCurrent(currentView, true); }
+                else if (key === "a") { currentView = "left"; fitCurrent(currentView, true); }
+                else if (key === "d") { currentView = "right"; fitCurrent(currentView, true); }
+                else if (key === "q") { currentView = "top"; fitCurrent(currentView, true); }
+                else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); }
+                else if (key === "x") fitCurrent(currentView, true);
+                else if (key === "c") switchCamera(activeCamera === perspective ? orthographic : perspective);
+                else return;
                 updateHud();
             });
 
             window.addEventListener("resize", updateProjection);
             updateProjection();
             fitCurrent(currentView, false);
-            overlaySystem.setView(activeCamera, scene);
-            annotation.setView(activeCamera, scene);
-            overlaySystem.invalidate("camera");
-            setupScalePane();
-            setupAnnotationPane();
             updateHud();
 
+            // WasmGPU: frame loop updates controls and renders the scene.
             wgpu.run((dt) => {
                 updateProjection();
                 controls.update(dt);
                 wgpu.render(scene, activeCamera);
-                overlaySystem.update({ camera: activeCamera, scene });
             });
         </script>
     </body>
