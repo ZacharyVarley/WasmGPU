@@ -706,6 +706,7 @@ export class NavigationControls {
         this.camera.transform.setPosition(position[0], position[1], position[2]);
         this.camera.lookAtWithUp(this.target, up);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
+        else this.relaxPerspectiveNearForCloseZoom();
     }
 
     private updateTrackball(dt: number): void {
@@ -730,24 +731,17 @@ export class NavigationControls {
         this.camera.transform.setPosition(position[0], position[1], position[2]);
         this.camera.lookAtWithUp(this.target, this._trackballUp);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
+        else this.relaxPerspectiveNearForCloseZoom();
     }
 
     private emitChange(): void {
-        for (const listener of this._changeListeners) {
-            try {
-                listener();
-            } catch { /* ignore */ }
-        }
+        for (const listener of this._changeListeners) try { listener(); } catch { /* ignore */ }
     }
 
     private setInteractionState(active: boolean): void {
         if (this._interactionActive === active) return;
         this._interactionActive = active;
-        for (const listener of this._interactionListeners) {
-            try {
-                listener(active);
-            } catch { /* ignore */ }
-        }
+        for (const listener of this._interactionListeners) try { listener(active); } catch { /* ignore */ }
     }
 
     private clearWheelInteractionTimer(): void {
@@ -867,6 +861,17 @@ export class NavigationControls {
         camera.right = cx + width * 0.5;
         camera.bottom = cy - height * 0.5;
         camera.top = cy + height * 0.5;
+    }
+
+    private relaxPerspectiveNearForCloseZoom(): void {
+        if (this.camera.type !== "perspective") return;
+        const camera = this.camera as PerspectiveCamera;
+        const minNear = 1e-4;
+        const desiredNear = Math.max(minNear, this._radius * 0.02);
+        if (desiredNear >= camera.near) return;
+        const maxNear = Math.max(minNear, camera.far - 0.01);
+        const nextNear = clamp(desiredNear, minNear, maxNear);
+        if (nextNear < camera.near) camera.near = nextNear;
     }
 
     private offsetToSpherical(offset: readonly number[]): { theta: number; phi: number; } {
@@ -1011,11 +1016,7 @@ export class NavigationControls {
         return {
             position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
             target, up: basis.up,
-            projection: {
-                type: "perspective",
-                near,
-                far
-            }
+            projection: { type: "perspective", near, far }
         };
     }
 
@@ -1048,15 +1049,7 @@ export class NavigationControls {
         return {
             position: vec3add(target, vec3scl(vec3scl(basis.forward, -1), distance)),
             target, up: basis.up,
-            projection: {
-                type: "orthographic",
-                left: -Math.max(halfWidth, 0.01),
-                right: Math.max(halfWidth, 0.01),
-                bottom: -Math.max(halfHeight, 0.01),
-                top: Math.max(halfHeight, 0.01),
-                near,
-                far
-            }
+            projection: { type: "orthographic", left: -Math.max(halfWidth, 0.01), right: Math.max(halfWidth, 0.01), bottom: -Math.max(halfHeight, 0.01), top: Math.max(halfHeight, 0.01), near, far }
         };
     }
 }
