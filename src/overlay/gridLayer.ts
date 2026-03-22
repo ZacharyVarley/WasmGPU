@@ -5,7 +5,7 @@
  */
 
 import { DOMNodePool } from "./pool";
-import { projectWorldToScreen } from "./projection";
+import { projectWorldToScreen, type ProjectedPoint } from "./projection";
 import type { GridLayerDescriptor, GridPlane, OverlayLayer, OverlayUpdateContext } from "./types";
 
 type GridAxes = {
@@ -233,9 +233,10 @@ export class GridLayer implements OverlayLayer {
         let uMajorIndex = 0;
         for (let i = 0; i < uTicks.length; i++) {
             const u = uTicks[i];
-            const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, u, vMin));
-            const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, u, vMax));
-            if (!p0 || !p1 || (!p0.inFront && !p1.inFront)) continue;
+            const seg = this.projectFrontClippedSegment(ctx, worldFromUV(this.plane, this.origin, u, vMin), worldFromUV(this.plane, this.origin, u, vMax));
+            if (!seg) continue;
+            const p0 = seg.p0;
+            const p1 = seg.p1;
             const major = isMajorTick(u, majorStep, majorEpsU);
             const axis = Math.abs(u) <= axisEpsU;
             const edge = isNear(u, uMin, edgeEpsU) || isNear(u, uMax, edgeEpsU);
@@ -252,9 +253,10 @@ export class GridLayer implements OverlayLayer {
         let vMajorIndex = 0;
         for (let i = 0; i < vTicks.length; i++) {
             const v = vTicks[i];
-            const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, uMin, v));
-            const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, worldFromUV(this.plane, this.origin, uMax, v));
-            if (!p0 || !p1 || (!p0.inFront && !p1.inFront)) continue;
+            const seg = this.projectFrontClippedSegment(ctx, worldFromUV(this.plane, this.origin, uMin, v), worldFromUV(this.plane, this.origin, uMax, v));
+            if (!seg) continue;
+            const p0 = seg.p0;
+            const p1 = seg.p1;
             const major = isMajorTick(v, majorStep, majorEpsV);
             const axis = Math.abs(v) <= axisEpsV;
             const edge = isNear(v, vMin, edgeEpsV) || isNear(v, vMax, edgeEpsV);
@@ -272,13 +274,53 @@ export class GridLayer implements OverlayLayer {
         this.labelPool.endFrame();
     }
 
-    private resolveExtent(ctx: OverlayUpdateContext): { uMin: number; uMax: number; vMin: number; vMax: number; } {
-        if (this.extentMode === "fixed") {
-            return {
-                uMin: Math.min(this.fixedUMin, this.fixedUMax), uMax: Math.max(this.fixedUMin, this.fixedUMax),
-                vMin: Math.min(this.fixedVMin, this.fixedVMax), vMax: Math.max(this.fixedVMin, this.fixedVMax)
-            };
+    private projectFrontClippedSegment(ctx: OverlayUpdateContext, worldA: [number, number, number], worldB: [number, number, number]): { p0: ProjectedPoint; p1: ProjectedPoint; } | null {
+        const near = this.getCameraNear(ctx.camera);
+        const nearZ = -(near > 0 ? near + Math.max(near * 1e-4, 1e-6) : 0);
+        const view = ctx.camera.viewMatrix;
+        let a: [number, number, number] = [worldA[0], worldA[1], worldA[2]];
+        let b: [number, number, number] = [worldB[0], worldB[1], worldB[2]];
+        let va = this.transformPoint(view, a);
+        let vb = this.transformPoint(view, b);
+        if (va[2] > nearZ || vb[2] > nearZ) {
+            if (va[2] > nearZ && vb[2] > nearZ) return null;
+            if (va[2] > nearZ) {
+                const denom = vb[2] - va[2];
+                if (!Number.isFinite(denom) || Math.abs(denom) <= 1e-8) return null;
+                const t = clamp((nearZ - va[2]) / denom, 0, 1);
+                a = [a[0] + ((b[0] - a[0]) * t), a[1] + ((b[1] - a[1]) * t), a[2] + ((b[2] - a[2]) * t)];
+                va = [va[0] + ((vb[0] - va[0]) * t), va[1] + ((vb[1] - va[1]) * t), nearZ];
+            }
+            if (vb[2] > nearZ) {
+                const denom = va[2] - vb[2];
+                if (!Number.isFinite(denom) || Math.abs(denom) <= 1e-8) return null;
+                const t = clamp((nearZ - vb[2]) / denom, 0, 1);
+                b = [b[0] + ((a[0] - b[0]) * t), b[1] + ((a[1] - b[1]) * t), b[2] + ((a[2] - b[2]) * t)];
+                vb = [vb[0] + ((va[0] - vb[0]) * t), vb[1] + ((va[1] - vb[1]) * t), nearZ];
+            }
         }
+        const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, a);
+        const p1 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, b);
+        if (!p0 || !p1 || !p0.inFront || !p1.inFront) return null;
+        if (!Number.isFinite(p0.x) || !Number.isFinite(p0.y) || !Number.isFinite(p1.x) || !Number.isFinite(p1.y)) return null;
+        return { p0, p1 };
+    }
+
+    private getCameraNear(camera: OverlayUpdateContext["camera"]): number {
+        const near = (camera as { near?: number }).near;
+        if (typeof near !== "number" || !Number.isFinite(near)) return 0;
+        return Math.max(0, near);
+    }
+
+    private transformPoint(matrix: readonly number[], p: readonly number[]): [number, number, number] {
+        const x = p[0] ?? 0;
+        const y = p[1] ?? 0;
+        const z = p[2] ?? 0;
+        return [(matrix[0] * x) + (matrix[4] * y) + (matrix[8] * z) + matrix[12], (matrix[1] * x) + (matrix[5] * y) + (matrix[9] * z) + matrix[13], (matrix[2] * x) + (matrix[6] * y) + (matrix[10] * z) + matrix[14]];
+    }
+
+    private resolveExtent(ctx: OverlayUpdateContext): { uMin: number; uMax: number; vMin: number; vMax: number; } {
+        if (this.extentMode === "fixed") return { uMin: Math.min(this.fixedUMin, this.fixedUMax), uMax: Math.max(this.fixedUMin, this.fixedUMax), vMin: Math.min(this.fixedVMin, this.fixedVMax), vMax: Math.max(this.fixedVMin, this.fixedVMax) };
         const scene = ctx.scene;
         if (!scene) return { uMin: -10, uMax: 10, vMin: -10, vMax: 10 };
         const bounds = scene.getBounds();
@@ -295,14 +337,11 @@ export class GridLayer implements OverlayLayer {
     private estimatePixelsPerUnitAxes(ctx: OverlayUpdateContext): { u: number; v: number; } {
         const axes = axesForPlane(this.plane);
         const p0 = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, this.origin);
-        if (!p0) return { u: 1, v: 1 };
+        if (!p0 || !p0.inFront || p0.ndcZ < 0 || p0.ndcZ > 1) return { u: 1, v: 1 };
         const pu = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, [this.origin[0] + axes.u[0], this.origin[1] + axes.u[1], this.origin[2] + axes.u[2]]);
         const pv = projectWorldToScreen(ctx.camera, ctx.width, ctx.height, [this.origin[0] + axes.v[0], this.origin[1] + axes.v[1], this.origin[2] + axes.v[2]]);
-        const du = pu ? Math.hypot(pu.x - p0.x, pu.y - p0.y) : 1;
-        const dv = pv ? Math.hypot(pv.x - p0.x, pv.y - p0.y) : 1;
-        return {
-            u: clamp(du, 1e-6, 1e9),
-            v: clamp(dv, 1e-6, 1e9)
-        };
+        const du = (pu && pu.inFront && pu.ndcZ >= 0 && pu.ndcZ <= 1 && Number.isFinite(pu.x) && Number.isFinite(pu.y)) ? Math.hypot(pu.x - p0.x, pu.y - p0.y) : 1;
+        const dv = (pv && pv.inFront && pv.ndcZ >= 0 && pv.ndcZ <= 1 && Number.isFinite(pv.x) && Number.isFinite(pv.y)) ? Math.hypot(pv.x - p0.x, pv.y - p0.y) : 1;
+        return { u: clamp(du, 1e-6, 1e9), v: clamp(dv, 1e-6, 1e9) };
     }
 }
