@@ -1,0 +1,119 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap");
+:root {
+    --wasmgpu-1: #005a9c;
+    --wasmgpu-2: #3355c6;
+    --wasmgpu-3: #654ff0;
+    --wasmgpu-4: #8472f3;
+    --wasmgpu-5: #9b8df5;
+}
+html {
+    font-family: "Montserrat", sans-serif;
+}
+[data-md-color-scheme="slate"] {
+    --md-primary-fg-color: var(--wasmgpu-2);
+    --md-primary-fg-color--light: var(--wasmgpu-4);
+    --md-primary-fg-color--dark: var(--wasmgpu-1);
+    --md-primary-bg-color: #edf3ff;
+    --md-primary-bg-color--light: #9db0d7;
+    --md-accent-fg-color: var(--wasmgpu-5);
+    --md-default-bg-color: #020713;
+    --md-default-fg-color: #edf3ff;
+    --md-default-fg-color--light: #9db0d7;
+    --md-code-bg-color: #071127;
+    --md-code-fg-color: #edf3ff;
+}
+[data-md-color-scheme="default"] {
+    --md-primary-fg-color: var(--wasmgpu-1);
+    --md-primary-fg-color--light: var(--wasmgpu-2);
+    --md-primary-fg-color--dark: #003f70;
+    --md-primary-bg-color: #081c46;
+    --md-primary-bg-color--light: #4d6495;
+    --md-accent-fg-color: var(--wasmgpu-3);
+    --md-default-bg-color: #e9f1ff;
+    --md-default-fg-color: #081c46;
+    --md-default-fg-color--light: #4d6495;
+    --md-code-bg-color: #dce7ff;
+    --md-code-fg-color: #081c46;
+}
+body {
+    background:
+        radial-gradient(circle at 8% 0%, rgba(101, 79, 240, 0.22), transparent 36%),
+        radial-gradient(circle at 90% 12%, rgba(0, 90, 156, 0.18), transparent 40%),
+        var(--md-default-bg-color);
+    background-repeat: no-repeat, no-repeat, no-repeat;
+    background-size: 140% 140%, 140% 140%, auto;
+    background-attachment: fixed, fixed, fixed;
+}
+.md-header, .md-tabs {
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid color-mix(in srgb, var(--wasmgpu-4) 40%, transparent);
+}
+[data-md-color-scheme="slate"] .md-header, [data-md-color-scheme="slate"] .md-tabs {
+    background: color-mix(in srgb, #020713 78%, transparent);
+}
+
+[data-md-color-scheme="default"] .md-header, [data-md-color-scheme="default"] .md-tabs {
+    background: color-mix(in srgb, #e9f1ff 78%, transparent);
+}
+[data-md-color-scheme="default"] .md-header, [data-md-color-scheme="default"] .md-tabs, [data-md-color-scheme="default"] .md-tabs__link, [data-md-color-scheme="default"] .md-header__button, [data-md-color-scheme="default"] .md-header__title, [data-md-color-scheme="default"] .md-header__topic, [data-md-color-scheme="default"] .md-header__ellipsis, [data-md-color-scheme="default"] .md-search__icon, [data-md-color-scheme="default"] .md-search__input {
+    color: #081c46;
+}
+.md-nav--primary .md-nav__title, .md-nav--secondary .md-nav__title {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+.md-sidebar--primary .md-nav__title, .md-sidebar--primary .md-nav--primary > .md-nav__title, .md-sidebar--primary .md-nav--lifted > .md-nav__title, .md-sidebar--primary .md-nav--secondary > .md-nav__title, .md-sidebar--primary .md-nav__title[for="__drawer"], .md-sidebar--primary .md-nav__title[for="__toc"], .md-sidebar--primary .md-nav__title[for^="__nav_"], .md-sidebar--primary .md-nav__source {
+    background: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+.md-sidebar--primary .md-nav__title::before, .md-sidebar--primary .md-nav__title::after, .md-sidebar--primary .md-nav__source::before, .md-sidebar--primary .md-nav__source::after {
+    background: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+.md-sidebar--primary .md-nav--lifted > .md-nav__list > .md-nav__item--active > .md-nav__link {
+    background: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+.md-sidebar__scrollwrap {
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+}
+.md-sidebar__scrollwrap::before, .md-sidebar__scrollwrap::after {
+    display: none !important;
+}
+.md-nav__link--active, .md-typeset a {
+    color: var(--wasmgpu-3);
+}
+.md-typeset a:hover, .md-nav__link:hover {
+    color: var(--wasmgpu-4);
+}
+.md-content__inner, .md-sidebar__scrollwrap {
+    border-radius: 14px;
+}
+
+.md-typeset .admonition, .md-typeset details {
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--wasmgpu-4) 26%, transparent);
+}
+.md-typeset h1, .md-typeset h2, .md-typeset h3 {
+    letter-spacing: -0.01em;
+}
+.wasmgpu-docs-footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid color-mix(in srgb, var(--wasmgpu-4) 30%, transparent);
+    color: var(--md-default-fg-color--light);
+    font-size: 0.82rem;
+    text-align: center;
+}
+.wasmgpu-docs-footer a {
+    color: inherit;
+}

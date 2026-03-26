@@ -4,6 +4,9 @@ target/
 rust/target/
 build/debug.wasm
 build/*.map
+website/build/
+__pycache__/
+*.py[cod]
 *.log
 npm-debug.log*
 yarn-debug.log*

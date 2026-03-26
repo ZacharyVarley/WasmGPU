@@ -1,0 +1,38 @@
+# AnimationClip.sample
+
+## Summary
+AnimationClip.sample operates on a AnimationClip runtime object to update state, query data, or manage lifecycle.
+
+## Syntax
+```ts
+AnimationClip.sample(timeSeconds: number): void
+clip.sample(timeSeconds);
+```
+
+## Parameters
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `timeSeconds` | `number` | Yes | Numeric input controlling `timeSeconds` for this operation. |
+
+## Returns
+`void` - No return value. The call applies side effects to runtime state and/or GPU resources.
+
+## Type Details
+```ts
+// No additional descriptor expansion is required for this signature.
+```
+
+## Example
+```js
+const canvas = document.querySelector("canvas");
+const wgpu = await WasmGPU.create(canvas);
+
+const clip = wgpu.animation.createClip({ name: "clip", samplerCount: 0, channelCount: 0, samplersPtr: 0, channelsPtr: 0, startTime: 0, endTime: 1 });
+const timeSeconds = 1;
+clip.sample(timeSeconds);
+console.log("updated");
+```
+
+## See Also
+- [AnimationClip.dispose](./wasmgpu-objects-animationclip-dispose.md)
+- [AnimationClip.duration](./wasmgpu-objects-animationclip-duration.md)

@@ -1,0 +1,20 @@
+# Compute
+
+The compute subsystem provides WebGPU compute workflows, ndarray abstractions, pipeline helpers, and async readback utilities.
+
+## In This Section
+
+- Compute pipeline creation and dispatch
+- CPU/GPU ndarray lifecycle and residency
+- Storage/uniform buffer management
+- Built-in compute kernels
+- Async readback and result extraction
+
+## Suggested Starting Points
+
+- [WasmGPU.compute.createPipeline](./wasmgpu-compute-createpipeline.md)
+- [WasmGPU.compute.dispatch](./wasmgpu-compute-dispatch.md)
+- [WasmGPU.compute.CPUndarray.empty](./wasmgpu-compute-cpundarray-empty.md)
+- [WasmGPU.compute.GPUndarray.wrap](./wasmgpu-compute-gpundarray-wrap.md)
+
+Use the sidebar to navigate the full compute API surface.

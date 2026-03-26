@@ -1,0 +1,66 @@
+site_name: WasmGPU | Documentation
+site_description: WebGPU × WebAssembly rendering and compute engine for scientific workloads in the browser.
+site_url: https://zushah.github.io/WasmGPU/
+repo_url: https://www.github.com/Zushah/WasmGPU
+repo_name: Zushah/WasmGPU
+docs_dir: ./website/src/docs/
+site_dir: ./website/build/docs/
+
+theme:
+  name: material
+  favicon: ./assets/favicon.png
+  logo: ./assets/favicon.png
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    -
+      scheme: slate
+      primary: blue
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    -
+      scheme: default
+      primary: blue
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+
+plugins:
+  - search
+
+extra:
+  homepage: ../index.html
+
+extra_css:
+  - ./style.css
+
+extra_javascript:
+  - ./script.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  -
+    toc:
+      permalink: true
+  - pymdownx.details
+  -
+    pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  -
+    pymdownx.tabbed:
+      alternate_style: true

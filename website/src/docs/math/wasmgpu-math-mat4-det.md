@@ -1,0 +1,39 @@
+# WasmGPU.math.mat4.det
+
+## Summary
+WasmGPU.math.mat4.det computes the determinant of a 4x4 matrix. The determinant is commonly used to test invertibility and orientation.
+
+## Syntax
+```ts
+WasmGPU.math.mat4.det(matr: number[]): number
+const result = wgpu.math.mat4.det(matr);
+```
+
+## Parameters
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `matr` | `number[]` | Yes | Input 4x4 matrix (16 numbers in column-major order) used by this operation. |
+
+## Returns
+`number` - Determinant of the input matrix.
+
+## Type Details
+```ts
+type Mat4 = number[]; // expected length: 16 (4x4, column-major)
+```
+
+## Example
+```js
+const canvas = document.querySelector("canvas");
+const wgpu = await WasmGPU.create(canvas);
+
+const matr = wgpu.math.mat4.translate(wgpu.math.mat4.identity(), [1, 2, 3]);
+const result = wgpu.math.mat4.det(matr);
+console.log(result);
+```
+
+## See Also
+- [WasmGPU.math](./wasmgpu-math.md)
+- [WasmGPU.math.mat4.identity](./wasmgpu-math-mat4-identity.md)
+- [WasmGPU.math.mat4.mul](./wasmgpu-math-mat4-mul.md)
+- [WasmGPU.math.mat4.invert](./wasmgpu-math-mat4-invert.md)

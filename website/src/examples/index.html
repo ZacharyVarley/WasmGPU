@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<!--
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+-->
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>WasmGPU | Examples</title>
+        <meta name="description" content="WebGPU × WebAssembly rendering and compute engine for scientific workloads in the browser.">
+        <link rel="icon" type="image/png" href="../assets/favicon.png">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+        <link rel="stylesheet" href="./style.css">
+    </head>
+    <body data-theme="dark">
+        <div class="ambient ambient-a"></div>
+        <div class="ambient ambient-b"></div>
+        <header class="site-header">
+            <nav class="navbar container">
+                <a class="brand" href="../index.html" aria-label="WasmGPU home">
+                    <img class="brand-logo" data-theme-logo="true" src="../assets/favicon.png" alt="WasmGPU" data-dark-logo="../assets/favicon.png" data-light-logo="../assets/favicon.png">
+                </a>
+                <div class="nav-actions">
+                    <a class="nav-link" href="https://www.github.com/Zushah/WasmGPU" target="_blank" rel="noreferrer">GitHub</a>
+                    <a class="nav-link" href="../docs/">Documentation</a>
+                    <a class="nav-link" href="./index.html">Examples</a>
+                    <button id="theme-toggle" class="icon-btn" type="button" aria-label="Switch theme">
+                        <span class="material-icons-outlined" id="theme-toggle-icon">light_mode</span>
+                    </button>
+                </div>
+            </nav>
+        </header>
+        <main class="container">
+            <section class="hero reveal">
+                <p class="eyebrow">Examples</p>
+                <h1>Focused demos across rendering, compute, and interaction workflows.</h1>
+                <p class="hero-copy">WasmGPU examples are intentionally small and task-specific, so each page can be used as a practical starting point for your own scene or pipeline.</p>
+                <p class="license-note">WasmGPU is available under the <a href="https://www.mozilla.org/en-US/MPL/2.0/" target="_blank" rel="noreferrer">Mozilla Public License 2.0</a>.</p>
+            </section>
+            <section class="grid" aria-label="WasmGPU demos">
+                <a class="card reveal" style="--delay: 0ms;" href="./compute.html" target="_blank">
+                    <span class="material-icons-outlined">memory</span>
+                    <h2>Compute</h2>
+                    <p>GPU compute pipelines and in-browser result visualization.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> compute.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 30ms;" href="./controls.html" target="_blank">
+                    <span class="material-icons-outlined">gamepad</span>
+                    <h2>Controls</h2>
+                    <p>Navigation and camera interaction patterns for 3D scenes.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> controls.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 60ms;" href="./esm.html" target="_blank">
+                    <span class="material-icons-outlined">integration_instructions</span>
+                    <h2>ESM</h2>
+                    <p>Module-first setup for modern browser applications.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> esm.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 90ms;" href="./gltf.html" target="_blank">
+                    <span class="material-icons-outlined">view_in_ar</span>
+                    <h2>glTF</h2>
+                    <p>Asset import flow for glTF 2.0 scenes and materials.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> gltf.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 120ms;" href="./iife.html" target="_blank">
+                    <span class="material-icons-outlined">bolt</span>
+                    <h2>IIFE</h2>
+                    <p>Script-tag integration path for lightweight prototypes.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> iife.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 150ms;" href="./overlay.html" target="_blank">
+                    <span class="material-icons-outlined">layers</span>
+                    <h2>Overlay</h2>
+                    <p>Overlay layers and runtime visual readouts.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> overlay.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 180ms;" href="./picking.html" target="_blank">
+                    <span class="material-icons-outlined">track_changes</span>
+                    <h2>Picking</h2>
+                    <p>Object hit-testing and interaction behavior in dense content.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> picking.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 210ms;" href="./python.html" target="_blank">
+                    <span class="material-icons-outlined">terminal</span>
+                    <h2>Python</h2>
+                    <p>Pyodide-backed scientific workflows alongside WebGPU compute.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> python.html</span>
+                </a>
+                <a class="card reveal" style="--delay: 240ms;" href="./scaling.html" target="_blank">
+                    <span class="material-icons-outlined">fit_screen</span>
+                    <h2>Scaling</h2>
+                    <p>Viewport and rendering scalability behavior.</p>
+                    <span class="badge"><span class="material-icons-outlined">open_in_new</span> scaling.html</span>
+                </a>
+            </section>
+        </main>
+        <footer class="site-footer container">
+            <p>&copy; <span id="year"></span> <a href="https://www.github.com/Zushah" target="_blank" rel="noreferrer">Zushah</a>. All rights reserved.</p>
+        </footer>
+        <script src="./script.js"></script>
+    </body>
+</html>
