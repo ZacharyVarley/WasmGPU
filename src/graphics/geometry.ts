@@ -5,7 +5,7 @@
  */
 
 import { createBuffer } from "../utils";
-import { boundsf, frameArena, wasm } from "../wasm";
+import { boundsf, wasm } from "../wasm";
 
 export type GeometryAttribute = {
     data: Float32Array;
@@ -146,21 +146,29 @@ export class Geometry {
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
         if (this.vertexCount > 0) {
-            const positionsPtr = frameArena.allocF32(this.positions.length);
-            wasm.f32view(positionsPtr, this.positions.length).set(this.positions);
-            const boxMinPtr = frameArena.allocF32(3);
-            const boxMaxPtr = frameArena.allocF32(3);
-            const sphereCenterPtr = frameArena.allocF32(3);
-            const sphereRadiusPtr = frameArena.allocF32(1);
-            boundsf.geometryPositions(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, this.vertexCount);
-            const boxMin = wasm.f32view(boxMinPtr, 3);
-            const boxMax = wasm.f32view(boxMaxPtr, 3);
-            const sphereCenter = wasm.f32view(sphereCenterPtr, 3);
-            const sphereRadius = wasm.f32view(sphereRadiusPtr, 1);
-            this._boundsMin = [boxMin[0], boxMin[1], boxMin[2]];
-            this._boundsMax = [boxMax[0], boxMax[1], boxMax[2]];
-            this._boundsCenter = [sphereCenter[0], sphereCenter[1], sphereCenter[2]];
-            this._boundsRadius = sphereRadius[0];
+            const positionsPtr = wasm.allocF32(this.positions.length);
+            const boxMinPtr = wasm.allocF32(3);
+            const boxMaxPtr = wasm.allocF32(3);
+            const sphereCenterPtr = wasm.allocF32(3);
+            const sphereRadiusPtr = wasm.allocF32(1);
+            try {
+                wasm.f32view(positionsPtr, this.positions.length).set(this.positions);
+                boundsf.geometryPositions(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, this.vertexCount);
+                const boxMin = wasm.f32view(boxMinPtr, 3);
+                const boxMax = wasm.f32view(boxMaxPtr, 3);
+                const sphereCenter = wasm.f32view(sphereCenterPtr, 3);
+                const sphereRadius = wasm.f32view(sphereRadiusPtr, 1);
+                this._boundsMin = [boxMin[0], boxMin[1], boxMin[2]];
+                this._boundsMax = [boxMax[0], boxMax[1], boxMax[2]];
+                this._boundsCenter = [sphereCenter[0], sphereCenter[1], sphereCenter[2]];
+                this._boundsRadius = sphereRadius[0];
+            } finally {
+                wasm.freeF32(sphereRadiusPtr, 1);
+                wasm.freeF32(sphereCenterPtr, 3);
+                wasm.freeF32(boxMaxPtr, 3);
+                wasm.freeF32(boxMinPtr, 3);
+                wasm.freeF32(positionsPtr, this.positions.length);
+            }
         } else {
             this._boundsMin = [0, 0, 0];
             this._boundsMax = [0, 0, 0];

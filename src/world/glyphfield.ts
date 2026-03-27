@@ -11,7 +11,7 @@ import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { Geometry } from "../graphics/geometry";
 import { assert } from "../utils";
-import { boundsf, frameArena, wasm, wasmInterop, type WasmPtr } from "../wasm";
+import { boundsf, wasm, wasmInterop, type WasmPtr } from "../wasm";
 import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type GlyphColormap = BuiltinColormapName | "custom";
@@ -669,25 +669,36 @@ export class GlyphField {
         const count = this._instanceCount;
         if (!positions || !scales || count <= 0) return;
         const rotations = this._rotationsCPU;
-        const positionsPtr = frameArena.allocF32(positions.length);
-        const scalesPtr = frameArena.allocF32(scales.length);
-        wasm.f32view(positionsPtr, positions.length).set(positions);
-        wasm.f32view(scalesPtr, scales.length).set(scales);
+        const positionsPtr = wasm.allocF32(positions.length);
+        const scalesPtr = wasm.allocF32(scales.length);
         let rotationsPtr: WasmPtr = 0;
-        if (rotations) {
-            rotationsPtr = frameArena.allocF32(rotations.length);
-            wasm.f32view(rotationsPtr, rotations.length).set(rotations);
+        const glyphCenterPtr = wasm.allocF32(3);
+        const boxMinPtr = wasm.allocF32(3);
+        const boxMaxPtr = wasm.allocF32(3);
+        const sphereCenterPtr = wasm.allocF32(3);
+        const sphereRadiusPtr = wasm.allocF32(1);
+        try {
+            wasm.f32view(positionsPtr, positions.length).set(positions);
+            wasm.f32view(scalesPtr, scales.length).set(scales);
+            if (rotations) {
+                rotationsPtr = wasm.allocF32(rotations.length);
+                wasm.f32view(rotationsPtr, rotations.length).set(rotations);
+            }
+            wasm.writeF32(glyphCenterPtr, 3, this.geometry.boundsCenter);
+            boundsf.glyphInstances(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, scalesPtr, rotationsPtr, count, glyphCenterPtr, this.geometry.boundsRadius);
+            const boxMin = wasm.f32view(boxMinPtr, 3);
+            const boxMax = wasm.f32view(boxMaxPtr, 3);
+            this.setBounds(boundsFromBox([boxMin[0], boxMin[1], boxMin[2]], [boxMax[0], boxMax[1], boxMax[2]]), "computed");
+        } finally {
+            wasm.freeF32(sphereRadiusPtr, 1);
+            wasm.freeF32(sphereCenterPtr, 3);
+            wasm.freeF32(boxMaxPtr, 3);
+            wasm.freeF32(boxMinPtr, 3);
+            wasm.freeF32(glyphCenterPtr, 3);
+            if (rotationsPtr && rotations) wasm.freeF32(rotationsPtr, rotations.length);
+            wasm.freeF32(scalesPtr, scales.length);
+            wasm.freeF32(positionsPtr, positions.length);
         }
-        const glyphCenterPtr = frameArena.allocF32(3);
-        wasm.writeF32(glyphCenterPtr, 3, this.geometry.boundsCenter);
-        const boxMinPtr = frameArena.allocF32(3);
-        const boxMaxPtr = frameArena.allocF32(3);
-        const sphereCenterPtr = frameArena.allocF32(3);
-        const sphereRadiusPtr = frameArena.allocF32(1);
-        boundsf.glyphInstances(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, scalesPtr, rotationsPtr, count, glyphCenterPtr, this.geometry.boundsRadius);
-        const boxMin = wasm.f32view(boxMinPtr, 3);
-        const boxMax = wasm.f32view(boxMaxPtr, 3);
-        this.setBounds(boundsFromBox([boxMin[0], boxMin[1], boxMin[2]], [boxMax[0], boxMax[1], boxMax[2]]), "computed");
     }
 
     getLocalBounds(): Bounds3 {
