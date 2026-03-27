@@ -217,6 +217,12 @@ const baseScaleTransform = { componentCount: 4, componentIndex: 3, stride: 4, of
     numberApproxEqual(pc.boundsCenter[0], 2.5, 1e-6, "boundsCenter.x mismatch");
     numberApproxEqual(pc.boundsCenter[1], 4.0, 1e-6, "boundsCenter.y mismatch");
     numberApproxEqual(pc.boundsCenter[2], 5.5, 1e-6, "boundsCenter.z mismatch");
+    numberApproxEqual(pc.boundsMin[0], 1.0, 1e-6, "boundsMin.x mismatch");
+    numberApproxEqual(pc.boundsMin[1], 2.0, 1e-6, "boundsMin.y mismatch");
+    numberApproxEqual(pc.boundsMin[2], 3.0, 1e-6, "boundsMin.z mismatch");
+    numberApproxEqual(pc.boundsMax[0], 4.0, 1e-6, "boundsMax.x mismatch");
+    numberApproxEqual(pc.boundsMax[1], 6.0, 1e-6, "boundsMax.y mismatch");
+    numberApproxEqual(pc.boundsMax[2], 8.0, 1e-6, "boundsMax.z mismatch");
     assert.ok(pc.boundsRadius > 0, "Expected boundsRadius > 0");
 
     pc.applyScaleStats({
