@@ -10,6 +10,7 @@ import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform, SCALE_UNIFORM_FLOAT_COUNT } from "../scaling";
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { assert, createBuffer } from "../utils";
+import { boundsf, frameArena, wasm } from "../wasm";
 import { Bounds3, boundsFromBox, boundsFromBoxAndSphere, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type PointCloudColormap = BuiltinColormapName | "custom";
@@ -387,32 +388,20 @@ export class PointCloud {
     computeBoundsFromCPUData(): void {
         const data = this._CPUData;
         if (!data || data.length < 4) return;
-        let minX = data[0], maxX = data[0];
-        let minY = data[1], maxY = data[1];
-        let minZ = data[2], maxZ = data[2];
-        for (let i = 0; i < data.length; i += 4) {
-            const x = data[i + 0];
-            const y = data[i + 1];
-            const z = data[i + 2];
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-            if (z < minZ) minZ = z;
-            if (z > maxZ) maxZ = z;
-        }
-        const cx = 0.5 * (minX + maxX);
-        const cy = 0.5 * (minY + maxY);
-        const cz = 0.5 * (minZ + maxZ);
-        let r2 = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            const dx = data[i + 0] - cx;
-            const dy = data[i + 1] - cy;
-            const dz = data[i + 2] - cz;
-            const d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 > r2) r2 = d2;
-        }
-        this.setBounds(boundsFromBoxAndSphere([minX, minY, minZ], [maxX, maxY, maxZ], [cx, cy, cz], Math.sqrt(r2)), "computed");
+        const pointCount = this._pointCount | 0;
+        if (pointCount <= 0) return;
+        const pointsPtr = frameArena.allocF32(data.length);
+        wasm.f32view(pointsPtr, data.length).set(data);
+        const boxMinPtr = frameArena.allocF32(3);
+        const boxMaxPtr = frameArena.allocF32(3);
+        const sphereCenterPtr = frameArena.allocF32(3);
+        const sphereRadiusPtr = frameArena.allocF32(1);
+        boundsf.pointcloudXYZS(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, pointsPtr, pointCount, 4);
+        const boxMin = wasm.f32view(boxMinPtr, 3);
+        const boxMax = wasm.f32view(boxMaxPtr, 3);
+        const sphereCenter = wasm.f32view(sphereCenterPtr, 3);
+        const sphereRadius = wasm.f32view(sphereRadiusPtr, 1)[0];
+        this.setBounds(boundsFromBoxAndSphere([boxMin[0], boxMin[1], boxMin[2]], [boxMax[0], boxMax[1], boxMax[2]], [sphereCenter[0], sphereCenter[1], sphereCenter[2]], sphereRadius), "computed");
     }
 
     getLocalBounds(): Bounds3 {

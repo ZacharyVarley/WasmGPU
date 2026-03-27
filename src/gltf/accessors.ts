@@ -5,6 +5,7 @@
  */
 
 import type { GltfAccessor, GltfAccessorComponentType, GltfAccessorType, GltfBufferView, GltfID, GltfRoot, GltfDocument } from "./types";
+import { accessorf, frameArena, wasm } from "../wasm";
 
 export type GltfTypedArray = | Int8Array | Uint8Array | Int16Array | Uint16Array | Int32Array | Uint32Array | Float32Array;
 
@@ -65,25 +66,17 @@ const getBufferView = (json: GltfRoot, index: number): GltfBufferView => {
     return bv;
 };
 
-const readComponent = (dv: DataView, byteOffset: number, componentType: GltfAccessorComponentType): number => {
-    switch (componentType) {
-        case 5120:
-            return dv.getInt8(byteOffset);
-        case 5121:
-            return dv.getUint8(byteOffset);
-        case 5122:
-            return dv.getInt16(byteOffset, true);
-        case 5123:
-            return dv.getUint16(byteOffset, true);
-        case 5124:
-            return dv.getInt32(byteOffset, true);
-        case 5125:
-            return dv.getUint32(byteOffset, true);
-        case 5126:
-            return dv.getFloat32(byteOffset, true);
-        default:
-            throw new Error(`Unsupported componentType: ${componentType}`);
-    }
+const copyBytesToWasm = (buffer: ArrayBuffer, byteOffset: number, byteLength: number): number => {
+    const ptr = frameArena.alloc(byteLength, 16);
+    const src = new Uint8Array(buffer, byteOffset, byteLength);
+    wasm.u8view(ptr, byteLength).set(src);
+    return ptr;
+};
+
+const copyBytesFromWasm = (ptr: number, byteLength: number): Uint8Array => {
+    const out = new Uint8Array(byteLength);
+    out.set(wasm.u8view(ptr, byteLength));
+    return out;
 };
 
 export const readAccessor = (doc: GltfDocument, accessorIndex: number): AccessorView => {
@@ -98,9 +91,8 @@ export const readAccessor = (doc: GltfDocument, accessorIndex: number): Accessor
     const normalized = accessor.normalized === true;
     const elemByteSize = info.bytes * numComps;
     let base: GltfTypedArray;
-    if (accessor.bufferView === undefined) {
-        base = new info.ctor(new ArrayBuffer(count * numComps * info.bytes), 0, count * numComps);
-    } else {
+    if (accessor.bufferView === undefined) base = new info.ctor(new ArrayBuffer(count * numComps * info.bytes), 0, count * numComps);
+    else {
         const bv = getBufferView(json, accessor.bufferView);
         if ((bv.extensions as Record<string, unknown> | undefined)?.["EXT_meshopt_compression"]) throw new Error("EXT_meshopt_compression is not supported yet. Please provide an uncompressed glTF/GLB.");
         const buffer = doc.buffers[bv.buffer];
@@ -112,18 +104,20 @@ export const readAccessor = (doc: GltfDocument, accessorIndex: number): Accessor
         if (byteStride < elemByteSize) throw new Error(`Invalid bufferView.byteStride (${byteStride}) < element byte size (${elemByteSize})`);
         const isTight = byteStride === elemByteSize;
         const isAligned = (start % info.bytes) === 0;
-        if (isTight && isAligned) {
-            base = new info.ctor(buffer, start, count * numComps);
-        } else {
-            base = new info.ctor(new ArrayBuffer(count * numComps * info.bytes), 0, count * numComps);
-            const dv = new DataView(buffer);
-            for (let i = 0; i < count; i++) {
-                const elemBaseByte = start + i * byteStride;
-                for (let c = 0; c < numComps; c++) {
-                    const byteOff = elemBaseByte + c * info.bytes;
-                    const outIndex = i * numComps + c;
-                    (base as unknown as number[])[outIndex] = readComponent(dv, byteOff, componentType);
-                }
+        if (isTight && isAligned) base = new info.ctor(buffer, start, count * numComps);
+        else {
+            if (count <= 0) base = new info.ctor(new ArrayBuffer(0), 0, 0);
+            else {
+                const elemByteSize = info.bytes * numComps;
+                const srcByteLength = ((count - 1) * byteStride) + elemByteSize;
+                const srcPtr = copyBytesToWasm(buffer, start, srcByteLength);
+                const outByteLength = count * elemByteSize;
+                const outPtr = frameArena.alloc(outByteLength, 16);
+                accessorf.deinterleave(outPtr, srcPtr, count, numComps, info.bytes, byteStride);
+                const outBytes = copyBytesFromWasm(outPtr, outByteLength);
+                const outBuffer = new ArrayBuffer(outByteLength);
+                new Uint8Array(outBuffer).set(outBytes);
+                base = new info.ctor(outBuffer, 0, count * numComps);
             }
         }
     }
@@ -132,15 +126,7 @@ export const readAccessor = (doc: GltfDocument, accessorIndex: number): Accessor
         applySparse(doc, accessor, out, componentType, numComps);
         base = out;
     }
-    return {
-        accessor,
-        componentType,
-        type,
-        count,
-        numComponents: numComps,
-        normalized,
-        array: base,
-    };
+    return { accessor, componentType, type, count, numComponents: numComps, normalized, array: base };
 };
 
 const applySparse = (doc: GltfDocument, accessor: GltfAccessor, out: GltfTypedArray, componentType: GltfAccessorComponentType, numComps: number): void => {
@@ -156,25 +142,25 @@ const applySparse = (doc: GltfDocument, accessor: GltfAccessor, out: GltfTypedAr
     const idxInfo = COMPONENT_INFO[idxComponent];
     if (!idxInfo) throw new Error(`Unsupported sparse indices componentType: ${idxComponent}`);
     const idxStride = idxInfo.bytes;
-    const idxDv = new DataView(idxBuf);
     const valBv = getBufferView(doc.json, sparse.values.bufferView);
     if ((valBv.extensions as Record<string, unknown> | undefined)?.["EXT_meshopt_compression"]) throw new Error("EXT_meshopt_compression sparse values are not supported yet.");
     const valBuf = doc.buffers[valBv.buffer];
     if (!valBuf) throw new Error(`Missing buffer[${valBv.buffer}] for sparse values`);
     const valOffset = (valBv.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0);
-    const valDv = new DataView(valBuf);
     const compInfo = COMPONENT_INFO[componentType];
     if (!compInfo) throw new Error(`Unsupported sparse values componentType: ${componentType}`);
-    for (let i = 0; i < scount; i++) {
-        const idxByte = idxOffset + i * idxStride;
-        const dstIndex = readComponent(idxDv, idxByte, idxComponent as unknown as GltfAccessorComponentType) | 0;
-        const dstBase = dstIndex * numComps;
-        const srcBaseByte = valOffset + i * numComps * compInfo.bytes;
-        for (let c = 0; c < numComps; c++) {
-            const v = readComponent(valDv, srcBaseByte + c * compInfo.bytes, componentType);
-            (out as unknown as number[])[dstBase + c] = v;
-        }
-    }
+    const componentCount = out.length;
+    const componentBytes = compInfo.bytes;
+    const outByteLength = componentCount * componentBytes;
+    const outPtr = frameArena.alloc(outByteLength, 16);
+    wasm.u8view(outPtr, outByteLength).set(new Uint8Array(out.buffer, out.byteOffset, outByteLength));
+    const idxByteLength = scount * idxStride;
+    const idxPtr = copyBytesToWasm(idxBuf, idxOffset, idxByteLength);
+    const valuesByteLength = scount * numComps * componentBytes;
+    const valuesPtr = copyBytesToWasm(valBuf, valOffset, valuesByteLength);
+    accessorf.applySparse(outPtr, componentCount, componentType, numComps, idxPtr, idxComponent, valuesPtr, scount);
+    const outBytes = wasm.u8view(outPtr, outByteLength);
+    new Uint8Array(out.buffer, out.byteOffset, outByteLength).set(outBytes);
 };
 
 export const readAccessorAsFloat32 = (doc: GltfDocument, accessorIndex: number): Float32Array => {
@@ -182,48 +168,44 @@ export const readAccessorAsFloat32 = (doc: GltfDocument, accessorIndex: number):
     const info = COMPONENT_INFO[view.componentType];
     if (!info) throw new Error(`Unsupported componentType: ${view.componentType}`);
     if (view.componentType === 5126 && !view.normalized) return view.array as Float32Array;
+    const srcByteLength = view.array.length * info.bytes;
+    const srcPtr = frameArena.alloc(srcByteLength, 16);
+    wasm.u8view(srcPtr, srcByteLength).set(new Uint8Array(view.array.buffer, view.array.byteOffset, srcByteLength));
+    const outPtr = frameArena.allocF32(view.array.length);
+    accessorf.convertToF32(outPtr, srcPtr, view.array.length, view.componentType, view.normalized);
     const out = new Float32Array(view.array.length);
-    for (let i = 0; i < view.array.length; i++) {
-        const v = (view.array as unknown as number[])[i]!;
-        if (!view.normalized || view.componentType === 5126) {
-            out[i] = v;
-        } else {
-            if (info.signed) {
-                const maxPos = 2 ** (info.bits - 1) - 1;
-                const minNeg = -(2 ** (info.bits - 1));
-                const f = v / maxPos;
-                out[i] = v === minNeg ? -1.0 : Math.max(-1.0, Math.min(1.0, f));
-            } else {
-                const max = 2 ** info.bits - 1;
-                out[i] = v / max;
-            }
-        }
-    }
+    out.set(wasm.f32view(outPtr, view.array.length));
     return out;
 };
 
 export const readAccessorAsUint16 = (doc: GltfDocument, accessorIndex: number): Uint16Array => {
     const view = readAccessor(doc, accessorIndex);
     const ct = view.componentType;
+    const info = COMPONENT_INFO[ct];
+    if (!info) throw new Error(`Unsupported componentType: ${ct}`);
     if (ct === 5123 && !view.normalized) return view.array as Uint16Array;
+    const srcByteLength = view.array.length * info.bytes;
+    const srcPtr = frameArena.alloc(srcByteLength, 16);
+    wasm.u8view(srcPtr, srcByteLength).set(new Uint8Array(view.array.buffer, view.array.byteOffset, srcByteLength));
+    const outPtr = frameArena.alloc(view.array.length * 2, 2);
+    accessorf.convertToU16(outPtr, srcPtr, view.array.length, ct);
     const out = new Uint16Array(view.array.length);
-    if (ct === 5121 && !view.normalized) {
-        const src = view.array as Uint8Array;
-        for (let i = 0; i < src.length; i++) out[i] = src[i]!;
-        return out;
-    }
-    for (let i = 0; i < view.array.length; i++) {
-        const v = (view.array as any)[i] as number;
-        out[i] = v < 0 ? 0 : v > 65535 ? 65535 : (v | 0);
-    }
+    out.set(new Uint16Array(wasm.memory().buffer, outPtr, view.array.length));
     return out;
 };
 
 export const readIndicesAsUint32 = (doc: GltfDocument, accessorIndex: number): Uint32Array => {
     const view = readAccessor(doc, accessorIndex);
     const ct = view.componentType;
+    const info = COMPONENT_INFO[ct];
+    if (!info) throw new Error(`Unsupported componentType: ${ct}`);
     if (ct === 5125 && !view.normalized) return view.array as Uint32Array;
+    const srcByteLength = view.array.length * info.bytes;
+    const srcPtr = frameArena.alloc(srcByteLength, 16);
+    wasm.u8view(srcPtr, srcByteLength).set(new Uint8Array(view.array.buffer, view.array.byteOffset, srcByteLength));
+    const outPtr = frameArena.alloc(view.array.length * 4, 4);
+    accessorf.convertToU32(outPtr, srcPtr, view.array.length, ct);
     const out = new Uint32Array(view.array.length);
-    for (let i = 0; i < view.array.length; i++) out[i] = (view.array as unknown as number[])[i]! >>> 0;
+    out.set(new Uint32Array(wasm.memory().buffer, outPtr, view.array.length));
     return out;
 };

@@ -35,6 +35,16 @@ pub(crate) unsafe fn i32_slice_mut(ptr: u32, len: usize) -> &'static mut [i32] {
 }
 
 #[inline(always)]
+pub(crate) unsafe fn u8_slice(ptr: u32, len: usize) -> &'static [u8] {
+    core::slice::from_raw_parts(ptr as *const u8, len)
+}
+
+#[inline(always)]
+pub(crate) unsafe fn u8_slice_mut(ptr: u32, len: usize) -> &'static mut [u8] {
+    core::slice::from_raw_parts_mut(ptr as *mut u8, len)
+}
+
+#[inline(always)]
 pub(crate) fn align_up(x: usize, align: usize) -> usize {
     (x + (align - 1)) & !(align - 1)
 }

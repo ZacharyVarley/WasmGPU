@@ -5,6 +5,7 @@
  */
 
 import { createBuffer } from "../utils";
+import { boundsf, frameArena, wasm } from "../wasm";
 
 export type GeometryAttribute = {
     data: Float32Array;
@@ -145,34 +146,21 @@ export class Geometry {
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
         if (this.vertexCount > 0) {
-            let minX = Infinity, minY = Infinity, minZ = Infinity;
-            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-            for (let i = 0; i < this.positions.length; i += 3) {
-                const x = this.positions[i + 0];
-                const y = this.positions[i + 1];
-                const z = this.positions[i + 2];
-                if (x < minX) minX = x;
-                if (y < minY) minY = y;
-                if (z < minZ) minZ = z;
-                if (x > maxX) maxX = x;
-                if (y > maxY) maxY = y;
-                if (z > maxZ) maxZ = z;
-            }
-            this._boundsMin = [minX, minY, minZ];
-            this._boundsMax = [maxX, maxY, maxZ];
-            const cx = (minX + maxX) * 0.5;
-            const cy = (minY + maxY) * 0.5;
-            const cz = (minZ + maxZ) * 0.5;
-            let maxR2 = 0;
-            for (let i = 0; i < this.positions.length; i += 3) {
-                const dx = this.positions[i + 0] - cx;
-                const dy = this.positions[i + 1] - cy;
-                const dz = this.positions[i + 2] - cz;
-                const r2 = dx * dx + dy * dy + dz * dz;
-                if (r2 > maxR2) maxR2 = r2;
-            }
-            this._boundsCenter = [cx, cy, cz];
-            this._boundsRadius = Math.sqrt(maxR2);
+            const positionsPtr = frameArena.allocF32(this.positions.length);
+            wasm.f32view(positionsPtr, this.positions.length).set(this.positions);
+            const boxMinPtr = frameArena.allocF32(3);
+            const boxMaxPtr = frameArena.allocF32(3);
+            const sphereCenterPtr = frameArena.allocF32(3);
+            const sphereRadiusPtr = frameArena.allocF32(1);
+            boundsf.geometryPositions(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, this.vertexCount);
+            const boxMin = wasm.f32view(boxMinPtr, 3);
+            const boxMax = wasm.f32view(boxMaxPtr, 3);
+            const sphereCenter = wasm.f32view(sphereCenterPtr, 3);
+            const sphereRadius = wasm.f32view(sphereRadiusPtr, 1);
+            this._boundsMin = [boxMin[0], boxMin[1], boxMin[2]];
+            this._boundsMax = [boxMax[0], boxMax[1], boxMax[2]];
+            this._boundsCenter = [sphereCenter[0], sphereCenter[1], sphereCenter[2]];
+            this._boundsRadius = sphereRadius[0];
         } else {
             this._boundsMin = [0, 0, 0];
             this._boundsMax = [0, 0, 0];

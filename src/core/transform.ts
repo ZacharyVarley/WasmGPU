@@ -25,6 +25,8 @@ export class TransformStore {
     orderPtr: WasmPtr = 0;
     tmpAxisPtr: WasmPtr = 0;
     tmpQuatPtr: WasmPtr = 0;
+    dirtyIndicesPtr: WasmPtr = 0;
+    dirtyIndicesCap: number = 0;
     private _buf: ArrayBuffer | null = null;
     private _f32: Float32Array<ArrayBuffer> | null = null;
     private _u32: Uint32Array<ArrayBuffer> | null = null;
@@ -83,6 +85,14 @@ export class TransformStore {
         const next = new Uint8Array(this.cap);
         for (let i = 0; i < this._dirtyList.length; i++) next[this._dirtyList[i]!] = 1;
         this._dirtyMark = next;
+    }
+
+    private ensureDirtyIndexCapacity(minLen: number): void {
+        if (this.dirtyIndicesCap >= minLen) return;
+        let cap = Math.max(1, this.dirtyIndicesCap | 0);
+        while (cap < minLen) cap *= 2;
+        this.dirtyIndicesPtr = wasm.allocU32(cap);
+        this.dirtyIndicesCap = cap;
     }
 
     private clearDirtyList(): void {
@@ -240,113 +250,10 @@ export class TransformStore {
             return;
         }
         this.ensureViews();
-        const f32 = this.f32();
-        const u32 = this.u32();
-        const posBase = this.posPtr >>> 2;
-        const rotBase = this.rotPtr >>> 2;
-        const sclBase = this.sclPtr >>> 2;
-        const localBase = this.localPtr >>> 2;
-        const worldBase = this.worldPtr >>> 2;
-        const parentBase = this.parentPtr >>> 2;
-        for (let di = 0; di < this._dirtyList.length; di++) {
-            const idx = this._dirtyList[di] | 0;
-            const pi = posBase + idx * 3;
-            const ri = rotBase + idx * 4;
-            const si = sclBase + idx * 3;
-            const mi = localBase + idx * 16;
-            const tx = f32[pi + 0];
-            const ty = f32[pi + 1];
-            const tz = f32[pi + 2];
-            const x = f32[ri + 0];
-            const y = f32[ri + 1];
-            const z = f32[ri + 2];
-            const w = f32[ri + 3];
-            const sx = f32[si + 0];
-            const sy = f32[si + 1];
-            const sz = f32[si + 2];
-            const xx = x * x;
-            const yy = y * y;
-            const zz = z * z;
-            const xy = x * y;
-            const xz = x * z;
-            const yz = y * z;
-            const wx = w * x;
-            const wy = w * y;
-            const wz = w * z;
-            f32[mi + 0] = (1.0 - 2.0 * (yy + zz)) * sx;
-            f32[mi + 1] = (2.0 * (xy + wz)) * sx;
-            f32[mi + 2] = (2.0 * (xz - wy)) * sx;
-            f32[mi + 3] = 0.0;
-            f32[mi + 4] = (2.0 * (xy - wz)) * sy;
-            f32[mi + 5] = (1.0 - 2.0 * (xx + zz)) * sy;
-            f32[mi + 6] = (2.0 * (yz + wx)) * sy;
-            f32[mi + 7] = 0.0;
-            f32[mi + 8] = (2.0 * (xz + wy)) * sz;
-            f32[mi + 9] = (2.0 * (yz - wx)) * sz;
-            f32[mi + 10] = (1.0 - 2.0 * (xx + yy)) * sz;
-            f32[mi + 11] = 0.0;
-            f32[mi + 12] = tx;
-            f32[mi + 13] = ty;
-            f32[mi + 14] = tz;
-            f32[mi + 15] = 1.0;
-        }
-        const roots: number[] = [];
-        for (let di = 0; di < this._dirtyList.length; di++) {
-            const idx = this._dirtyList[di] | 0;
-            let p = u32[parentBase + idx] >>> 0;
-            let isRoot = true;
-            while (p !== NO_PARENT && (p | 0) < count) {
-                if (this._dirtyMark[p | 0]) {
-                    isRoot = false;
-                    break;
-                }
-                p = u32[parentBase + (p | 0)] >>> 0;
-            }
-            if (isRoot) roots.push(idx);
-        }
-        const stack = this._stack;
-        for (let r = 0; r < roots.length; r++) {
-            stack.length = 0;
-            stack.push(roots[r] | 0);
-            while (stack.length) {
-                const idx = stack.pop()! | 0;
-                const p = u32[parentBase + idx] >>> 0;
-                const li = localBase + idx * 16;
-                const wi = worldBase + idx * 16;
-                if (p === NO_PARENT || (p | 0) >= count) {
-                    for (let k = 0; k < 16; k++) f32[wi + k] = f32[li + k];
-                } else {
-                    const pi = worldBase + (p | 0) * 16;
-                    const a0 = f32[pi + 0], a1 = f32[pi + 1], a2 = f32[pi + 2], a3 = f32[pi + 3];
-                    const a4 = f32[pi + 4], a5 = f32[pi + 5], a6 = f32[pi + 6], a7 = f32[pi + 7];
-                    const a8 = f32[pi + 8], a9 = f32[pi + 9], a10 = f32[pi + 10], a11 = f32[pi + 11];
-                    const a12 = f32[pi + 12], a13 = f32[pi + 13], a14 = f32[pi + 14], a15 = f32[pi + 15];
-                    const b0 = f32[li + 0], b1 = f32[li + 1], b2 = f32[li + 2], b3 = f32[li + 3];
-                    const b4 = f32[li + 4], b5 = f32[li + 5], b6 = f32[li + 6], b7 = f32[li + 7];
-                    const b8 = f32[li + 8], b9 = f32[li + 9], b10 = f32[li + 10], b11 = f32[li + 11];
-                    const b12 = f32[li + 12], b13 = f32[li + 13], b14 = f32[li + 14], b15 = f32[li + 15];
-                    f32[wi + 0] = a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3;
-                    f32[wi + 1] = a1 * b0 + a5 * b1 + a9 * b2 + a13 * b3;
-                    f32[wi + 2] = a2 * b0 + a6 * b1 + a10 * b2 + a14 * b3;
-                    f32[wi + 3] = a3 * b0 + a7 * b1 + a11 * b2 + a15 * b3;
-                    f32[wi + 4] = a0 * b4 + a4 * b5 + a8 * b6 + a12 * b7;
-                    f32[wi + 5] = a1 * b4 + a5 * b5 + a9 * b6 + a13 * b7;
-                    f32[wi + 6] = a2 * b4 + a6 * b5 + a10 * b6 + a14 * b7;
-                    f32[wi + 7] = a3 * b4 + a7 * b5 + a11 * b6 + a15 * b7;
-                    f32[wi + 8] = a0 * b8 + a4 * b9 + a8 * b10 + a12 * b11;
-                    f32[wi + 9] = a1 * b8 + a5 * b9 + a9 * b10 + a13 * b11;
-                    f32[wi + 10] = a2 * b8 + a6 * b9 + a10 * b10 + a14 * b11;
-                    f32[wi + 11] = a3 * b8 + a7 * b9 + a11 * b10 + a15 * b11;
-                    f32[wi + 12] = a0 * b12 + a4 * b13 + a8 * b14 + a12 * b15;
-                    f32[wi + 13] = a1 * b12 + a5 * b13 + a9 * b14 + a13 * b15;
-                    f32[wi + 14] = a2 * b12 + a6 * b13 + a10 * b14 + a14 * b15;
-                    f32[wi + 15] = a3 * b12 + a7 * b13 + a11 * b14 + a15 * b15;
-                }
-                const node = this._nodes[idx];
-                const children = node?.children ?? [];
-                for (let c = children.length - 1; c >= 0; c--) stack.push(children[c]!.index | 0);
-            }
-        }
+        this.ensureDirtyIndexCapacity(this._dirtyList.length);
+        const dirty = this.u32().subarray(this.dirtyIndicesPtr >>> 2, (this.dirtyIndicesPtr >>> 2) + this._dirtyList.length);
+        for (let i = 0; i < this._dirtyList.length; i++) dirty[i] = this._dirtyList[i] >>> 0;
+        transformf.updatePartialOrdered(this.worldPtr, this.localPtr, this.posPtr, this.rotPtr, this.sclPtr, this.parentPtr, this.orderPtr, this.dirtyIndicesPtr, this._dirtyList.length, count);
         this._dirty = false;
         this.clearDirtyList();
     }
@@ -419,18 +326,8 @@ export class Transform {
     private _position: number[] = [0, 0, 0];
     private _rotation: number[] = [0, 0, 0, 1];
     private _scale: number[] = [1, 1, 1];
-    private _localMatrix: number[] = [
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1
-    ];
-    private _worldMatrix: number[] = [
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1
-    ];
+    private _localMatrix: number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    private _worldMatrix: number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
     private _disposed: boolean = false;
 
     constructor() {

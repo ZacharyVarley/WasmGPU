@@ -109,6 +109,24 @@ setWasmInteropHost(wasm, frameArena);
 export type { WasmTypedArrayConstructor, WasmSliceDType, WasmSliceHandle, WasmSliceKind } from "./interop";
 export { WasmHeapArena, WasmSlice, wasmInterop } from "./interop";
 
+export const accessorf = {
+    deinterleave: (outPtr: WasmPtr, srcPtr: WasmPtr, count: number, numComponents: number, componentBytes: number, byteStride: number): void => {
+        ensure().accessor_deinterleave(outPtr >>> 0, srcPtr >>> 0, count >>> 0, numComponents >>> 0, componentBytes >>> 0, byteStride >>> 0);
+    },
+    applySparse: (outPtr: WasmPtr, outComponentCount: number, componentType: number, numComponents: number, indicesPtr: WasmPtr, indicesComponentType: number, valuesPtr: WasmPtr, sparseCount: number): void => {
+        ensure().accessor_apply_sparse(outPtr >>> 0, outComponentCount >>> 0, componentType >>> 0, numComponents >>> 0, indicesPtr >>> 0, indicesComponentType >>> 0, valuesPtr >>> 0, sparseCount >>> 0);
+    },
+    convertToF32: (outPtr: WasmPtr, srcPtr: WasmPtr, componentCount: number, componentType: number, normalized: boolean): void => {
+        ensure().accessor_convert_to_f32(outPtr >>> 0, srcPtr >>> 0, componentCount >>> 0, componentType >>> 0, normalized ? 1 : 0);
+    },
+    convertToU16: (outPtr: WasmPtr, srcPtr: WasmPtr, componentCount: number, componentType: number): void => {
+        ensure().accessor_convert_to_u16(outPtr >>> 0, srcPtr >>> 0, componentCount >>> 0, componentType >>> 0);
+    },
+    convertToU32: (outPtr: WasmPtr, srcPtr: WasmPtr, componentCount: number, componentType: number): void => {
+        ensure().accessor_convert_to_u32(outPtr >>> 0, srcPtr >>> 0, componentCount >>> 0, componentType >>> 0);
+    }
+};
+
 export const animf = {
     sampleClipTRS: (posPtr: WasmPtr, rotPtr: WasmPtr, sclPtr: WasmPtr, transformCount: number, samplersPtr: WasmPtr, samplerCount: number, channelsPtr: WasmPtr, channelCount: number, time: number): void => {
         ensure().anim_sample_clip_trs(posPtr >>> 0, rotPtr >>> 0, sclPtr >>> 0, transformCount >>> 0, samplersPtr >>> 0, samplerCount >>> 0, channelsPtr >>> 0, channelCount >>> 0, time);
@@ -118,40 +136,39 @@ export const animf = {
     }
 };
 
+export const boundsf = {
+    pointcloudXYZS: (outBoxMinPtr: WasmPtr, outBoxMaxPtr: WasmPtr, outSphereCenterPtr: WasmPtr, outSphereRadiusPtr: WasmPtr, pointsPtr: WasmPtr, pointCount: number, strideF32: number): void => {
+        ensure().bounds_pointcloud_xyzs(outBoxMinPtr >>> 0, outBoxMaxPtr >>> 0, outSphereCenterPtr >>> 0, outSphereRadiusPtr >>> 0, pointsPtr >>> 0, pointCount >>> 0, strideF32 >>> 0);
+    },
+    glyphInstances: (outBoxMinPtr: WasmPtr, outBoxMaxPtr: WasmPtr, outSphereCenterPtr: WasmPtr, outSphereRadiusPtr: WasmPtr, positionsPtr: WasmPtr, scalesPtr: WasmPtr, rotationsPtr: WasmPtr, instanceCount: number, glyphCenterPtr: WasmPtr, glyphRadius: number): void => {
+        ensure().bounds_glyph_instances(outBoxMinPtr >>> 0, outBoxMaxPtr >>> 0, outSphereCenterPtr >>> 0, outSphereRadiusPtr >>> 0, positionsPtr >>> 0, scalesPtr >>> 0, rotationsPtr >>> 0, instanceCount >>> 0, glyphCenterPtr >>> 0, glyphRadius);
+    },
+    geometryPositions: (outBoxMinPtr: WasmPtr, outBoxMaxPtr: WasmPtr, outSphereCenterPtr: WasmPtr, outSphereRadiusPtr: WasmPtr, positionsPtr: WasmPtr, vertexCount: number): void => {
+        ensure().bounds_geometry_positions(outBoxMinPtr >>> 0, outBoxMaxPtr >>> 0, outSphereCenterPtr >>> 0, outSphereRadiusPtr >>> 0, positionsPtr >>> 0, vertexCount >>> 0);
+    }
+};
+
 export const cullf = {
+    writePlanesFromViewProjection: (outPlanesPtr: WasmPtr, viewProjPtr: WasmPtr): void => {
+        ensure().cull_write_planes_from_view_projection(outPlanesPtr >>> 0, viewProjPtr >>> 0);
+    },
+    prepareWorldSpheresFromPtrs: (outCentersPtr: WasmPtr, outRadiiPtr: WasmPtr, worldPtrsPtr: WasmPtr, localCentersPtr: WasmPtr, localRadiiPtr: WasmPtr, count: number): void => {
+        ensure().cull_prepare_world_spheres_from_ptrs(outCentersPtr >>> 0, outRadiiPtr >>> 0, worldPtrsPtr >>> 0, localCentersPtr >>> 0, localRadiiPtr >>> 0, count >>> 0);
+    },
     spheresFrustum: (outIndicesPtr: WasmPtr, centersPtr: WasmPtr, radiiPtr: WasmPtr, count: number, frustumPlanesPtr: WasmPtr): number => {
         return ensure().cull_spheres_frustum(outIndicesPtr >>> 0, centersPtr >>> 0, radiiPtr >>> 0, count >>> 0, frustumPlanesPtr >>> 0) >>> 0;
     }
 };
 
 export const frustumf = {
-    writePlanesFromViewProjection: (outPlanesPtr: WasmPtr, viewProjMat4: ArrayLike<number>): void => {
-        const out = wasm.f32view(outPlanesPtr, 24);
-        const m = viewProjMat4;
-        const r0x = m[0],  r0y = m[4],  r0z = m[8],  r0w = m[12];
-        const r1x = m[1],  r1y = m[5],  r1z = m[9],  r1w = m[13];
-        const r2x = m[2],  r2y = m[6],  r2z = m[10], r2w = m[14];
-        const r3x = m[3],  r3y = m[7],  r3z = m[11], r3w = m[15];
-        out[0] = r3x + r0x; out[1] = r3y + r0y; out[2] = r3z + r0z; out[3] = r3w + r0w;
-        out[4] = r3x - r0x; out[5] = r3y - r0y; out[6] = r3z - r0z; out[7] = r3w - r0w;
-        out[8] = r3x + r1x; out[9] = r3y + r1y; out[10] = r3z + r1z; out[11] = r3w + r1w;
-        out[12] = r3x - r1x; out[13] = r3y - r1y; out[14] = r3z - r1z; out[15] = r3w - r1w;
-        out[16] = r2x; out[17] = r2y; out[18] = r2z; out[19] = r2w;
-        out[20] = r3x - r2x; out[21] = r3y - r2y; out[22] = r3z - r2z; out[23] = r3w - r2w;
-        for (let p = 0; p < 6; p++) {
-            const i = p * 4;
-            const nx = out[i + 0];
-            const ny = out[i + 1];
-            const nz = out[i + 2];
-            const len = Math.hypot(nx, ny, nz);
-            if (len > 0) {
-                const inv = 1.0 / len;
-                out[i + 0] = nx * inv;
-                out[i + 1] = ny * inv;
-                out[i + 2] = nz * inv;
-                out[i + 3] = out[i + 3] * inv;
-            }
+    writePlanesFromViewProjection: (outPlanesPtr: WasmPtr, viewProj: ArrayLike<number> | WasmPtr): void => {
+        if (typeof viewProj === "number") {
+            ensure().cull_write_planes_from_view_projection(outPlanesPtr >>> 0, viewProj >>> 0);
+            return;
         }
+        const vpPtr = frameArena.allocF32(16);
+        wasm.writeF32(vpPtr, 16, viewProj);
+        ensure().cull_write_planes_from_view_projection(outPlanesPtr >>> 0, vpPtr >>> 0);
     }
 };
 
@@ -265,6 +282,9 @@ export const transformf = {
     },
     updateWorldOrdered: (outWorldPtr: WasmPtr, localPtr: WasmPtr, parentPtr: WasmPtr, orderPtr: WasmPtr, count: number): void => {
         ensure().transform_update_world_ordered(outWorldPtr >>> 0, localPtr >>> 0, parentPtr >>> 0, orderPtr >>> 0, count >>> 0);
+    },
+    updatePartialOrdered: (outWorldPtr: WasmPtr, outLocalPtr: WasmPtr, posPtr: WasmPtr, rotPtr: WasmPtr, sclPtr: WasmPtr, parentPtr: WasmPtr, orderPtr: WasmPtr, dirtyIndicesPtr: WasmPtr, dirtyCount: number, count: number): void => {
+        ensure().transform_update_partial_ordered(outWorldPtr >>> 0, outLocalPtr >>> 0, posPtr >>> 0, rotPtr >>> 0, sclPtr >>> 0, parentPtr >>> 0, orderPtr >>> 0, dirtyIndicesPtr >>> 0, dirtyCount >>> 0, count >>> 0);
     },
     packModelNormalMat4FromPtrs: (outPtr: WasmPtr, matPtrsPtr: WasmPtr, count: number): void => {
         ensure().transform_pack_model_normal_mat4_from_ptrs(outPtr >>> 0, matPtrsPtr >>> 0, count >>> 0);

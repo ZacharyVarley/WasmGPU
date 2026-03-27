@@ -11,7 +11,7 @@ import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { Geometry } from "../graphics/geometry";
 import { assert } from "../utils";
-import { wasmInterop, type WasmPtr } from "../wasm";
+import { boundsf, frameArena, wasm, wasmInterop, type WasmPtr } from "../wasm";
 import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type GlyphColormap = BuiltinColormapName | "custom";
@@ -124,16 +124,6 @@ const colorModeId = (mode: GlyphColorMode): number => {
 const resolveBufferHandle = (x: GPUBuffer | { buffer: GPUBuffer } | undefined | null): GPUBuffer | null => {
     if (!x) return null;
     return (x as any).buffer ? ((x as any).buffer as GPUBuffer) : (x as GPUBuffer);
-};
-
-const rotateVectorByQuat = (vx: number, vy: number, vz: number, qx: number, qy: number, qz: number, qw: number): [number, number, number] => {
-    const tx = 2 * ((qy * vz) - (qz * vy));
-    const ty = 2 * ((qz * vx) - (qx * vz));
-    const tz = 2 * ((qx * vy) - (qy * vx));
-    const outX = vx + (qw * tx) + ((qy * tz) - (qz * ty));
-    const outY = vy + (qw * ty) + ((qz * tx) - (qx * tz));
-    const outZ = vz + (qw * tz) + ((qx * ty) - (qy * tx));
-    return [outX, outY, outZ];
 };
 
 const createUvEllipsoidGeometry = (latSegments: number = 8, lonSegments: number = 12): Geometry => {
@@ -678,38 +668,26 @@ export class GlyphField {
         const scales = this._scalesCPU;
         const count = this._instanceCount;
         if (!positions || !scales || count <= 0) return;
-        const center = this.geometry.boundsCenter;
-        const radius = this.geometry.boundsRadius;
         const rotations = this._rotationsCPU;
-        let minX = Infinity, minY = Infinity, minZ = Infinity;
-        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-        for (let i = 0; i < count; i++) {
-            const po = i * 4;
-            const sx = Math.abs(scales[po + 0]);
-            const sy = Math.abs(scales[po + 1]);
-            const sz = Math.abs(scales[po + 2]);
-            let cx = center[0] * sx;
-            let cy = center[1] * sy;
-            let cz = center[2] * sz;
-            if (rotations) {
-                const ro = i * 4;
-                const rotated = rotateVectorByQuat(cx, cy, cz, rotations[ro + 0], rotations[ro + 1], rotations[ro + 2], rotations[ro + 3]);
-                cx = rotated[0];
-                cy = rotated[1];
-                cz = rotated[2];
-            }
-            const wx = positions[po + 0] + cx;
-            const wy = positions[po + 1] + cy;
-            const wz = positions[po + 2] + cz;
-            const r = radius * Math.max(sx, sy, sz);
-            if (wx - r < minX) minX = wx - r;
-            if (wy - r < minY) minY = wy - r;
-            if (wz - r < minZ) minZ = wz - r;
-            if (wx + r > maxX) maxX = wx + r;
-            if (wy + r > maxY) maxY = wy + r;
-            if (wz + r > maxZ) maxZ = wz + r;
+        const positionsPtr = frameArena.allocF32(positions.length);
+        const scalesPtr = frameArena.allocF32(scales.length);
+        wasm.f32view(positionsPtr, positions.length).set(positions);
+        wasm.f32view(scalesPtr, scales.length).set(scales);
+        let rotationsPtr: WasmPtr = 0;
+        if (rotations) {
+            rotationsPtr = frameArena.allocF32(rotations.length);
+            wasm.f32view(rotationsPtr, rotations.length).set(rotations);
         }
-        this.setBounds(boundsFromBox([minX, minY, minZ], [maxX, maxY, maxZ]), "computed");
+        const glyphCenterPtr = frameArena.allocF32(3);
+        wasm.writeF32(glyphCenterPtr, 3, this.geometry.boundsCenter);
+        const boxMinPtr = frameArena.allocF32(3);
+        const boxMaxPtr = frameArena.allocF32(3);
+        const sphereCenterPtr = frameArena.allocF32(3);
+        const sphereRadiusPtr = frameArena.allocF32(1);
+        boundsf.glyphInstances(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, scalesPtr, rotationsPtr, count, glyphCenterPtr, this.geometry.boundsRadius);
+        const boxMin = wasm.f32view(boxMinPtr, 3);
+        const boxMax = wasm.f32view(boxMaxPtr, 3);
+        this.setBounds(boundsFromBox([boxMin[0], boxMin[1], boxMin[2]], [boxMax[0], boxMax[1], boxMax[2]]), "computed");
     }
 
     getLocalBounds(): Bounds3 {

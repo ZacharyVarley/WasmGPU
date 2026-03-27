@@ -20,3 +20,5 @@ mod cull;
 mod mesh;
 mod anim;
 mod ndarray;
+mod bounds;
+mod accessors;

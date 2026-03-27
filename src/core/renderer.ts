@@ -14,7 +14,7 @@ import { GlyphField } from "../world/glyphfield";
 import type { PickLassoPoint, PickQuery, PickRegionQuery } from "../world/picking";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
-import { animf, cullf, frameArena, mat4, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
+import { animf, cullf, frameArena, frustumf, mat4, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
 import glyphFieldWGSL from "../wgsl/world/glyphfield.wgsl";
@@ -1468,80 +1468,26 @@ export class Renderer {
         const camZ = storeF32[camWb + 14];
         if (this.frustumCullingEnabled) {
             this.ensureCullingCapacity(count);
-            const centersBase = this.cullCentersPtr >>> 2;
-            const radiiBase = this.cullRadiiPtr >>> 2;
+            const worldPtrsPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
+            const localCentersPtr = frameArena.allocF32(count * 3) as WasmPtr;
+            const localRadiiPtr = frameArena.allocF32(count) as WasmPtr;
+            const worldPtrs = storeU32.subarray(worldPtrsPtr >>> 2, (worldPtrsPtr >>> 2) + count);
+            const localCenters = storeF32.subarray(localCentersPtr >>> 2, (localCentersPtr >>> 2) + count * 3);
+            const localRadii = storeF32.subarray(localRadiiPtr >>> 2, (localRadiiPtr >>> 2) + count);
             for (let i = 0; i < count; i++) {
                 const mesh = candidates[i];
                 const geom = mesh.geometry;
                 const lc = geom.boundsCenter;
-                const lr = geom.boundsRadius;
-                const wb = (mesh.transform.worldMatrixPtr >>> 2);
-                const w0 = storeF32[wb + 0];
-                const w1 = storeF32[wb + 1];
-                const w2 = storeF32[wb + 2];
-                const w4 = storeF32[wb + 4];
-                const w5 = storeF32[wb + 5];
-                const w6 = storeF32[wb + 6];
-                const w8 = storeF32[wb + 8];
-                const w9 = storeF32[wb + 9];
-                const w10 = storeF32[wb + 10];
-                const w12 = storeF32[wb + 12];
-                const w13 = storeF32[wb + 13];
-                const w14 = storeF32[wb + 14];
-                const cx = w0 * lc[0] + w4 * lc[1] + w8 * lc[2] + w12;
-                const cy = w1 * lc[0] + w5 * lc[1] + w9 * lc[2] + w13;
-                const cz = w2 * lc[0] + w6 * lc[1] + w10 * lc[2] + w14;
-                const base = centersBase + i * 3;
-                storeF32[base + 0] = cx;
-                storeF32[base + 1] = cy;
-                storeF32[base + 2] = cz;
-                const sx = Math.hypot(w0, w1, w2);
-                const sy = Math.hypot(w4, w5, w6);
-                const sz = Math.hypot(w8, w9, w10);
-                const smax = Math.max(sx, sy, sz);
-                storeF32[radiiBase + i] = lr * smax;
+                const centerBase = i * 3;
+                worldPtrs[i] = mesh.transform.worldMatrixPtr >>> 0;
+                localCenters[centerBase + 0] = lc[0];
+                localCenters[centerBase + 1] = lc[1];
+                localCenters[centerBase + 2] = lc[2];
+                localRadii[i] = geom.boundsRadius;
             }
+            cullf.prepareWorldSpheresFromPtrs(this.cullCentersPtr, this.cullRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, count);
             const frustumPtr = frameArena.allocF32(24) as WasmPtr;
-            const frb = frustumPtr >>> 2;
-            const m = this.cameraUniformStagingView;
-            storeF32[frb + 0] = m[3] + m[0];
-            storeF32[frb + 1] = m[7] + m[4];
-            storeF32[frb + 2] = m[11] + m[8];
-            storeF32[frb + 3] = m[15] + m[12];
-            storeF32[frb + 4] = m[3] - m[0];
-            storeF32[frb + 5] = m[7] - m[4];
-            storeF32[frb + 6] = m[11] - m[8];
-            storeF32[frb + 7] = m[15] - m[12];
-            storeF32[frb + 8] = m[3] + m[1];
-            storeF32[frb + 9] = m[7] + m[5];
-            storeF32[frb + 10] = m[11] + m[9];
-            storeF32[frb + 11] = m[15] + m[13];
-            storeF32[frb + 12] = m[3] - m[1];
-            storeF32[frb + 13] = m[7] - m[5];
-            storeF32[frb + 14] = m[11] - m[9];
-            storeF32[frb + 15] = m[15] - m[13];
-            storeF32[frb + 16] = m[2];
-            storeF32[frb + 17] = m[6];
-            storeF32[frb + 18] = m[10];
-            storeF32[frb + 19] = m[14];
-            storeF32[frb + 20] = m[3] - m[2];
-            storeF32[frb + 21] = m[7] - m[6];
-            storeF32[frb + 22] = m[11] - m[10];
-            storeF32[frb + 23] = m[15] - m[14];
-            for (let p = 0; p < 6; p++) {
-                const off = frb + p * 4;
-                const nx = storeF32[off + 0];
-                const ny = storeF32[off + 1];
-                const nz = storeF32[off + 2];
-                const len = Math.hypot(nx, ny, nz);
-                if (len > 0) {
-                    const inv = 1.0 / len;
-                    storeF32[off + 0] = nx * inv;
-                    storeF32[off + 1] = ny * inv;
-                    storeF32[off + 2] = nz * inv;
-                    storeF32[off + 3] = storeF32[off + 3] * inv;
-                }
-            }
+            frustumf.writePlanesFromViewProjection(frustumPtr, this.cameraUniformStagingPtr);
             const outPtr = frameArena.alloc(count * 4, 4) as WasmPtr;
             visibleCount = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, count, frustumPtr);
             visibleIndicesBase = outPtr >>> 2;
@@ -1646,63 +1592,28 @@ export class Renderer {
             }
             if (bounded.length > 0) {
                 this.ensureCullingCapacity(bounded.length);
-                const cullCentersBase = this.cullCentersPtr >>> 2;
-                const cullRadiiBase = this.cullRadiiPtr >>> 2;
+                const bcount = bounded.length;
+                const worldPtrsPtr = frameArena.alloc(bcount * 4, 4) as WasmPtr;
+                const localCentersPtr = frameArena.allocF32(bcount * 3) as WasmPtr;
+                const localRadiiPtr = frameArena.allocF32(bcount) as WasmPtr;
+                const worldPtrs = storeU32.subarray(worldPtrsPtr >>> 2, (worldPtrsPtr >>> 2) + bcount);
+                const localCenters = storeF32.subarray(localCentersPtr >>> 2, (localCentersPtr >>> 2) + bcount * 3);
+                const localRadii = storeF32.subarray(localRadiiPtr >>> 2, (localRadiiPtr >>> 2) + bcount);
                 for (let i = 0; i < bounded.length; i++) {
                     const pc = bounded[i];
-                    const worldBase = pc.transform.worldMatrixPtr >>> 2;
                     const cx = pc.boundsCenter[0];
                     const cy = pc.boundsCenter[1];
                     const cz = pc.boundsCenter[2];
-                    const cwx = storeF32[worldBase + 0] * cx + storeF32[worldBase + 4] * cy + storeF32[worldBase + 8] * cz + storeF32[worldBase + 12];
-                    const cwy = storeF32[worldBase + 1] * cx + storeF32[worldBase + 5] * cy + storeF32[worldBase + 9] * cz + storeF32[worldBase + 13];
-                    const cwz = storeF32[worldBase + 2] * cx + storeF32[worldBase + 6] * cy + storeF32[worldBase + 10] * cz + storeF32[worldBase + 14];
-                    const sx = Math.hypot(storeF32[worldBase + 0], storeF32[worldBase + 1], storeF32[worldBase + 2]);
-                    const sy = Math.hypot(storeF32[worldBase + 4], storeF32[worldBase + 5], storeF32[worldBase + 6]);
-                    const sz = Math.hypot(storeF32[worldBase + 8], storeF32[worldBase + 9], storeF32[worldBase + 10]);
-                    const smax = Math.max(sx, sy, sz);
-                    storeF32[cullCentersBase + i * 3 + 0] = cwx;
-                    storeF32[cullCentersBase + i * 3 + 1] = cwy;
-                    storeF32[cullCentersBase + i * 3 + 2] = cwz;
-                    storeF32[cullRadiiBase + i] = pc.boundsRadius * smax;
+                    const base = i * 3;
+                    worldPtrs[i] = pc.transform.worldMatrixPtr >>> 0;
+                    localCenters[base + 0] = cx;
+                    localCenters[base + 1] = cy;
+                    localCenters[base + 2] = cz;
+                    localRadii[i] = pc.boundsRadius;
                 }
+                cullf.prepareWorldSpheresFromPtrs(this.cullCentersPtr, this.cullRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, bcount);
                 const frustumPtr = frameArena.allocF32(24) as WasmPtr;
-                const frb = frustumPtr >>> 2;
-                storeF32[frb + 0] = m[3] + m[0];
-                storeF32[frb + 1] = m[7] + m[4];
-                storeF32[frb + 2] = m[11] + m[8];
-                storeF32[frb + 3] = m[15] + m[12];
-                storeF32[frb + 4] = m[3] - m[0];
-                storeF32[frb + 5] = m[7] - m[4];
-                storeF32[frb + 6] = m[11] - m[8];
-                storeF32[frb + 7] = m[15] - m[12];
-                storeF32[frb + 8] = m[3] + m[1];
-                storeF32[frb + 9] = m[7] + m[5];
-                storeF32[frb + 10] = m[11] + m[9];
-                storeF32[frb + 11] = m[15] + m[13];
-                storeF32[frb + 12] = m[3] - m[1];
-                storeF32[frb + 13] = m[7] - m[5];
-                storeF32[frb + 14] = m[11] - m[9];
-                storeF32[frb + 15] = m[15] - m[13];
-                storeF32[frb + 16] = m[2];
-                storeF32[frb + 17] = m[6];
-                storeF32[frb + 18] = m[10];
-                storeF32[frb + 19] = m[14];
-                storeF32[frb + 20] = m[3] - m[2];
-                storeF32[frb + 21] = m[7] - m[6];
-                storeF32[frb + 22] = m[11] - m[10];
-                storeF32[frb + 23] = m[15] - m[14];
-                for (let p = 0; p < 6; p++) {
-                    const off = frb + p * 4;
-                    const len = Math.hypot(storeF32[off + 0], storeF32[off + 1], storeF32[off + 2]);
-                    if (len > 0) {
-                        const inv = 1 / len;
-                        storeF32[off + 0] *= inv;
-                        storeF32[off + 1] *= inv;
-                        storeF32[off + 2] *= inv;
-                        storeF32[off + 3] *= inv;
-                    }
-                }
+                frustumf.writePlanesFromViewProjection(frustumPtr, this.cameraUniformStagingPtr);
                 const outPtr = frameArena.alloc(bounded.length * 4, 4) as WasmPtr;
                 const numVisible = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, bounded.length, frustumPtr);
                 const outBase = outPtr >>> 2;
@@ -1767,45 +1678,30 @@ export class Renderer {
             }
             if (bounded.length > 0) {
                 this.ensureCullingCapacity(bounded.length);
-                const centers = store.f32().subarray(this.cullCentersPtr >>> 2, (this.cullCentersPtr >>> 2) + bounded.length * 3);
-                const radii = store.f32().subarray(this.cullRadiiPtr >>> 2, (this.cullRadiiPtr >>> 2) + bounded.length);
+                const bcount = bounded.length;
+                const worldPtrsPtr = frameArena.alloc(bcount * 4, 4) as WasmPtr;
+                const localCentersPtr = frameArena.allocF32(bcount * 3) as WasmPtr;
+                const localRadiiPtr = frameArena.allocF32(bcount) as WasmPtr;
+                const worldPtrs = store.u32().subarray(worldPtrsPtr >>> 2, (worldPtrsPtr >>> 2) + bcount);
+                const localCenters = store.f32().subarray(localCentersPtr >>> 2, (localCentersPtr >>> 2) + bcount * 3);
+                const localRadii = store.f32().subarray(localRadiiPtr >>> 2, (localRadiiPtr >>> 2) + bcount);
                 for (let i = 0; i < bounded.length; i++) {
                     const field = bounded[i];
-                    const ptr = field.transform.worldMatrixPtr >>> 2;
                     const cx = field.boundsCenter[0];
                     const cy = field.boundsCenter[1];
                     const cz = field.boundsCenter[2];
-                    const tx = f32[ptr + 12];
-                    const ty = f32[ptr + 13];
-                    const tz = f32[ptr + 14];
-                    const wx = f32[ptr + 0] * cx + f32[ptr + 4] * cy + f32[ptr + 8] * cz + tx;
-                    const wy = f32[ptr + 1] * cx + f32[ptr + 5] * cy + f32[ptr + 9] * cz + ty;
-                    const wz = f32[ptr + 2] * cx + f32[ptr + 6] * cy + f32[ptr + 10] * cz + tz;
-                    centers[i * 3 + 0] = wx;
-                    centers[i * 3 + 1] = wy;
-                    centers[i * 3 + 2] = wz;
-                    const sx = Math.hypot(f32[ptr + 0], f32[ptr + 1], f32[ptr + 2]);
-                    const sy = Math.hypot(f32[ptr + 4], f32[ptr + 5], f32[ptr + 6]);
-                    const sz = Math.hypot(f32[ptr + 8], f32[ptr + 9], f32[ptr + 10]);
-                    const maxS = Math.max(sx, sy, sz);
-                    radii[i] = field.boundsRadius * maxS;
+                    const base = i * 3;
+                    worldPtrs[i] = field.transform.worldMatrixPtr >>> 0;
+                    localCenters[base + 0] = cx;
+                    localCenters[base + 1] = cy;
+                    localCenters[base + 2] = cz;
+                    localRadii[i] = field.boundsRadius;
                 }
-                const m = this.cameraUniformStagingView;
-                const p = frameArena.allocF32(6 * 4) as WasmPtr;
-                const pv = store.f32().subarray(p >>> 2, (p >>> 2) + 24);
-                pv.set([
-                    m[3] + m[0], m[7] + m[4], m[11] + m[8], m[15] + m[12],
-                    m[3] - m[0], m[7] - m[4], m[11] - m[8], m[15] - m[12],
-                    m[3] + m[1], m[7] + m[5], m[11] + m[9], m[15] + m[13],
-                    m[3] - m[1], m[7] - m[5], m[11] - m[9], m[15] - m[13],
-                    m[3] + m[2], m[7] + m[6], m[11] + m[10], m[15] + m[14],
-                    m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]
-                ]);
-                const planesPtr = p;
-                const centersPtr = this.cullCentersPtr;
-                const radiiPtr = this.cullRadiiPtr;
+                cullf.prepareWorldSpheresFromPtrs(this.cullCentersPtr, this.cullRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, bcount);
+                const planesPtr = frameArena.allocF32(24) as WasmPtr;
+                frustumf.writePlanesFromViewProjection(planesPtr, this.cameraUniformStagingPtr);
                 const outPtr = frameArena.alloc(bounded.length * 4, 4) as WasmPtr;
-                const numVisible = cullf.spheresFrustum(outPtr, centersPtr, radiiPtr, bounded.length, planesPtr);
+                const numVisible = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, bounded.length, planesPtr);
                 const u32 = store.u32();
                 const outBase = outPtr >>> 2;
                 for (let i = 0; i < numVisible; i++) visible.push(bounded[u32[outBase + i]]);
