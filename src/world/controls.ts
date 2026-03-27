@@ -706,7 +706,7 @@ export class NavigationControls {
         this.camera.transform.setPosition(position[0], position[1], position[2]);
         this.camera.lookAtWithUp(this.target, up);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
-        else this.relaxPerspectiveNearForCloseZoom();
+        else this.relaxPerspectiveClipForZoom();
     }
 
     private updateTrackball(dt: number): void {
@@ -731,7 +731,7 @@ export class NavigationControls {
         this.camera.transform.setPosition(position[0], position[1], position[2]);
         this.camera.lookAtWithUp(this.target, this._trackballUp);
         if (this.camera.type === "orthographic") this.applyOrthographicZoom();
-        else this.relaxPerspectiveNearForCloseZoom();
+        else this.relaxPerspectiveClipForZoom();
     }
 
     private emitChange(): void {
@@ -863,15 +863,18 @@ export class NavigationControls {
         camera.top = cy + height * 0.5;
     }
 
-    private relaxPerspectiveNearForCloseZoom(): void {
+    private relaxPerspectiveClipForZoom(): void {
         if (this.camera.type !== "perspective") return;
         const camera = this.camera as PerspectiveCamera;
         const minNear = 1e-4;
         const desiredNear = Math.max(minNear, this._radius * 0.02);
-        if (desiredNear >= camera.near) return;
-        const maxNear = Math.max(minNear, camera.far - 0.01);
-        const nextNear = clamp(desiredNear, minNear, maxNear);
-        if (nextNear < camera.near) camera.near = nextNear;
+        if (desiredNear < camera.near) {
+            const maxNear = Math.max(minNear, camera.far - 0.01);
+            const nextNear = clamp(desiredNear, minNear, maxNear);
+            if (nextNear < camera.near) camera.near = nextNear;
+        }
+        const desiredFar = Math.max(this._radius * 4, camera.near + 0.01);
+        if (desiredFar > camera.far) camera.far = desiredFar;
     }
 
     private offsetToSpherical(offset: readonly number[]): { theta: number; phi: number; } {
