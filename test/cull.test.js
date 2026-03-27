@@ -18,6 +18,7 @@ const approxArray = (a, b, tol = 1e-6) => {
     }
 };
 
+// 1) cullf.writePlanesFromViewProjection which extracts frustum planes from a view-projection matrix.
 {
     frameArena.reset();
 
@@ -31,6 +32,11 @@ const approxArray = (a, b, tol = 1e-6) => {
     const frustumPtr = frameArena.allocF32(24);
     frustumf.writePlanesFromViewProjection(frustumPtr, vp);
     const planes = wasm.f32view(frustumPtr, 24);
+    const frustumPtrDirect = frameArena.allocF32(24);
+    const vpPtr = frameArena.allocF32(16);
+    wasm.f32view(vpPtr, 16).set(vp);
+    cullf.writePlanesFromViewProjection(frustumPtrDirect, vpPtr);
+    const planesDirect = wasm.f32view(frustumPtrDirect, 24);
 
     // Expected planes (nx, ny, nz, d), inward facing, normalized.
     // left:   x >= -1  ->  ( 1, 0, 0, 1)
@@ -48,6 +54,7 @@ const approxArray = (a, b, tol = 1e-6) => {
         0, 0, -1, 1,
     ]);
     approxArray(Array.from(planes), Array.from(expectedPlanes), 1e-6);
+    approxArray(Array.from(planesDirect), Array.from(expectedPlanes), 1e-6);
 
     const count = 6;
     const centersPtr = frameArena.allocF32(count * 3);
@@ -85,4 +92,49 @@ const approxArray = (a, b, tol = 1e-6) => {
 
     assert.strictEqual(visibleCount, 3, "Expected 3 visible spheres");
     assert.deepStrictEqual(Array.from(out), [0, 4, 5], "Visible indices mismatch");
+}
+
+// 2) cullf.prepareWorldSpheresFromPtrs which transforms local spheres by world matrices.
+{
+    frameArena.reset();
+
+    const count = 2;
+    const worldPtrsPtr = frameArena.alloc(count * 4, 4);
+    const localCentersPtr = frameArena.allocF32(count * 3);
+    const localRadiiPtr = frameArena.allocF32(count);
+    const outCentersPtr = frameArena.allocF32(count * 3);
+    const outRadiiPtr = frameArena.allocF32(count);
+
+    const worldPtrs = wasm.u32view(worldPtrsPtr, count);
+    const localCenters = wasm.f32view(localCentersPtr, count * 3);
+    const localRadii = wasm.f32view(localRadiiPtr, count);
+
+    const m0Ptr = frameArena.allocF32(16);
+    const m1Ptr = frameArena.allocF32(16);
+    wasm.f32view(m0Ptr, 16).set([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+    wasm.f32view(m1Ptr, 16).set([
+        2, 0, 0, 0,
+        0, 2, 0, 0,
+        0, 0, 2, 0,
+        10, 0, 0, 1
+    ]);
+
+    worldPtrs[0] = m0Ptr >>> 0;
+    worldPtrs[1] = m1Ptr >>> 0;
+
+    localCenters.set([0, 0, 0, 1, 2, 3]);
+    localRadii.set([1, 1]);
+
+    cullf.prepareWorldSpheresFromPtrs(outCentersPtr, outRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, count);
+
+    const outCenters = wasm.f32view(outCentersPtr, count * 3);
+    const outRadii = wasm.f32view(outRadiiPtr, count);
+
+    approxArray(Array.from(outCenters), [0, 0, 0, 12, 4, 6], 1e-6);
+    approxArray(Array.from(outRadii), [1, 2], 1e-6);
 }
