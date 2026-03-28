@@ -8,17 +8,17 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::too_many_arguments)]
 
-mod shared;
-mod heap;
-mod frame_arena;
-mod utils;
-mod mat4;
-mod quat;
-mod vec3;
-mod transform;
-mod cull;
-mod mesh;
-mod anim;
-mod ndarray;
-mod bounds;
 mod accessors;
+mod anim;
+mod bounds;
+mod cull;
+mod frame_arena;
+mod heap;
+mod mat4;
+mod mesh;
+mod ndarray;
+mod quat;
+mod shared;
+mod transform;
+mod utils;
+mod vec3;
