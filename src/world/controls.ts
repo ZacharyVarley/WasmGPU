@@ -121,6 +121,7 @@ export type FitToBoundsOptions = {
 };
 
 const EPSILON = 1e-6;
+const ORBIT_POLE_EPS = 1e-3;
 const DEFAULT_TRANSITION_SECONDS = 0.35;
 const clamp = (x: number, min: number, max: number): number => Math.max(min, Math.min(max, x));
 const clamp01 = (x: number): number => clamp(x, 0, 1);
@@ -694,7 +695,10 @@ export class NavigationControls {
             this._thetaDelta = 0;
             this._phiDelta = 0;
         }
-        this._phi = clamp(this._phi, this.minPolarAngle, this.maxPolarAngle);
+        const minPhi = Math.max(this.minPolarAngle, ORBIT_POLE_EPS);
+        const maxPhi = Math.min(this.maxPolarAngle, Math.PI - ORBIT_POLE_EPS);
+        if (minPhi <= maxPhi) this._phi = clamp(this._phi, minPhi, maxPhi);
+        else this._phi = clamp(this._phi, this.minPolarAngle, this.maxPolarAngle);
         this._theta = clamp(this._theta, this.minAzimuthAngle, this.maxAzimuthAngle);
         this.applyDolly(damping, this.computeOrbitBasis());
         this.applyPan(damping);
@@ -916,10 +920,15 @@ export class NavigationControls {
     }
 
     private getOrbitUp(forward: readonly number[]): Vec3 {
-        const alignment = vec3dot(forward, this._axisConvention.up);
-        if (alignment < -0.999) return vec3scl(this._axisConvention.forward, -1);
-        if (alignment > 0.999) return vec3clone(this._axisConvention.forward);
-        return vec3clone(this._axisConvention.up);
+        const worldUp = this._axisConvention.up;
+        let upProj = vec3sub(worldUp, vec3scl(forward, vec3dot(worldUp, forward)));
+        let mag = vec3mag(upProj);
+        if (mag > EPSILON) return vec3scl(upProj, 1 / mag);
+        const forwardAxis = this._axisConvention.forward;
+        upProj = vec3sub(forwardAxis, vec3scl(forward, vec3dot(forwardAxis, forward)));
+        mag = vec3mag(upProj);
+        if (mag > EPSILON) return vec3scl(upProj, 1 / mag);
+        return vec3clone(this._axisConvention.right);
     }
 
     private getTrackballVector(clientX: number, clientY: number): Vec3 {
