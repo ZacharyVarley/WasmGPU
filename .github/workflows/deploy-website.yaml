@@ -9,6 +9,7 @@ on:
       - assets/**
       - scripts/build_website.py
       - mkdocs.yaml
+      - .github/workflows/deploy-website.yaml
 
 permissions:
   contents: read
