@@ -37,6 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install mkdocs
           pip install mkdocs-material
+          pip install mkdocs-panzoom-plugin
       -
         name: Build website
         run: python ./scripts/build_website.py
