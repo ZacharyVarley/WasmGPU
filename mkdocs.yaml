@@ -36,6 +36,10 @@ theme:
 
 plugins:
   - search
+  - panzoom:
+      hint_location: "top"
+      key: "ctrl"
+      full_screen: True
 
 extra:
   homepage: ../index.html
@@ -60,7 +64,11 @@ markdown_extensions:
     pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   -
     pymdownx.tabbed:
       alternate_style: true
