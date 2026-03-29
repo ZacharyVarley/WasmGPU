@@ -4,6 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+enable primitive_index;
+
 struct CameraUniforms {
     viewProj: mat4x4<f32>,
     position: vec3<f32>,

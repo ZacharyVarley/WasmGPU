@@ -253,6 +253,7 @@ export class Renderer {
         if (!adapter) throw new Error("Failed to get GPU adapter.");
         const requiredFeatures: GPUFeatureName[] = [];
         if (adapter.features.has("timestamp-query")) requiredFeatures.push("timestamp-query");
+        if (adapter.features.has("primitive-index")) requiredFeatures.push("primitive-index");
         const deviceDesc: GPUDeviceDescriptor = {};
         if (requiredFeatures.length > 0) deviceDesc.requiredFeatures = requiredFeatures;
         this.device = await adapter.requestDevice(deviceDesc);
