@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<!--
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+-->
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WasmGPU Fluid Example</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
+            canvas.main { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+            .hud { position: fixed; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 10px; width: 352px; z-index: 8; }
+            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; }
+        </style>
+    </head>
+    <body>
+        <canvas class="main"></canvas>
+        <div class="hud">
+            <div class="pane info"></div>
+            <div class="pane probe"></div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+        <script src="../dist/WasmGPU.iife.min.js"></script>
+        <script type="module">
+            // Define DOM elements
+            const canvas = document.querySelector("canvas.main");
+            const infoHud = document.querySelector(".info");
+            const probeHud = document.querySelector(".probe");
+
+            // Utilities for formatting, copying data, clamping values, calculating quaternions from vectors, and building glyph transforms
+            const fmt = (n, d = 3) => Number.isFinite(n) ? n.toFixed(d) : "nan";
+            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
+            const copyFloat32FromPy = (wgpu, proxy) => {
+                const handle = wgpu.python.sendNdarray(proxy);
+                const bytes = wgpu.python.bytes(handle).slice();
+                wgpu.python.free(handle);
+                proxy.destroy();
+                return new Float32Array(bytes.buffer);
+            };
+            const copyJsonFromPy = (proxy) => {
+                const text = String(proxy);
+                return JSON.parse(text);
+            };
+            const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+            const quaternionFromTo = (ax, ay, az, bx, by, bz) => {
+                const aLen = Math.hypot(ax, ay, az);
+                const bLen = Math.hypot(bx, by, bz);
+                if (aLen <= 1e-8 || bLen <= 1e-8) return [0, 0, 0, 1];
+                const ia = 1 / aLen;
+                const ib = 1 / bLen;
+                const x1 = ax * ia, y1 = ay * ia, z1 = az * ia;
+                const x2 = bx * ib, y2 = by * ib, z2 = bz * ib;
+                const dot = (x1 * x2) + (y1 * y2) + (z1 * z2);
+                if (dot < -0.999999) return [0, 1, 0, 0];
+                const cx = (y1 * z2) - (z1 * y2);
+                const cy = (z1 * x2) - (x1 * z2);
+                const cz = (x1 * y2) - (y1 * x2);
+                let qw = 1 + dot;
+                let qx = cx;
+                let qy = cy;
+                let qz = cz;
+                const qLen = Math.hypot(qx, qy, qz, qw);
+                if (qLen <= 1e-8) return [0, 0, 0, 1];
+                const inv = 1 / qLen;
+                return [qx * inv, qy * inv, qz * inv, qw * inv];
+            };
+            const buildGlyphTransforms = (attributes4, speedMax) => {
+                const count = attributes4.length / 4;
+                const rotations = new Float32Array(count * 4);
+                const scales = new Float32Array(count * 4);
+                const speedRef = Math.max(1e-5, speedMax);
+                for (let i = 0; i < count; i++) {
+                    const a = i * 4;
+                    const speed = attributes4[a + 0];
+                    const vx = attributes4[a + 1];
+                    const vy = attributes4[a + 2];
+                    const vz = attributes4[a + 3];
+                    const dirLen = Math.hypot(vx, vy, vz);
+                    const q = dirLen > 1e-6 ? quaternionFromTo(0, 0, 1, vx, vy, vz) : [0, 0, 0, 1];
+                    rotations[a + 0] = q[0];
+                    rotations[a + 1] = q[1];
+                    rotations[a + 2] = q[2];
+                    rotations[a + 3] = q[3];
+                    const t = clamp(speed / speedRef, 0, 1);
+                    scales[a + 0] = 0.022 + (0.012 * t);
+                    scales[a + 1] = 0.022 + (0.012 * t);
+                    scales[a + 2] = 0.14 + (0.20 * t);
+                    scales[a + 3] = 0;
+                }
+                return { rotations, scales };
+            };
+
+            // Python code to generate a 3D fluid flow field and tracer seed points, along with metadata about the field
+            const py = `
+            import json
+            import numpy as np
+            def generate_flow(nx=15, ny=15, nz=11, particle_count=12288, seed=7):
+                x_min, x_max = -2.4, 2.4
+                y_min, y_max = -2.4, 2.4
+                z_min, z_max = -1.8, 1.8
+                xs = np.linspace(x_min, x_max, nx, dtype=np.float32)
+                ys = np.linspace(y_min, y_max, ny, dtype=np.float32)
+                zs = np.linspace(z_min, z_max, nz, dtype=np.float32)
+                X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
+                pi = np.pi
+                sx = pi * (X / 2.4)
+                sy = pi * (Y / 2.4)
+                sz = pi * (Z / 1.8)
+                a = 1.00
+                b = 0.86
+                c = 0.74
+                vel_x = (a * np.sin(sz)) + (c * np.cos(sy))
+                vel_y = (b * np.sin(sx)) + (a * np.cos(sz))
+                vel_z = (c * np.sin(sy)) + (b * np.cos(sx))
+                speed = np.sqrt((vel_x ** 2.0) + (vel_y ** 2.0) + (vel_z ** 2.0))
+                count = nx * ny * nz
+                positions4 = np.empty((count, 4), dtype=np.float32)
+                attributes4 = np.empty((count, 4), dtype=np.float32)
+                positions4[:, 0] = X.reshape(-1)
+                positions4[:, 1] = Y.reshape(-1)
+                positions4[:, 2] = Z.reshape(-1)
+                positions4[:, 3] = 0.0
+                attributes4[:, 0] = speed.reshape(-1)
+                attributes4[:, 1] = vel_x.reshape(-1)
+                attributes4[:, 2] = vel_y.reshape(-1)
+                attributes4[:, 3] = vel_z.reshape(-1)
+                rng = np.random.default_rng(seed)
+                tracer_seeds4 = np.empty((particle_count, 4), dtype=np.float32)
+                tracer_seeds4[:, 0] = rng.uniform(x_min, x_max, size=particle_count)
+                tracer_seeds4[:, 1] = rng.uniform(y_min, y_max, size=particle_count)
+                tracer_seeds4[:, 2] = rng.uniform(z_min, z_max, size=particle_count)
+                tracer_seeds4[:, 3] = rng.uniform(0.0, 1.0, size=particle_count)
+                meta = {
+                    "nx": int(nx),
+                    "ny": int(ny),
+                    "nz": int(nz),
+                    "xMin": float(x_min),
+                    "xMax": float(x_max),
+                    "yMin": float(y_min),
+                    "yMax": float(y_max),
+                    "zMin": float(z_min),
+                    "zMax": float(z_max),
+                    "speedMin": float(np.nanmin(speed)),
+                    "speedMax": float(np.nanmax(speed)),
+                    "speedMean": float(np.nanmean(speed))
+                }
+                return {
+                    "positions4": positions4.reshape(-1),
+                    "attributes4": attributes4.reshape(-1),
+                    "tracerSeeds4": tracer_seeds4.reshape(-1),
+                    "meta_json": json.dumps(meta)
+                }
+            `;
+
+            // WasmGPU setup
+            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
+            const device = wgpu.gpu.device, queue = wgpu.gpu.queue;
+            const scene = wgpu.createScene([0.02, 0.03, 0.04]);
+            const perspective = wgpu.createCamera.perspective({ fov: 46, near: 0.05, far: 300 });
+            const orthographic = wgpu.createCamera.orthographic({ left: -10, right: 10, top: 10, bottom: -10, near: 0.05, far: 300 });
+            perspective.transform.setPosition(6.4, -7.8, 5.3);
+            perspective.lookAtWithUp([0, 0, 0], [0, 0, 1]);
+            orthographic.transform.copyFrom(perspective.transform);
+            const controls = wgpu.createControls.navigation(perspective, canvas, {
+                mode: "orbit",
+                axisConvention: "z-up-rh",
+                target: [0, 0, 0],
+                enableDamping: true,
+                dampingFactor: 0.1,
+                zoomOnCursor: true,
+                minDistance: 0.5,
+                maxDistance: 120
+            });
+            scene.addLight(wgpu.createLight.ambient({ color: [1, 1, 1], intensity: 1.0 }));
+
+            // Pyodide setup
+            const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/" });
+            await pyodide.loadPackage("numpy");
+            pyodide.runPython(py);
+
+            // Generate flow data
+            const flowProxy = pyodide.globals.get("generate_flow")(15, 15, 11, 12288, 7);
+            const positions4 = copyFloat32FromPy(wgpu, flowProxy.get("positions4"));
+            const attributes4 = copyFloat32FromPy(wgpu, flowProxy.get("attributes4"));
+            const tracerSeeds4 = copyFloat32FromPy(wgpu, flowProxy.get("tracerSeeds4"));
+            const flowMeta = copyJsonFromPy(flowProxy.get("meta_json"));
+            flowProxy.destroy();
+
+            // Build glyph transforms (rotations and scales) from the flow attributes
+            const { rotations, scales } = buildGlyphTransforms(attributes4, flowMeta.speedMax);
+            const dx = (flowMeta.xMax - flowMeta.xMin) / Math.max(1, flowMeta.nx - 1);
+            const dy = (flowMeta.yMax - flowMeta.yMin) / Math.max(1, flowMeta.ny - 1);
+            const dz = (flowMeta.zMax - flowMeta.zMin) / Math.max(1, flowMeta.nz - 1);
+
+            // Scale transform parameters for both the glyphs and tracers, based on the flow speed range
+            const initialScale = {
+                componentCount: 4,
+                componentIndex: 0,
+                valueMode: "component",
+                stride: 4,
+                offset: 0,
+                mode: "linear",
+                clampMode: "range",
+                domainMin: flowMeta.speedMin,
+                domainMax: flowMeta.speedMax,
+                clampMin: flowMeta.speedMin,
+                clampMax: flowMeta.speedMax,
+                gamma: 0.88,
+                invert: false
+            };
+
+            // Create a glyph field to visualize the flow vectors as arrows, colored by speed
+            const glyphField = wgpu.createGlyphField({
+                name: "flow-glyphs",
+                shape: "arrow",
+                positions: positions4,
+                rotations,
+                scales,
+                attributes: attributes4,
+                instanceCount: positions4.length / 4,
+                colorMode: "scalar",
+                colormap: "viridis",
+                scaleTransform: initialScale,
+                opacity: 0.98,
+                lit: true,
+                keepCPUData: true,
+                ndShape: [flowMeta.nx, flowMeta.ny, flowMeta.nz],
+                boundsMin: [flowMeta.xMin - 0.2, flowMeta.yMin - 0.2, flowMeta.zMin - 0.2],
+                boundsMax: [flowMeta.xMax + 0.2, flowMeta.yMax + 0.2, flowMeta.zMax + 0.2]
+            });
+            glyphField.upload(device, queue);
+            const glyphStats = await wgpu.scale.requestStats({
+                source: glyphField.getScaleSourceDescriptor(),
+                percentiles: { low: 2, high: 98, bins: 1024 }
+            });
+            const sharedScale = {
+                ...initialScale,
+                domainMin: glyphStats.min,
+                domainMax: glyphStats.max,
+                clampMin: glyphStats.percentileMin ?? glyphStats.min,
+                clampMax: glyphStats.percentileMax ?? glyphStats.max
+            };
+            glyphField.setScaleTransform(sharedScale);
+            scene.add(glyphField);
+
+            // Create compute resources for the tracer particles
+            const tracerHandle = wgpu.python.sendNdarray(tracerSeeds4, { dtype: "f32", shape: [tracerSeeds4.length / 4, 4], allocator: "heap" });
+            const seedBuffer = wgpu.compute.createStorageBuffer({
+                label: "fluid:tracer-seeds",
+                byteLength: tracerHandle.byteLength,
+                data: wgpu.python.bytes(tracerHandle)
+            });
+            wgpu.python.free(tracerHandle);
+            const particleBuffer = wgpu.compute.createStorageBuffer({
+                label: "fluid:tracer-points",
+                byteLength: tracerSeeds4.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX
+            });
+            const particleUniform = wgpu.compute.createUniformBuffer({
+                label: "fluid:params",
+                byteLength: 16,
+                copyDst: true
+            });
+
+            // WGSL code for a compute shader to advect tracer particles through the flow field
+            const wgsl = `
+                const PI: f32 = 3.141592653589793;
+                const X_MIN: f32 = ${flowMeta.xMin};
+                const X_MAX: f32 = ${flowMeta.xMax};
+                const Y_MIN: f32 = ${flowMeta.yMin};
+                const Y_MAX: f32 = ${flowMeta.yMax};
+                const Z_MIN: f32 = ${flowMeta.zMin};
+                const Z_MAX: f32 = ${flowMeta.zMax};
+                const X_SCALE: f32 = 2.4;
+                const Y_SCALE: f32 = 2.4;
+                const Z_SCALE: f32 = 1.8;
+                const A: f32 = 1.00;
+                const B: f32 = 0.86;
+                const C: f32 = 0.74;
+                struct Params {
+                    time: f32,
+                    particleScale: f32,
+                    _pad0: f32,
+                    _pad1: f32
+                }
+                @group(0) @binding(0) var<storage, read> seeds: array<vec4f>;
+                @group(0) @binding(1) var<storage, read_write> particles: array<vec4f>;
+                @group(0) @binding(2) var<uniform> params: Params;
+                fn wrapDomain(p: vec3f) -> vec3f {
+                    let xr = X_MAX - X_MIN;
+                    let yr = Y_MAX - Y_MIN;
+                    let zr = Z_MAX - Z_MIN;
+                    var out = p;
+                    out.x = ((out.x - X_MIN) - floor((out.x - X_MIN) / xr) * xr) + X_MIN;
+                    out.y = ((out.y - Y_MIN) - floor((out.y - Y_MIN) / yr) * yr) + Y_MIN;
+                    out.z = ((out.z - Z_MIN) - floor((out.z - Z_MIN) / zr) * zr) + Z_MIN;
+                    return out;
+                }
+                fn flowVelocity(p: vec3f, time: f32) -> vec3f {
+                    let sx = PI * ((p.x / X_SCALE) + (0.07 * sin(time * 0.17)));
+                    let sy = PI * ((p.y / Y_SCALE) - (0.06 * cos(time * 0.13)));
+                    let sz = PI * ((p.z / Z_SCALE) + (0.05 * sin(time * 0.11)));
+                    let u = (A * sin(sz + (0.25 * time))) + (C * cos(sy - (0.17 * time)));
+                    let v = (B * sin(sx - (0.21 * time))) + (A * cos(sz + (0.12 * time)));
+                    let w = (C * sin(sy + (0.19 * time))) + (B * cos(sx - (0.14 * time)));
+                    return vec3f(u, v, w);
+                }
+                @compute @workgroup_size(256)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let idx = gid.x;
+                    if (idx >= arrayLength(&seeds)) { return; }
+                    let seed = seeds[idx];
+                    let cycleTime = fract((params.time * 0.06) + seed.w) * 8.75;
+                    let steps: i32 = 14;
+                    let dt = cycleTime / f32(steps);
+                    var p = seed.xyz;
+                    var t = 0.0;
+                    for (var i: i32 = 0; i < steps; i = i + 1) {
+                        let v0 = flowVelocity(p, t);
+                        let mid = wrapDomain(p + (0.5 * dt * params.particleScale) * v0);
+                        let v1 = flowVelocity(mid, t + (0.5 * dt));
+                        p = wrapDomain(p + (dt * params.particleScale) * v1);
+                        t = t + dt;
+                    }
+                    let velocity = flowVelocity(p, cycleTime);
+                    let speed = length(velocity);
+                    particles[idx] = vec4f(p.x, p.y, p.z, speed);
+                }
+            `;
+            
+            // Create a compute pipeline for the tracer advection
+            const particlePipeline = wgpu.compute.createPipeline({
+                label: "fluid:tracers",
+                code: wgsl,
+                entryPoint: "main"
+            });
+            const particleBindGroup = particlePipeline.createBindGroup(0, {
+                0: seedBuffer,
+                1: particleBuffer,
+                2: particleUniform
+            }, "fluid:tracer-bg0");
+
+            // Create a point cloud to visualize the tracer particles, colored by speed using the same shared scale transform as the glyph field
+            const tracerCloud = wgpu.createPointCloud({
+                name: "flow-tracers",
+                pointsBuffer: particleBuffer,
+                pointCount: tracerSeeds4.length / 4,
+                boundsMin: [flowMeta.xMin, flowMeta.yMin, flowMeta.zMin],
+                boundsMax: [flowMeta.xMax, flowMeta.yMax, flowMeta.zMax],
+                basePointSize: 10.0,
+                minPointSize: 2.0,
+                maxPointSize: 12.0,
+                sizeAttenuation: 1.65,
+                softness: 0.36,
+                opacity: 0.96,
+                blendMode: "additive",
+                depthWrite: false,
+                scaleTransform: sharedScale,
+                colormap: "viridis"
+            });
+            scene.add(tracerCloud);
+
+            // Create overlay layers for a grid, axis triads, and a legend for the glyph speed coloring
+            const overlaySystem = wgpu.createOverlay.system({
+                controls,
+                camera: perspective,
+                scene,
+                zIndex: 6,
+                interactionThrottleMs: 30,
+                autoUpdate: true
+            });
+            overlaySystem.addLayer(wgpu.createOverlay.grid({
+                id: "fluid-grid",
+                plane: "xy",
+                origin: [0, 0, 0],
+                extentMode: "scene-fit",
+                targetMinorSpacingPx: 28,
+                majorStepFactor: 5,
+                maxLines: 180,
+                maxLabels: 48
+            })).addLayer(wgpu.createOverlay.axisTriad({
+                id: "fluid-world-triad",
+                anchor: { kind: "world", position: [0, 0, 0] },
+                lengthWorld: 0.8,
+                lineWidthPx: 2,
+                labels: ["X", "Y", "Z"]
+            })).addLayer(wgpu.createOverlay.axisTriad({
+                id: "fluid-screen-triad",
+                anchor: { kind: "screen", corner: "bottom-right", offsetPx: [-26, -26] },
+                sizePx: 52,
+                lineWidthPx: 2,
+                labels: ["x", "y", "z"]
+            })).addLayer(wgpu.createOverlay.legend({
+                id: "fluid-legend",
+                title: "Speed |u|",
+                source: glyphField,
+                anchor: { kind: "screen", corner: "top-right", offsetPx: [-14, 14] },
+                widthPx: 24,
+                heightPx: 220,
+                tickCount: 7,
+                strictParity: true,
+                formatValue: (value) => `${fmt(value, 3)}`
+            }));
+
+            // Create an annotation toolkit for picking and measuring within the flow field, with custom marker and label rendering options
+            const annotation = wgpu.createAnnotation.toolkit({
+                scene,
+                camera: perspective,
+                controls,
+                overlaySystem,
+                pointerTarget: canvas,
+                autoBindPointerEvents: false,
+                markerRenderer: { markerScale: 0.14, maxInstances: 256 },
+                labelLayer: {
+                    maxLabels: 128,
+                    readoutAnchor: { kind: "screen", corner: "bottom-left", offsetPx: [12, -12] },
+                    readoutWidthPx: 320
+                },
+                units: {
+                    worldUnitsPerUnit: 1,
+                    symbol: "m",
+                    decimals: 3,
+                    autoMetric: false,
+                    angleUnit: "deg",
+                    angleDecimals: 1
+                }
+            });
+
+            // Utilities for sampling the flow field data based on world positions and formatting annotation readouts for display in the HUD
+            const sampleIndexFromWorld = (x, y, z) => {
+                const ix = clamp(Math.round((x - flowMeta.xMin) / dx), 0, flowMeta.nx - 1);
+                const iy = clamp(Math.round((y - flowMeta.yMin) / dy), 0, flowMeta.ny - 1);
+                const iz = clamp(Math.round((z - flowMeta.zMin) / dz), 0, flowMeta.nz - 1);
+                return { ix, iy, iz, linear: iz + (flowMeta.nz * (iy + (flowMeta.ny * ix))) };
+            };
+            const readFieldRecord = (world) => {
+                const sample = sampleIndexFromWorld(world[0], world[1], world[2]);
+                const o = sample.linear * 4;
+                return {
+                    index: sample.linear,
+                    ndIndex: [sample.ix, sample.iy, sample.iz],
+                    position: [positions4[o + 0], positions4[o + 1], positions4[o + 2]],
+                    speed: attributes4[o + 0],
+                    velocity: [attributes4[o + 1], attributes4[o + 2], attributes4[o + 3]]
+                };
+            };
+
+            // State variables for the active camera, current view, hover and selection hits, tracer visibility, measure mode, and last user action for display in the HUD
+            let activeCamera = perspective;
+            let currentView = null;
+            let hoverHit = null;
+            let selectedHit = null;
+            let hoverPickToken = 0;
+            let tracerVisible = true;
+            let measureMode = false;
+            let lastAction = "hover or click to probe";
+
+            // More utilities for the HUD
+            const updateProjection = () => {
+                if (activeCamera.type === "perspective") activeCamera.updateAspect(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
+            };
+            const fitCurrent = (view = currentView, animate = true) => {
+                updateProjection();
+                if (view) controls.viewBounds(view, scene, { animate, duration: 0.45, padding: 1.15 });
+                else controls.fitScene(scene, { animate, duration: 0.7, padding: 1.1 });
+            };
+            const switchCamera = (nextCamera) => {
+                if (nextCamera === activeCamera) return;
+                nextCamera.transform.copyFrom(activeCamera.transform);
+                activeCamera = nextCamera;
+                controls.setCamera(activeCamera);
+                overlaySystem.setView(activeCamera, scene);
+                annotation.setView(activeCamera, scene);
+                fitCurrent(currentView, true);
+                controls.saveState();
+                updateHud();
+            };
+            const measureSummary = () => {
+                const records = annotation.getAnnotations();
+                const distances = records.filter((record) => record.kind === "distance");
+                if (distances.length === 0) return "measures: 0";
+                const last = distances[distances.length - 1];
+                return `measures: ${distances.length}\nlast distance: ${fmt(last.distanceWorld, 3)} m`;
+            };
+            const probeLinesForHit = (label, hit) => {
+                if (!hit) return [`${label}: miss`];
+                const field = readFieldRecord(hit.worldPosition);
+                return [
+                    `${label}: ${hit.kind}`,
+                    `world: ${fmtVec3(hit.worldPosition)}`,
+                    `grid world: ${fmtVec3(field.position)}`,
+                    `grid index: [${field.ndIndex[0]}, ${field.ndIndex[1]}, ${field.ndIndex[2]}]`,
+                    `speed: ${fmt(field.speed, 4)}`,
+                    `velocity: [${fmt(field.velocity[0], 4)}, ${fmt(field.velocity[1], 4)}, ${fmt(field.velocity[2], 4)}]`
+                ];
+            };
+            const updateHud = () => {
+                infoHud.textContent = [
+                    `controls: ${controls.mode}`,
+                    `camera: ${activeCamera.type}`,
+                    `view: ${currentView ?? "fit"}`,
+                    `tracers: ${tracerVisible ? "on" : "off"}`,
+                    `measure mode: ${measureMode ? "distance" : "probe"}`,
+                    `grid: ${flowMeta.nx} x ${flowMeta.ny} x ${flowMeta.nz}`,
+                    `speed mean/range: ${fmt(flowMeta.speedMean, 3)} / ${fmt(sharedScale.domainMin, 3)}..${fmt(sharedScale.domainMax, 3)}`,
+                    "",
+                    "1 orbit | 2 trackball",
+                    "W/S/A/D/Q/E views",
+                    "X fit | R reset | C camera",
+                    "M distance | P tracers | Delete clear",
+                    "",
+                    lastAction,
+                    measureSummary()
+                ].join("\n");
+                probeHud.textContent = [
+                    ...probeLinesForHit("hover", hoverHit),
+                    "",
+                    ...probeLinesForHit("selected", selectedHit)
+                ].join("\n");
+            };
+            annotation.onAnnotationsChange(() => updateHud());
+            window.addEventListener("keydown", (event) => {
+                const key = event.key.toLowerCase();
+                if (key === "1") controls.setMode("orbit");
+                else if (key === "2") controls.setMode("trackball");
+                else if (key === "w") { currentView = "front"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "s") { currentView = "back"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "a") { currentView = "left"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "d") { currentView = "right"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "q") { currentView = "top"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "x") { fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "r") { controls.reset(); lastAction = "reset to saved view"; }
+                else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); lastAction = `switched to ${activeCamera.type}`; }
+                else if (key === "m") {
+                    measureMode = !measureMode;
+                    annotation.cancel();
+                    annotation.setMode(measureMode ? "distance" : "idle");
+                    lastAction = measureMode ? "distance measure: click two picks" : "probe mode";
+                } else if (key === "p") {
+                    tracerVisible = !tracerVisible;
+                    tracerCloud.visible = tracerVisible;
+                    lastAction = tracerVisible ? "tracers enabled" : "tracers hidden";
+                } else if (event.key === "Delete") {
+                    annotation.clearAnnotations();
+                    annotation.cancel();
+                    lastAction = "cleared measurement annotations";
+                    event.preventDefault();
+                } else return;
+                overlaySystem.invalidate("camera");
+                updateHud();
+            });
+
+            // Pointer event handlers for picking within the flow field, with throttled hover picking to avoid excessive GPU queries and annotation picking for committing distance measures
+            const getRelativePointer = (event) => {
+                const rect = canvas.getBoundingClientRect();
+                return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+            };
+            canvas.addEventListener("pointermove", (event) => {
+                const { x, y } = getRelativePointer(event);
+                const token = ++hoverPickToken;
+                wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
+                    if (token !== hoverPickToken) return;
+                    hoverHit = hit;
+                    updateHud();
+                }).catch(() => {
+                    if (token !== hoverPickToken) return;
+                    hoverHit = null;
+                    updateHud();
+                });
+            });
+            canvas.addEventListener("pointerleave", () => {
+                hoverPickToken++;
+                hoverHit = null;
+                updateHud();
+            });
+            canvas.addEventListener("click", async (event) => {
+                const { x, y } = getRelativePointer(event);
+                if (measureMode) {
+                    const record = await annotation.pickAtAndCommit(x, y);
+                    if (record && record.kind === "distance") lastAction = `distance committed: ${fmt(record.distanceWorld, 3)} m`;
+                    else lastAction = `distance staging: ${annotation.pendingCount} anchors`;
+                    updateHud();
+                    return;
+                }
+                const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
+                selectedHit = hit;
+                lastAction = hit ? `selected ${hit.kind} sample` : "selection cleared";
+                updateHud();
+            });
+
+            // Handle window resize events to update the camera projection and refit the view if in an orthographic projection mode
+            window.addEventListener("resize", () => {
+                updateProjection();
+                if (activeCamera.type === "orthographic") {
+                    fitCurrent(currentView, false);
+                    controls.saveState();
+                }
+            });
+            updateProjection();
+
+            // Initialize
+            fitCurrent(currentView, false);
+            controls.saveState();
+            overlaySystem.setView(activeCamera, scene);
+            annotation.setView(activeCamera, scene);
+            overlaySystem.invalidate("camera");
+            updateHud();
+            const particleUniformData = new Float32Array(4);
+
+            // Render
+            wgpu.run((dt, time) => {
+                updateProjection();
+                controls.update(dt);
+                particleUniformData[0] = time;
+                particleUniformData[1] = 0.68;
+                particleUniform.write(particleUniformData);
+                wgpu.compute.dispatchBatch([{
+                    pipeline: particlePipeline,
+                    bindGroups: [particleBindGroup],
+                    workgroups: wgpu.compute.workgroups1D(tracerSeeds4.length / 4, 256)
+                }]);
+                wgpu.render(scene, activeCamera);
+                overlaySystem.update({ camera: activeCamera, scene });
+            });
+        </script>
+    </body>
+</html>

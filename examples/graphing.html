@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<!--
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+-->
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WasmGPU Graphing Example</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
+            canvas.main { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+            .bar { position: fixed; left: 10px; right: 10px; top: 10px; z-index: 8; }
+            .expr { width: min(620px, calc(100vw - 20px)); padding: 8px 10px; color: #d8e2ef; background: rgba(8, 14, 24, 0.92); border: 1px solid rgba(180, 210, 255, 0.26); outline: none; font: 12px/1.4 monospace; }
+            .hud { position: fixed; left: 10px; top: 56px; display: flex; flex-direction: column; gap: 10px; width: 352px; z-index: 7; }
+            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; }
+        </style>
+    </head>
+    <body>
+        <canvas class="main"></canvas>
+        <div class="bar">
+            <input class="expr" spellcheck="false">
+        </div>
+        <div class="hud">
+            <div class="pane status"></div>
+            <div class="pane probe"></div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+        <script src="../dist/WasmGPU.iife.min.js"></script>
+        <script type="module">
+            // Define DOM elements
+            const canvas = document.querySelector("canvas.main");
+            const exprInput = document.querySelector(".expr");
+            const statusHud = document.querySelector(".status");
+            const probeHud = document.querySelector(".probe");
+
+            // Utilities for formatting, clamping, and copying data
+            const fmt = (n, d = 4) => Number.isFinite(n) ? n.toFixed(d) : "nan";
+            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
+            const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+            const copyFloat32FromPy = (wgpu, proxy) => {
+                const handle = wgpu.python.sendNdarray(proxy);
+                const bytes = wgpu.python.bytes(handle).slice();
+                wgpu.python.free(handle);
+                proxy.destroy();
+                return new Float32Array(bytes.buffer);
+            };
+            const copyJsonFromPy = (proxy) => {
+                const text = String(proxy);
+                return JSON.parse(text);
+            };
+
+            // Python code to compile mathematical expressions into sampled data for plotting
+            const py = `
+            import json
+            import numpy as np
+            import sympy as sp
+            from sympy.printing.jscode import jscode
+            SYMS = {name: sp.Symbol(name, real=True) for name in ("x", "z", "t", "u", "v")}
+            LOCALS = { **SYMS, "pi": sp.pi, "E": sp.E, "sin": sp.sin, "cos": sp.cos, "tan": sp.tan, "asin": sp.asin, "acos": sp.acos, "atan": sp.atan, "atan2": sp.atan2, "sinh": sp.sinh, "cosh": sp.cosh, "tanh": sp.tanh, "exp": sp.exp, "sqrt": sp.sqrt, "log": sp.log, "abs": sp.Abs, "sign": sp.sign, "floor": sp.floor, "ceiling": sp.ceiling, "min": sp.Min, "max": sp.Max }
+            def _reshape_like(values, template):
+                arr = np.asarray(values, dtype=np.float64)
+                if arr.shape == ():
+                    arr = np.full(template.shape, float(arr), dtype=np.float64)
+                return arr
+            def _parse_parametric(expr):
+                parsed = sp.sympify(expr, locals=LOCALS)
+                if not isinstance(parsed, (tuple, list, sp.Tuple)):
+                    raise ValueError("parametric definitions must be tuples like (x(t), y(t), z(t))")
+                items = list(parsed)
+                if len(items) not in (2, 3):
+                    raise ValueError("parametric definitions must have 2 or 3 components")
+                if len(items) == 2:
+                    items.append(sp.Integer(0))
+                return items
+            def _finite_minmax(values):
+                finite = values[np.isfinite(values)]
+                if finite.size == 0:
+                    raise ValueError("expression produced no finite samples")
+                return float(np.min(finite)), float(np.max(finite))
+            def compile_plot(mode, expr, spec_json):
+                spec = json.loads(spec_json)
+                if mode == "cartesianCurve":
+                    parsed = sp.sympify(expr, locals=LOCALS)
+                    xs = np.linspace(spec["xMin"], spec["xMax"], int(spec["segments"]) + 1, dtype=np.float64)
+                    fn = sp.lambdify(SYMS["x"], parsed, modules="numpy")
+                    ys = _reshape_like(fn(xs), xs)
+                    positions = np.stack([xs, ys, np.zeros_like(xs)], axis=1)
+                    scalars = ys
+                    params = xs.reshape(-1, 1)
+                    js = { "f": jscode(parsed) }
+                    scalar_label = "y"
+                    param_labels = ["x"]
+                elif mode == "cartesianSurface":
+                    parsed = sp.sympify(expr, locals=LOCALS)
+                    xs = np.linspace(spec["xMin"], spec["xMax"], int(spec["xSegments"]) + 1, dtype=np.float64)
+                    zs = np.linspace(spec["zMin"], spec["zMax"], int(spec["zSegments"]) + 1, dtype=np.float64)
+                    X, Z = np.meshgrid(xs, zs, indexing="xy")
+                    fn = sp.lambdify((SYMS["x"], SYMS["z"]), parsed, modules="numpy")
+                    Y = _reshape_like(fn(X, Z), X)
+                    positions = np.stack([X, Y, Z], axis=-1).reshape(-1, 3)
+                    scalars = Y.reshape(-1)
+                    params = np.stack([X, Z], axis=-1).reshape(-1, 2)
+                    js = { "f": jscode(parsed) }
+                    scalar_label = "y"
+                    param_labels = ["x", "z"]
+                elif mode == "parametricCurve":
+                    items = _parse_parametric(expr)
+                    ts = np.linspace(spec["tMin"], spec["tMax"], int(spec["segments"]) + 1, dtype=np.float64)
+                    fn = sp.lambdify(SYMS["t"], items, modules="numpy")
+                    px, py, pz = fn(ts)
+                    px = _reshape_like(px, ts)
+                    py = _reshape_like(py, ts)
+                    pz = _reshape_like(pz, ts)
+                    positions = np.stack([px, py, pz], axis=1)
+                    if np.allclose(pz, 0.0):
+                        scalars = py
+                        scalar_label = "y"
+                    else:
+                        scalars = pz
+                        scalar_label = "z"
+                    params = ts.reshape(-1, 1)
+                    js = { "x": jscode(items[0]), "y": jscode(items[1]), "z": jscode(items[2]) }
+                    param_labels = ["t"]
+                elif mode == "parametricSurface":
+                    items = _parse_parametric(expr)
+                    us = np.linspace(spec["uMin"], spec["uMax"], int(spec["uSegments"]) + 1, dtype=np.float64)
+                    vs = np.linspace(spec["vMin"], spec["vMax"], int(spec["vSegments"]) + 1, dtype=np.float64)
+                    U, V = np.meshgrid(us, vs, indexing="xy")
+                    fn = sp.lambdify((SYMS["u"], SYMS["v"]), items, modules="numpy")
+                    px, py, pz = fn(U, V)
+                    px = _reshape_like(px, U)
+                    py = _reshape_like(py, U)
+                    pz = _reshape_like(pz, U)
+                    positions = np.stack([px, py, pz], axis=-1).reshape(-1, 3)
+                    scalars = pz.reshape(-1)
+                    params = np.stack([U, V], axis=-1).reshape(-1, 2)
+                    js = { "x": jscode(items[0]), "y": jscode(items[1]), "z": jscode(items[2]) }
+                    scalar_label = "z"
+                    param_labels = ["u", "v"]
+                else:
+                    raise ValueError(f"unsupported mode: {mode}")
+                scalar_min, scalar_max = _finite_minmax(np.asarray(scalars, dtype=np.float64))
+                meta = {
+                    "scalarLabel": scalar_label,
+                    "paramLabels": param_labels,
+                    "sampleCount": int(positions.shape[0]),
+                    "paramWidth": int(params.shape[1]),
+                    "scalarMin": scalar_min,
+                    "scalarMax": scalar_max
+                }
+                return {
+                    "positions": np.asarray(positions, dtype=np.float32).reshape(-1),
+                    "scalars": np.asarray(scalars, dtype=np.float32).reshape(-1),
+                    "params": np.asarray(params, dtype=np.float32).reshape(-1),
+                    "js_json": json.dumps(js),
+                    "meta_json": json.dumps(meta)
+                }
+            `;
+
+            // Define specifications and presets for different graphing modes
+            const modeSpecs = {
+                cartesianCurve: {
+                    key: "1",
+                    label: "cartesian curve",
+                    xMin: -6,
+                    xMax: 6,
+                    segments: 256,
+                    radius: 0.055,
+                    radialSegments: 12,
+                    plane: "xy"
+                },
+                cartesianSurface: {
+                    key: "2",
+                    label: "cartesian surface",
+                    xMin: -4.5,
+                    xMax: 4.5,
+                    zMin: -4.5,
+                    zMax: 4.5,
+                    xSegments: 72,
+                    zSegments: 72,
+                    plane: "xz"
+                },
+                parametricCurve: {
+                    key: "3",
+                    label: "parametric curve",
+                    tMin: 0,
+                    tMax: 12.566370614359172,
+                    segments: 320,
+                    radius: 0.05,
+                    radialSegments: 10
+                },
+                parametricSurface: {
+                    key: "4",
+                    label: "parametric surface",
+                    uMin: 0,
+                    uMax: 6.283185307179586,
+                    vMin: 0,
+                    vMax: 6.283185307179586,
+                    uSegments: 88,
+                    vSegments: 44
+                }
+            };
+            const modePresets = {
+                cartesianCurve: "sin(x) * exp(-(x**2) / 18)",
+                cartesianSurface: "sin(sqrt(x**2 + z**2) * 1.8) / (1 + 0.18 * (x**2 + z**2))",
+                parametricCurve: "(cos(t), sin(t), 0.35 * sin(3*t))",
+                parametricSurface: "((1 + 0.3*cos(v)) * cos(u), 0.45 * sin(v), (1 + 0.3*cos(v)) * sin(u))"
+            };
+
+            // WasmGPU setup
+            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
+            const device = wgpu.gpu.device, queue = wgpu.gpu.queue;
+            const scene = wgpu.createScene([0.02, 0.03, 0.04]);
+            const perspective = wgpu.createCamera.perspective({ fov: 50, near: 0.05, far: 500 });
+            const orthographic = wgpu.createCamera.orthographic({ left: -10, right: 10, top: 10, bottom: -10, near: 0.05, far: 500 });
+            perspective.transform.setPosition(7.5, 4.75, 7.5);
+            perspective.lookAt(0, 0, 0);
+            orthographic.transform.copyFrom(perspective.transform);
+            const controls = wgpu.createControls.navigation(perspective, canvas, {
+                mode: "orbit",
+                target: [0, 0, 0],
+                enableDamping: true,
+                dampingFactor: 0.1,
+                zoomOnCursor: true,
+                minDistance: 0.6,
+                maxDistance: 250
+            });
+            scene.addLight(wgpu.createLight.ambient({ color: [1, 1, 1], intensity: 0.26 }));
+            scene.addLight(wgpu.createLight.directional({ direction: [0.5, -1.0, -0.4], color: [1, 1, 1], intensity: 1.35 }));
+
+            // Create overlay layers for a grid, axis triads, and a legend
+            const overlaySystem = wgpu.createOverlay.system({
+                controls,
+                camera: perspective,
+                scene,
+                zIndex: 6,
+                interactionThrottleMs: 30,
+                autoUpdate: true
+            });
+            overlaySystem.addLayer(wgpu.createOverlay.grid({
+                id: "graph-grid",
+                plane: "xz",
+                origin: [0, 0, 0],
+                extentMode: "scene-fit",
+                targetMinorSpacingPx: 26,
+                majorStepFactor: 5,
+                maxLines: 160,
+                maxLabels: 42
+            })).addLayer(wgpu.createOverlay.axisTriad({
+                id: "graph-world-triad",
+                anchor: { kind: "world", position: [0, 0, 0] },
+                lengthWorld: 1.1,
+                lineWidthPx: 2,
+                labels: ["X", "Y", "Z"]
+            })).addLayer(wgpu.createOverlay.axisTriad({
+                id: "graph-screen-triad",
+                anchor: { kind: "screen", corner: "bottom-right", offsetPx: [-26, -26] },
+                sizePx: 52,
+                lineWidthPx: 2,
+                labels: ["x", "y", "z"]
+            })).addLayer(wgpu.createOverlay.legend({
+                id: "graph-legend",
+                title: "Mapped Value",
+                source: {
+                    scaleTransform: { mode: "linear", domainMin: 0, domainMax: 1 },
+                    colormap: "plasma"
+                },
+                anchor: { kind: "screen", corner: "top-right", offsetPx: [-14, 14] },
+                widthPx: 24,
+                heightPx: 220,
+                tickCount: 7,
+                strictParity: true,
+                formatValue: (value) => fmt(value, 4)
+            }));
+
+            // Pyodide setup
+            const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/" });
+            await pyodide.loadPackage(["numpy", "sympy"]);
+            pyodide.runPython(py);
+
+            // State variables for the active camera, current view, active mesh and plot data, and the probe for inspecting sampled values
+            let activeMode = "cartesianSurface";
+            let activeCamera = perspective;
+            let currentView = null;
+            let lastMessage = "pyodide + sympy ready";
+            let activeMesh = null;
+            let activePlot = null;
+            let activeProbe = null;
+            let applyToken = 0;
+
+            // Utility for compiling JavaScript functions for evaluating the mathematical expressions at runtime
+            const compileCallbacks = (mode, jsExprs) => {
+                if (mode === "cartesianCurve") return new Function("x", `"use strict"; return ${jsExprs.f};`);
+                if (mode === "cartesianSurface") return new Function("x", "z", `"use strict"; return ${jsExprs.f};`);
+                if (mode === "parametricCurve") return new Function("t", `"use strict"; return [${jsExprs.x}, ${jsExprs.y}, ${jsExprs.z}];`);
+                return new Function("u", "v", `"use strict"; return [${jsExprs.x}, ${jsExprs.y}, ${jsExprs.z}];`);
+            };
+
+            // Utility for building an array of scalar values for each vertex of a mesh
+            const buildCurveData = (positions, scalars, radialSegments) => {
+                const ring = radialSegments + 1;
+                const packed = [];
+                for (let i = 0; i < scalars.length; i++) {
+                    const o = i * 3;
+                    const scalar = scalars[i];
+                    if (!Number.isFinite(positions[o + 0]) || !Number.isFinite(positions[o + 1]) || !Number.isFinite(positions[o + 2]) || !Number.isFinite(scalar)) continue;
+                    for (let j = 0; j < ring; j++) packed.push(scalar);
+                }
+                return new Float32Array(packed);
+            };
+
+            // Utility for reading the compiled plot data from Python, copying it into JavaScript arrays, and returning it in a structured format
+            const readPlotFromPython = (mode, expr) => {
+                const result = pyodide.globals.get("compile_plot")(mode, expr, JSON.stringify(modeSpecs[mode]));
+                const plot = {
+                    meta: copyJsonFromPy(result.get("meta_json")),
+                    jsExprs: copyJsonFromPy(result.get("js_json")),
+                    positions: copyFloat32FromPy(wgpu, result.get("positions")),
+                    scalars: copyFloat32FromPy(wgpu, result.get("scalars")),
+                    params: copyFloat32FromPy(wgpu, result.get("params"))
+                };
+                result.destroy();
+                return plot;
+            };
+
+            // Utility for creating a WasmGPU mesh for a given graphing mode and mathematical expression
+            const createMeshForMode = async (mode, expr) => {
+                const plot = readPlotFromPython(mode, expr);
+                const spec = modeSpecs[mode];
+                const callback = compileCallbacks(mode, plot.jsExprs);
+                let geometry;
+                let materialData;
+                if (mode === "cartesianCurve") {
+                    geometry = wgpu.geometry.cartesianCurve({
+                        f: callback,
+                        xMin: spec.xMin,
+                        xMax: spec.xMax,
+                        segments: spec.segments,
+                        radius: spec.radius,
+                        radialSegments: spec.radialSegments,
+                        plane: spec.plane,
+                        breakOnInvalid: true
+                    });
+                    materialData = buildCurveData(plot.positions, plot.scalars, spec.radialSegments);
+                } else if (mode === "cartesianSurface") {
+                    geometry = wgpu.geometry.cartesianSurface({
+                        f: callback,
+                        xMin: spec.xMin,
+                        xMax: spec.xMax,
+                        zMin: spec.zMin,
+                        zMax: spec.zMax,
+                        xSegments: spec.xSegments,
+                        zSegments: spec.zSegments,
+                        plane: spec.plane,
+                        skipInvalid: true
+                    });
+                    materialData = plot.scalars;
+                } else if (mode === "parametricCurve") {
+                    geometry = wgpu.geometry.parametricCurve({
+                        f: callback,
+                        tMin: spec.tMin,
+                        tMax: spec.tMax,
+                        segments: spec.segments,
+                        radius: spec.radius,
+                        radialSegments: spec.radialSegments,
+                        breakOnInvalid: true
+                    });
+                    materialData = buildCurveData(plot.positions, plot.scalars, spec.radialSegments);
+                } else {
+                    geometry = wgpu.geometry.parametricSurface({
+                        f: callback,
+                        uMin: spec.uMin,
+                        uMax: spec.uMax,
+                        vMin: spec.vMin,
+                        vMax: spec.vMax,
+                        uSegments: spec.uSegments,
+                        vSegments: spec.vSegments,
+                        skipInvalid: true
+                    });
+                    materialData = plot.scalars;
+                }
+                const material = wgpu.material.data({
+                    data: materialData,
+                    keepCPUData: false,
+                    scaleTransform: {
+                        componentCount: 1,
+                        componentIndex: 0,
+                        valueMode: "component",
+                        stride: 1,
+                        offset: 0,
+                        mode: "linear",
+                        clampMode: "range",
+                        domainMin: plot.meta.scalarMin,
+                        domainMax: plot.meta.scalarMax,
+                        clampMin: plot.meta.scalarMin,
+                        clampMax: plot.meta.scalarMax,
+                        gamma: mode.includes("Surface") ? 1.0 : 0.9
+                    },
+                    colormap: mode.includes("Surface") ? "viridis" : "plasma",
+                    shading: mode.includes("Surface") ? 0.8 : 0.35,
+                    opacity: 1.0
+                });
+                material.upload(device, queue);
+                const stats = await wgpu.scale.requestStats({
+                    source: material.getScaleSourceDescriptor(),
+                    percentiles: { low: 2, high: 98, bins: 1024 }
+                });
+                material.setScaleTransform({
+                    ...material.scaleTransform,
+                    domainMin: stats.min,
+                    domainMax: stats.max,
+                    clampMin: stats.percentileMin ?? stats.min,
+                    clampMax: stats.percentileMax ?? stats.max
+                });
+                const mesh = wgpu.createMesh(geometry, material);
+                mesh.name = `graph-${mode}`;
+                return { mesh, plot };
+            };
+
+            // Utility for finding the nearest sampled point in the active plot to a given world position
+            const nearestSample = (worldPosition) => {
+                if (!activePlot) return null;
+                const positions = activePlot.positions;
+                const scalars = activePlot.scalars;
+                const params = activePlot.params;
+                const paramWidth = activePlot.meta.paramWidth;
+                let bestIndex = -1;
+                let bestDistSq = Infinity;
+                for (let i = 0; i < scalars.length; i++) {
+                    const p = i * 3;
+                    const x = positions[p + 0];
+                    const y = positions[p + 1];
+                    const z = positions[p + 2];
+                    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+                    const dx = x - worldPosition[0];
+                    const dy = y - worldPosition[1];
+                    const dz = z - worldPosition[2];
+                    const d2 = (dx * dx) + (dy * dy) + (dz * dz);
+                    if (d2 < bestDistSq) {
+                        bestDistSq = d2;
+                        bestIndex = i;
+                    }
+                }
+                if (bestIndex < 0) return null;
+                const o3 = bestIndex * 3;
+                const oP = bestIndex * paramWidth;
+                return {
+                    sampleIndex: bestIndex,
+                    position: [positions[o3 + 0], positions[o3 + 1], positions[o3 + 2]],
+                    scalar: scalars[bestIndex],
+                    params: Array.from(params.slice(oP, oP + paramWidth))
+                };
+            };
+
+            // More utilities for the HUD
+            const updateProjection = () => {
+                if (activeCamera.type === "perspective") activeCamera.updateAspect(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
+            };
+            const fitCurrent = (view = currentView, animate = true) => {
+                updateProjection();
+                if (view) controls.viewBounds(view, scene, { animate, duration: 0.45, padding: 1.2 });
+                else controls.fitScene(scene, { animate, duration: 0.6, padding: 1.12 });
+            };
+            const switchCamera = (nextCamera) => {
+                if (nextCamera === activeCamera) return;
+                nextCamera.transform.copyFrom(activeCamera.transform);
+                activeCamera = nextCamera;
+                controls.setCamera(activeCamera);
+                overlaySystem.setView(activeCamera, scene);
+                fitCurrent(currentView, true);
+                controls.saveState();
+                updateHud();
+            };
+            const updateHud = () => {
+                statusHud.textContent = [
+                    `mode: ${modeSpecs[activeMode].label}`,
+                    `controls: ${controls.mode}`,
+                    `camera: ${activeCamera.type}`,
+                    `view: ${currentView ?? "fit"}`,
+                    `samples: ${activePlot?.meta.sampleCount ?? 0}`,
+                    activePlot ? `${activePlot.meta.scalarLabel} range: ${fmt(activePlot.meta.scalarMin)}..${fmt(activePlot.meta.scalarMax)}` : "range: n/a",
+                    "",
+                    "1 cartesian curve",
+                    "2 cartesian surface",
+                    "3 parametric curve",
+                    "4 parametric surface",
+                    "Enter replot current textbox",
+                    "O orbit | T trackball",
+                    "W/S/A/D/Q/E views",
+                    "X fit | R reset | C camera",
+                    "",
+                    lastMessage
+                ].join("\n");
+
+                if (!activeProbe) {
+                    probeHud.textContent = [
+                        "Probe",
+                        "click a plotted object to inspect the nearest sampled value"
+                    ].join("\n");
+                    return;
+                }
+                const sample = nearestSample(activeProbe.worldPosition);
+                if (!sample) {
+                    probeHud.textContent = "Probe\nno finite sampled point was found";
+                    return;
+                }
+                const paramLines = activePlot.meta.paramLabels.map((label, index) => `${label}: ${fmt(sample.params[index])}`);
+                probeHud.textContent = [
+                    "Probe",
+                    `world: ${fmtVec3(activeProbe.worldPosition)}`,
+                    `nearest sample: ${fmtVec3(sample.position)}`,
+                    `sample index: ${sample.sampleIndex}`,
+                    `${activePlot.meta.scalarLabel}: ${fmt(sample.scalar)}`,
+                    ...paramLines
+                ].join("\n");
+            };
+
+            // Utility for replacing the active plot with a newly compiled one based on a given mathematical expression
+            const replacePlot = async (mode, expr) => {
+                const token = ++applyToken;
+                lastMessage = `compiling ${modeSpecs[mode].label}...`;
+                updateHud();
+                try {
+                    const built = await createMeshForMode(mode, expr);
+                    if (token !== applyToken) {
+                        built.mesh.destroy();
+                        return;
+                    }
+                    if (activeMesh) {
+                        scene.remove(activeMesh);
+                        activeMesh.destroy();
+                    }
+                    activeMesh = built.mesh;
+                    activePlot = built.plot;
+                    activeProbe = null;
+                    scene.add(activeMesh);
+                    legendLayer.setSource(activeMesh.material);
+                    overlaySystem.setView(activeCamera, scene);
+                    fitCurrent(null, false);
+                    controls.saveState();
+                    lastMessage = `rendering ${modeSpecs[mode].label}`;
+                } catch (error) {
+                    lastMessage = `plot failed: ${error?.message ?? "unknown error"}`;
+                }
+                updateHud();
+            };
+
+            // Utility for setting the active graphing mode
+            const setMode = async (mode, usePreset = true) => {
+                activeMode = mode;
+                if (usePreset || !exprInput.value.trim()) exprInput.value = modePresets[mode];
+                await replacePlot(mode, exprInput.value.trim());
+            };
+
+            // Event listeners for the expression input, canvas clicks for probing, and keyboard shortcuts for changing modes, views, and cameras
+            exprInput.value = modePresets[activeMode];
+            exprInput.addEventListener("keydown", async (event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                await replacePlot(activeMode, exprInput.value.trim());
+            });
+            canvas.addEventListener("click", async (event) => {
+                if (!activeMesh) return;
+                const rect = canvas.getBoundingClientRect();
+                const hit = await wgpu.pick(scene, activeCamera, event.clientX - rect.left, event.clientY - rect.top, { includeAttributes: true });
+                activeProbe = hit && hit.kind === "mesh" ? hit : null;
+                lastMessage = activeProbe ? "probe updated from nearest sampled point" : "probe cleared";
+                updateHud();
+            });
+            window.addEventListener("keydown", async (event) => {
+                const targetTag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
+                if (targetTag === "input" && event.key !== "Escape") return;
+                const key = event.key.toLowerCase();
+                if (key === "1") await setMode("cartesianCurve", true);
+                else if (key === "2") await setMode("cartesianSurface", true);
+                else if (key === "3") await setMode("parametricCurve", true);
+                else if (key === "4") await setMode("parametricSurface", true);
+                else if (key === "o") controls.setMode("orbit");
+                else if (key === "t") controls.setMode("trackball");
+                else if (key === "w") { currentView = "front"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "s") { currentView = "back"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "a") { currentView = "left"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "d") { currentView = "right"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "q") { currentView = "top"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "x") { fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "r") { controls.reset(); lastMessage = "reset to saved view"; }
+                else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); lastMessage = `switched to ${activeCamera.type}`; }
+                else if (event.key === "Escape") exprInput.blur();
+                else return;
+                overlaySystem.invalidate("camera");
+                updateHud();
+            });
+
+            // Handle window resizing by updating the camera projection and refitting the view if in orthographic mode
+            const handleResize = () => {
+                updateProjection();
+                if (activeCamera.type === "orthographic") {
+                    fitCurrent(currentView, false);
+                    controls.saveState();
+                }
+            };
+
+            // Intiailize
+            window.addEventListener("resize", handleResize);
+            updateProjection();
+            await setMode(activeMode, false);
+            overlaySystem.setView(activeCamera, scene);
+            overlaySystem.invalidate("camera");
+            updateHud();
+
+            // Render
+            wgpu.run((dt) => {
+                updateProjection();
+                controls.update(dt);
+                wgpu.render(scene, activeCamera);
+                overlaySystem.update({ camera: activeCamera, scene });
+            });
+        </script>
+    </body>
+</html>

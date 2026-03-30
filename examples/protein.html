@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<!--
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+-->
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WasmGPU Protein Example</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
+            canvas.main { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+            .hud { position: fixed; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 10px; width: 352px; z-index: 8; }
+            .pane { padding: 10px; background: rgba(5, 10, 18, 0.78); border: 1px solid rgba(180, 210, 255, 0.2); white-space: pre-line; min-height: 120px; }
+        </style>
+    </head>
+    <body>
+        <canvas class="main"></canvas>
+        <div class="hud">
+            <div class="pane info"></div>
+            <div class="pane probe"></div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+        <script src="../dist/WasmGPU.iife.min.js"></script>
+        <script type="module">
+            // Define DOM elements
+            const canvas = document.querySelector("canvas.main");
+            const infoHud = document.querySelector(".info");
+            const probeHud = document.querySelector(".probe");
+
+            // Utilities for formatting, clamping, and copying data
+            const fmt = (n, d = 3) => Number.isFinite(n) ? n.toFixed(d) : "nan";
+            const fmtVec3 = (v) => `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
+            const copyFloat32FromPy = (wgpu, proxy) => {
+                const handle = wgpu.python.sendNdarray(proxy);
+                const bytes = wgpu.python.bytes(handle).slice();
+                wgpu.python.free(handle);
+                proxy.destroy();
+                return new Float32Array(bytes.buffer);
+            };
+            const copyJsonFromPy = (proxy) => {
+                const text = String(proxy);
+                return JSON.parse(text);
+            };
+
+            // A fallback PDB structure in case the remote fetch fails, so the program can still demonstrate its features without network access or if the RCSB server is down.
+            // This is a toy structure and not meant to represent a real protein.
+            const FALLBACK_PDB = `HEADER    TOY PROTEIN FALLBACK
+            ATOM      1  N   GLY A   1      -5.400  -1.000   0.200  1.00 18.00           N
+            ATOM      2  CA  GLY A   1      -4.300  -0.300   0.800  1.00 16.00           C
+            ATOM      3  C   GLY A   1      -3.100  -1.100   1.100  1.00 15.00           C
+            ATOM      4  O   GLY A   1      -2.950  -2.250   0.700  1.00 15.00           O
+            ATOM      5  N   SER A   2      -2.200  -0.450   1.900  1.00 15.00           N
+            ATOM      6  CA  SER A   2      -1.020  -1.050   2.450  1.00 14.00           C
+            ATOM      7  C   SER A   2       0.050  -0.050   2.850  1.00 14.00           C
+            ATOM      8  O   SER A   2       0.050   1.100   2.450  1.00 14.00           O
+            ATOM      9  CB  SER A   2      -1.350  -1.950   3.640  1.00 15.00           C
+            ATOM     10  OG  SER A   2      -0.260  -2.750   4.050  1.00 15.00           O
+            ATOM     11  N   TYR A   3       1.000  -0.520   3.650  1.00 14.00           N
+            ATOM     12  CA  TYR A   3       2.090   0.300   4.170  1.00 13.00           C
+            ATOM     13  C   TYR A   3       1.590   1.490   5.000  1.00 13.00           C
+            ATOM     14  O   TYR A   3       0.740   2.260   4.580  1.00 13.00           O
+            ATOM     15  CB  TYR A   3       3.220  -0.540   4.820  1.00 14.00           C
+            ATOM     16  N   CYS A   4       2.180   1.650   6.190  1.00 13.00           N
+            ATOM     17  CA  CYS A   4       1.850   2.740   7.110  1.00 13.00           C
+            ATOM     18  C   CYS A   4       2.550   4.020   6.600  1.00 14.00           C
+            ATOM     19  O   CYS A   4       3.730   4.060   6.230  1.00 14.00           O
+            ATOM     20  CB  CYS A   4       2.260   2.330   8.530  1.00 14.00           C
+            ATOM     21  SG  CYS A   4       1.040   1.020   9.160  1.00 16.00           S
+            TER
+            ATOM     22  N   PHE B   1       4.600  -0.450  -0.850  1.00 18.00           N
+            ATOM     23  CA  PHE B   1       3.420   0.050  -1.520  1.00 16.00           C
+            ATOM     24  C   PHE B   1       2.560  -1.060  -2.140  1.00 15.00           C
+            ATOM     25  O   PHE B   1       2.900  -2.240  -2.060  1.00 15.00           O
+            ATOM     26  CB  PHE B   1       3.820   1.050  -2.610  1.00 16.00           C
+            ATOM     27  N   VAL B   2       1.430  -0.650  -2.760  1.00 15.00           N
+            ATOM     28  CA  VAL B   2       0.460  -1.560  -3.350  1.00 14.00           C
+            ATOM     29  C   VAL B   2      -0.280  -0.930  -4.540  1.00 14.00           C
+            ATOM     30  O   VAL B   2      -0.280   0.280  -4.760  1.00 14.00           O
+            ATOM     31  CB  VAL B   2      -0.520  -1.850  -2.180  1.00 15.00           C
+            ATOM     32  N   ASN B   3      -0.980  -1.790  -5.320  1.00 14.00           N
+            ATOM     33  CA  ASN B   3      -1.780  -1.340  -6.450  1.00 13.00           C
+            ATOM     34  C   ASN B   3      -3.080  -0.720  -5.940  1.00 13.00           C
+            ATOM     35  O   ASN B   3      -3.640  -1.090  -4.900  1.00 13.00           O
+            ATOM     36  CB  ASN B   3      -2.050  -2.520  -7.390  1.00 14.00           C
+            ATOM     37  N   GLN B   4      -3.570   0.260  -6.700  1.00 13.00           N
+            ATOM     38  CA  GLN B   4      -4.790   0.950  -6.300  1.00 13.00           C
+            ATOM     39  C   GLN B   4      -4.520   2.090  -5.320  1.00 13.00           C
+            ATOM     40  O   GLN B   4      -3.560   2.850  -5.460  1.00 13.00           O
+            ATOM     41  CB  GLN B   4      -5.620   1.470  -7.490  1.00 14.00           C
+            END`;
+
+            // Python code to parse PDB structure text using Biopython, extract atom coordinates and metadata, and compute summary information
+            const py = `
+            import io
+            import json
+            import numpy as np
+            from Bio.PDB import PDBParser
+            def parse_structure_text(pdb_text):
+                parser = PDBParser(QUIET=True)
+                structure = parser.get_structure("protein", io.StringIO(pdb_text))
+                coords = []
+                meta = []
+                residues = set()
+                chains = set()
+                for model in structure:
+                    for chain in model:
+                        chain_id = (chain.id or "?").strip() or "?"
+                        chains.add(chain_id)
+                        for residue in chain:
+                            residue_name = residue.get_resname().strip()
+                            residue_kind = str(residue.id[0]).strip()
+                            if residue_name in {"HOH", "WAT"}:
+                                continue
+                            residue_key = (chain_id, residue_kind, residue_name, int(residue.id[1]), str(residue.id[2]).strip())
+                            residues.add(residue_key)
+                            residue_number = int(residue.id[1])
+                            insertion_code = str(residue.id[2]).strip()
+                            for atom in residue.get_atoms():
+                                element = (getattr(atom, "element", "") or atom.get_name()[0]).strip().upper() or "X"
+                                if element == "H":
+                                    continue
+                                xyz = np.asarray(atom.coord, dtype=np.float32)
+                                coords.append(xyz)
+                                meta.append({
+                                    "atom": atom.get_name().strip(),
+                                    "element": element,
+                                    "residue": residue_name,
+                                    "residueNumber": residue_number,
+                                    "insertionCode": insertion_code,
+                                    "chain": chain_id
+                                })
+                    break
+                if not coords:
+                    raise ValueError("no protein atoms were parsed")
+                coords = np.asarray(coords, dtype=np.float32)
+                coords = coords - np.mean(coords, axis=0, keepdims=True)
+                mins = np.min(coords, axis=0)
+                maxs = np.max(coords, axis=0)
+                summary = {
+                    "atomCount": int(coords.shape[0]),
+                    "residueCount": int(len(residues)),
+                    "chains": sorted(chains),
+                    "boundsMin": [float(mins[0]), float(mins[1]), float(mins[2])],
+                    "boundsMax": [float(maxs[0]), float(maxs[1]), float(maxs[2])]
+                }
+                return {
+                    "coords": coords.reshape(-1),
+                    "meta_json": json.dumps(meta),
+                    "summary_json": json.dumps(summary)
+                }
+            `;
+
+            // Color palettes, atomic radii, and utilities for setting up categorical color mappings, computing rendered atom sizes, and grouping atoms by element for efficient rendering
+            const BASE_CATEGORICAL = [
+                [0.96, 0.46, 0.34, 1.0],
+                [0.33, 0.68, 0.95, 1.0],
+                [0.42, 0.83, 0.54, 1.0],
+                [0.94, 0.82, 0.33, 1.0],
+                [0.75, 0.55, 0.96, 1.0],
+                [0.28, 0.86, 0.82, 1.0],
+                [0.96, 0.60, 0.74, 1.0],
+                [0.88, 0.88, 0.94, 1.0]
+            ];
+            const ELEMENT_PALETTE = {
+                C: [0.80, 0.82, 0.86, 1.0],
+                N: [0.30, 0.54, 0.95, 1.0],
+                O: [0.94, 0.34, 0.36, 1.0],
+                S: [0.97, 0.84, 0.29, 1.0],
+                P: [0.97, 0.60, 0.24, 1.0],
+                FE: [0.99, 0.02, 0.99, 1.0],
+                ZN: [0.46, 0.85, 0.85, 1.0],
+                OTHER: [0.58, 0.84, 0.56, 1.0]
+            };
+            const ATOMIC_RADII = {
+                C: 1.70,
+                N: 1.55,
+                O: 1.52,
+                S: 1.80,
+                P: 1.80,
+                FE: 1.94,
+                ZN: 1.39,
+                OTHER: 1.62
+            };
+            const VISUAL_RADIUS_ANCHOR = 1.39;
+            const VISUAL_RADIUS_GAIN = 5.0;
+            const categoricalSetup = (keys, colors = null, fallback = "turbo") => {
+                const values = Array.from(new Set(keys));
+                values.sort();
+                const lookup = new Map();
+                if (values.length <= 8) {
+                    const stops = values.map((value, index) => colors ? (colors(value) ?? ELEMENT_PALETTE.OTHER) : BASE_CATEGORICAL[index % BASE_CATEGORICAL.length]);
+                    if (stops.length === 1) stops.push(stops[0]);
+                    for (let i = 0; i < values.length; i++) lookup.set(values[i], values.length === 1 ? 0.5 : i / (values.length - 1));
+                    return { lookup, colormap: "custom", colormapStops: stops, values };
+                }
+                for (let i = 0; i < values.length; i++) lookup.set(values[i], values.length === 1 ? 0.5 : i / (values.length - 1));
+                return { lookup, colormap: fallback, colormapStops: null, values };
+            };
+            const getAtomicRadius = (element) => ATOMIC_RADII[element] ?? ATOMIC_RADII.OTHER;
+            const getRenderedRadius = (element) => VISUAL_RADIUS_ANCHOR + (VISUAL_RADIUS_GAIN * (getAtomicRadius(element) - VISUAL_RADIUS_ANCHOR));
+            const buildGroupedIndices = (atoms) => {
+                const groups = new Map();
+                for (let i = 0; i < atoms.length; i++) {
+                    const key = atoms[i].element || "OTHER";
+                    if (!groups.has(key)) groups.set(key, []);
+                    groups.get(key).push(i);
+                }
+                return Array.from(groups.entries()).sort((a, b) => getAtomicRadius(b[0]) - getAtomicRadius(a[0]));
+            };
+
+            // WasmGPU setup
+            const wgpu = await WasmGPU.create(canvas, { powerPreference: "high-performance", antialias: true, frustumCulling: true });
+            const device = wgpu.gpu.device, queue = wgpu.gpu.queue;
+            const scene = wgpu.createScene([0.02, 0.03, 0.04]);
+            const perspective = wgpu.createCamera.perspective({ fov: 48, near: 0.05, far: 500 });
+            const orthographic = wgpu.createCamera.orthographic({ left: -10, right: 10, top: 10, bottom: -10, near: 0.05, far: 500 });
+            perspective.transform.setPosition(16, 10, 16);
+            perspective.lookAt(0, 0, 0);
+            orthographic.transform.copyFrom(perspective.transform);
+            const controls = wgpu.createControls.navigation(perspective, canvas, {
+                mode: "orbit",
+                target: [0, 0, 0],
+                enableDamping: true,
+                dampingFactor: 0.1,
+                zoomOnCursor: true,
+                minDistance: 0.6,
+                maxDistance: 240
+            });
+
+            // Create overlay layers for axis triads
+            const overlaySystem = wgpu.createOverlay.system({
+                controls,
+                camera: perspective,
+                scene,
+                zIndex: 6,
+                interactionThrottleMs: 30,
+                autoUpdate: true
+            });
+            overlaySystem.addLayer(wgpu.createOverlay.axisTriad({
+                id: "protein-world-triad",
+                anchor: { kind: "world", position: [0, 0, 0] },
+                lengthWorld: 2.5,
+                lineWidthPx: 2,
+                labels: ["X", "Y", "Z"]
+            })).addLayer(wgpu.createOverlay.axisTriad({
+                id: "protein-screen-triad",
+                anchor: { kind: "screen", corner: "bottom-right", offsetPx: [-26, -26] },
+                sizePx: 52,
+                lineWidthPx: 2,
+                labels: ["x", "y", "z"]
+            }));
+
+            // Pyodide setup
+            const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/" });
+            await pyodide.loadPackage(["numpy", "biopython"]);
+            pyodide.runPython(py);
+
+            // Utilities to load and parse the protein structure
+            const loadStructureText = async () => {
+                try {
+                    const response = await fetch("https://files.rcsb.org/download/1VWT.pdb");
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return { text: await response.text(), label: "1VWT (Homo Sapiens Hemoglobin) from RCSB" };
+                } catch {
+                    return { text: FALLBACK_PDB, label: "embedded fallback" };
+                }
+            };
+            const parseStructureText = (text) => {
+                const result = pyodide.globals.get("parse_structure_text")(text);
+                const parsed = {
+                    coords: copyFloat32FromPy(wgpu, result.get("coords")),
+                    meta: copyJsonFromPy(result.get("meta_json")),
+                    summary: copyJsonFromPy(result.get("summary_json"))
+                };
+                result.destroy();
+                return parsed;
+            };
+            const source = await loadStructureText();
+            let parsed;
+            let sourceLabel = source.label;
+            try {
+                parsed = parseStructureText(source.text);
+            } catch {
+                parsed = parseStructureText(FALLBACK_PDB);
+                sourceLabel = "embedded fallback";
+            }
+
+            // Extract atom data
+            const coords = parsed.coords;
+            const atomMeta = parsed.meta;
+            const summary = parsed.summary;
+            const atomCount = atomMeta.length;
+            const baseScale = {
+                componentCount: 4,
+                componentIndex: 3,
+                valueMode: "component",
+                stride: 4,
+                offset: 0,
+                mode: "linear",
+                clampMode: "range",
+                domainMin: 0,
+                domainMax: 1,
+                clampMin: 0,
+                clampMax: 1,
+                gamma: 1,
+                invert: false
+            };
+            const buildPackedData = (atomIndices, scalarLookup, getKey) => {
+                const data = new Float32Array(atomIndices.length * 4);
+                for (let localIndex = 0; localIndex < atomIndices.length; localIndex++) {
+                    const atomIndex = atomIndices[localIndex];
+                    const atom = atomMeta[atomIndex];
+                    const o = localIndex * 4;
+                    const c = atomIndex * 3;
+                    data[o + 0] = coords[c + 0];
+                    data[o + 1] = coords[c + 1];
+                    data[o + 2] = coords[c + 2];
+                    data[o + 3] = scalarLookup.get(getKey(atom)) ?? 0.0;
+                }
+                return data;
+            };
+
+            // Colormappings setup and build point clouds for each element group, with pre-packed data for each color mode for efficient switching
+            const elementSetup = categoricalSetup(atomMeta.map((atom) => atom.element), (element) => ELEMENT_PALETTE[element] ?? ELEMENT_PALETTE.OTHER, "turbo");
+            const residueSetup = categoricalSetup(atomMeta.map((atom) => atom.residue), null, "plasma");
+            const chainSetup = categoricalSetup(atomMeta.map((atom) => atom.chain), null, "viridis");
+            const groupedAtoms = buildGroupedIndices(atomMeta);
+            const cloudAtomIndexMap = new WeakMap();
+            const cloudRecords = groupedAtoms.map(([element, atomIndices]) => {
+                const radius = getAtomicRadius(element);
+                const renderedRadius = getRenderedRadius(element);
+                const dataByMode = {
+                    element: buildPackedData(atomIndices, elementSetup.lookup, (atom) => atom.element),
+                    residue: buildPackedData(atomIndices, residueSetup.lookup, (atom) => atom.residue),
+                    chain: buildPackedData(atomIndices, chainSetup.lookup, (atom) => atom.chain)
+                };
+                const proteinCloud = wgpu.createPointCloud({
+                    name: `protein-atoms-${element.toLowerCase()}`,
+                    data: dataByMode.element,
+                    keepCPUData: true,
+                    basePointSize: renderedRadius * 14.0,
+                    minPointSize: Math.max(6.0, renderedRadius * 4.8),
+                    maxPointSize: renderedRadius * 24.0,
+                    sizeAttenuation: 10,
+                    softness: 0.1,
+                    opacity: 1.0,
+                    blendMode: "transparent",
+                    depthWrite: true,
+                    scaleTransform: baseScale,
+                    colormap: elementSetup.colormap,
+                    colormapStops: elementSetup.colormapStops ?? undefined
+                });
+                scene.add(proteinCloud);
+                proteinCloud.upload(device, queue);
+                cloudAtomIndexMap.set(proteinCloud, atomIndices);
+                return { element, atomIndices, radius, renderedRadius, dataByMode, cloud: proteinCloud };
+            });
+
+            // State variables for active color mode, camera, current view, and probing
+            let activeColorMode = "element";
+            let activeCamera = perspective;
+            let currentView = null;
+            let hoverAtom = null;
+            let selectedAtom = null;
+            let hoverPickToken = 0;
+            let lastMessage = `loaded ${sourceLabel}`;
+
+            // Utilities for switching colormaps and applying hit results to atoms
+            const modeConfigFor = (mode) => {
+                if (mode === "element") return { label: "element", setup: elementSetup };
+                if (mode === "residue") return { label: "residue", setup: residueSetup };
+                return { label: "chain", setup: chainSetup };
+            };
+            const applyColorMode = (mode) => {
+                const config = modeConfigFor(mode);
+                activeColorMode = mode;
+                for (const record of cloudRecords) {
+                    record.proteinCloud.setData(record.dataByMode[mode], { keepCPUData: true });
+                    record.proteinCloud.colormap = config.setup.colormap;
+                    if (config.setup.colormapStops) record.proteinCloud.colormapStops = config.setup.colormapStops;
+                    record.proteinCloud.setScaleTransform(baseScale);
+                    record.proteinCloud.upload(device, queue);
+                }
+                lastMessage = `color mode: ${config.label}`;
+                updateHud();
+            };
+            const hitToAtom = (hit) => {
+                if (!hit || hit.kind !== "pointcloud") return null;
+                const atomIndices = cloudAtomIndexMap.get(hit.object);
+                if (!atomIndices) return null;
+                const atomIndex = atomIndices[hit.elementIndex];
+                const atom = atomMeta[atomIndex];
+                if (!atom) return null;
+                const c = atomIndex * 3;
+                return {
+                    hit,
+                    atom,
+                    radius: getAtomicRadius(atom.element),
+                    position: [coords[c + 0], coords[c + 1], coords[c + 2]]
+                };
+            };
+
+            // More utilities for the HUD
+            const updateProjection = () => {
+                if (activeCamera.type === "perspective") activeCamera.updateAspect(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
+            };
+            const fitCurrent = (view = currentView, animate = true) => {
+                updateProjection();
+                if (view) controls.viewBounds(view, scene, { animate, duration: 0.45, padding: 1.15 });
+                else controls.fitScene(scene, { animate, duration: 0.6, padding: 1.1 });
+            };
+            const switchCamera = (nextCamera) => {
+                if (nextCamera === activeCamera) return;
+                nextCamera.transform.copyFrom(activeCamera.transform);
+                activeCamera = nextCamera;
+                controls.setCamera(activeCamera);
+                overlaySystem.setView(activeCamera, scene);
+                fitCurrent(currentView, true);
+                controls.saveState();
+                updateHud();
+            };
+            const atomLines = (label, sample) => {
+                if (!sample) return [`${label}: none`];
+                return [
+                    `${label}: ${sample.atom.atom}`,
+                    `element: ${sample.atom.element} (${fmt(sample.radius, 2)} A radius)`,
+                    `residue: ${sample.atom.residue} ${sample.atom.residueNumber}${sample.atom.insertionCode || ""}`,
+                    `chain: ${sample.atom.chain}`,
+                    `coords: ${fmtVec3(sample.position)}`
+                ];
+            };
+            const updateHud = () => {
+                infoHud.textContent = [
+                    `source: ${sourceLabel}`,
+                    `controls: ${controls.mode}`,
+                    `camera: ${activeCamera.type}`,
+                    `view: ${currentView ?? "fit"}`,
+                    `color mode: ${activeColorMode}`,
+                    `atoms: ${summary.atomCount}`,
+                    `residues: ${summary.residueCount}`,
+                    `chains: ${summary.chains.join(", ")}`,
+                    "",
+                    "1 element colors",
+                    "2 residue colors",
+                    "3 chain colors",
+                    "O orbit | T trackball",
+                    "W/S/A/D/Q/E views",
+                    "X fit | R reset | C camera",
+                    "",
+                    lastMessage
+                ].join("\n");
+
+                probeHud.textContent = [
+                    ...atomLines("hover", hoverAtom),
+                    "",
+                    ...atomLines("selected", selectedAtom)
+                ].join("\n");
+            };
+            window.addEventListener("keydown", (event) => {
+                const key = event.key.toLowerCase();
+                if (key === "1") applyColorMode("element");
+                else if (key === "2") applyColorMode("residue");
+                else if (key === "3") applyColorMode("chain");
+                else if (key === "o") controls.setMode("orbit");
+                else if (key === "t") controls.setMode("trackball");
+                else if (key === "w") { currentView = "front"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "s") { currentView = "back"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "a") { currentView = "left"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "d") { currentView = "right"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "q") { currentView = "top"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "e") { currentView = "bottom"; fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "x") { fitCurrent(currentView, true); controls.saveState(); }
+                else if (key === "r") { controls.reset(); lastMessage = "reset to saved view"; }
+                else if (key === "c") { switchCamera(activeCamera === perspective ? orthographic : perspective); lastMessage = `switched to ${activeCamera.type}`; }
+                else return;
+                overlaySystem.invalidate("camera");
+                updateHud();
+            });
+            const getRelativePointer = (event) => {
+                const rect = canvas.getBoundingClientRect();
+                return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+            };
+
+            // Event listeners
+            canvas.addEventListener("pointermove", (event) => {
+                const { x, y } = getRelativePointer(event);
+                const token = ++hoverPickToken;
+                wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
+                    if (token !== hoverPickToken) return;
+                    hoverAtom = hitToAtom(hit);
+                    updateHud();
+                }).catch(() => {
+                    if (token !== hoverPickToken) return;
+                    hoverAtom = null;
+                    updateHud();
+                });
+            });
+            canvas.addEventListener("pointerleave", () => {
+                hoverPickToken++;
+                hoverAtom = null;
+                updateHud();
+            });
+            canvas.addEventListener("click", async (event) => {
+                const { x, y } = getRelativePointer(event);
+                const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
+                selectedAtom = hitToAtom(hit);
+                lastMessage = selectedAtom ? "selected atom updated" : "selection cleared";
+                updateHud();
+            });
+            const handleResize = () => {
+                updateProjection();
+                if (activeCamera.type === "orthographic") {
+                    fitCurrent(currentView, false);
+                    controls.saveState();
+                }
+            };
+            window.addEventListener("resize", handleResize);
+
+            // Intialize
+            updateProjection();
+            fitCurrent(null, false);
+            controls.saveState();
+            overlaySystem.setView(activeCamera, scene);
+            overlaySystem.invalidate("camera");
+            updateHud();
+
+            // Render
+            wgpu.run((dt) => {
+                updateProjection();
+                controls.update(dt);
+                wgpu.render(scene, activeCamera);
+                overlaySystem.update({ camera: activeCamera, scene });
+            });
+        </script>
+    </body>
+</html>
