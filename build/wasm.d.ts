@@ -25,9 +25,22 @@ export function u8view(ptr: number, len: number): Uint8Array;
 
 export function transform_compose_local_many(outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, count: number): number;
 export function transform_update_world_ordered(outWorldPtr: number, localPtr: number, parentPtr: number, orderPtr: number, count: number): number;
+export function transform_update_partial_ordered(outWorldPtr: number, outLocalPtr: number, posPtr: number, rotPtr: number, sclPtr: number, parentPtr: number, orderPtr: number, dirtyIndicesPtr: number, dirtyCount: number, count: number): number;
 export function transform_pack_model_normal_mat4_from_ptrs(outPtr: number, matPtrsPtr: number, count: number): number;
 
+export function cull_write_planes_from_view_projection(outPlanesPtr: number, viewProjPtr: number): number;
+export function cull_prepare_world_spheres_from_ptrs(outCentersPtr: number, outRadiiPtr: number, worldPtrsPtr: number, localCentersPtr: number, localRadiiPtr: number, count: number): number;
 export function cull_spheres_frustum(outIndicesPtr: number, centersPtr: number, radiiPtr: number, count: number, frustumPtr: number): number;
+
+export function bounds_pointcloud_xyzs(outBoxMinPtr: number, outBoxMaxPtr: number, outSphereCenterPtr: number, outSphereRadiusPtr: number, pointsPtr: number, pointCount: number, strideF32: number): number;
+export function bounds_glyph_instances(outBoxMinPtr: number, outBoxMaxPtr: number, outSphereCenterPtr: number, outSphereRadiusPtr: number, positionsPtr: number, scalesPtr: number, rotationsPtr: number, instanceCount: number, glyphCenterPtr: number, glyphRadius: number): number;
+export function bounds_geometry_positions(outBoxMinPtr: number, outBoxMaxPtr: number, outSphereCenterPtr: number, outSphereRadiusPtr: number, positionsPtr: number, vertexCount: number): number;
+
+export function accessor_deinterleave(outPtr: number, srcPtr: number, count: number, numComponents: number, componentBytes: number, byteStride: number): number;
+export function accessor_apply_sparse(outPtr: number, outComponentCount: number, componentType: number, numComponents: number, indicesPtr: number, indicesComponentType: number, valuesPtr: number, sparseCount: number): number;
+export function accessor_convert_to_f32(outPtr: number, srcPtr: number, componentCount: number, componentType: number, normalized: number): number;
+export function accessor_convert_to_u16(outPtr: number, srcPtr: number, componentCount: number, componentType: number): number;
+export function accessor_convert_to_u32(outPtr: number, srcPtr: number, componentCount: number, componentType: number): number;
 
 export function mesh_compute_vertex_normals(outNormalsPtr: number, positionsPtr: number, vertexCount: number, indicesPtr: number, indexCount: number): number;
 

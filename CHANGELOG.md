@@ -1,8 +1,19 @@
 # WasmGPU changelog
 All release notes of WasmGPU are recorded in this file.
 
-## [v0.6.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.6.0) - 03/06/2026
-The seventh release of WasmGPU. Commits: [`v0.5.0...v0.6.0`](https://github.com/Zushah/WasmGPU/compare/v0.5.0...v0.6.0)
+## [v0.7.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.7.0) - 03/30/2026
+The eighth release of WasmGPU. Commits: [`v0.6.0...v0.7.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.6.0...v0.7.0)
+- Added an interactive analysis stack built around GPU ID-pass picking, rectangular and lasso region selection, composable overlay layers, and an annotation toolkit, so applications can move from raw hits to typed selections, legends, triads, probes, markers, and distance or angle measurements.
+- Added richer geometry coverage with 2D primitives plus cartesian and parametric curves/surfaces, which makes WasmGPU much more usable for analytical plotting and procedural scenes.
+- Added a unified scale transform model shared across pointclouds, glyphfields, data materials, and compute-powered statistics, so scalar remapping, clamping, percentiles, log or symlog domains, gamma, and inversion behave consistently across programs.
+- Changed camera interaction from separate modes into a unified navigation system with bounds-based scene/object framing, canonical inspection views, and corrected orbit behavior around the poles, which makes interaction and inspection much more coherent across camera frameworks.
+- Changed frame and load pipelines to have greater performance by moving transform propagation hot paths, frustum culling preparation, pointcloud/glyphfield/geometry bounds computation, and glTF accessor decoding/converting into the Rust WebAssembly driver, while also optimizing the pointcloud shader, reducing JavaScript overhead on several of the frequently exercised visualization workloads.
+- Changed renderer presentation configuration by allowing the swap chain format to be set explicitly.
+- Fixed glyphfields appearing pitch black by making them unlit by default.
+- Added controls, picking, scaling, overlay, fluid, graphing, and protein examples, as well as the new website.
+
+## [v0.6.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.6.0) - 03/06/2026
+The seventh release of WasmGPU. Commits: [`v0.5.0...v0.6.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.5.0...v0.6.0)
 - Added first-class scientific visualization primitives with dedicated WebGPU render paths for point clouds and glyph fields, including storage-buffer-backed per-element data, engine-level scene integration, and correct participation in frustum culling and transparent sorting.
 - Added a colormap system and a data-driven mesh material so scalar and vector fields can be mapped to color in a principled way, including built-in colormaps and custom palettes or stops, plus domain, clipping, gamma, inversion, and optional lighting blend controls for scientific rendering.
 - Added an ndarray abstraction spanning WebAssembly memory and WebGPU storage buffers, and added Python-in-the-browser interoperability utilities so numerical arrays can be transferred with explicit dtype and shape semantics across Python, JavaScript, WebAssembly, and WebGPU compute pipelines.
@@ -11,8 +22,8 @@ The seventh release of WasmGPU. Commits: [`v0.5.0...v0.6.0`](https://github.com/
 - Fixed correctness and robustness in core compute and shader paths by correcting WebGPU queue write ranges for typed array views, replacing fragile NaN handling in argreduce kernels, and improving WebAssembly allocation alignment to 16 bytes for safer high-throughput data access.
 - Changed build output by minifying WGSL at buildtime to reduce bundled file sizes.
 
-## [v0.5.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.5.0) - 02/23/2026
-The sixth release of WasmGPU. Commits: [`v0.4.0...v0.5.0`](https://github.com/Zushah/WasmGPU/compare/v0.4.0...v0.5.0)
+## [v0.5.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.5.0) - 02/23/2026
+The sixth release of WasmGPU. Commits: [`v0.4.0...v0.5.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.4.0...v0.5.0)
 - Added a sophisticated WebGPU compute API (pipelines, storage/uniform buffers, dispatch helpers, batching, and limit validation) so GPGPU workloads can be run alongside rendering.
 - Added a library of GPU parallel primitives (reduce/argreduce, exclusive scan, stream compaction, radix sort, and histogram) so common data workloads don’t require rewriting core kernels per project.
 - Added camera controls for orbit/pan/zoom navigation and a configurable HUD for FPS, CPU, GPU, memory, and culling stats.
@@ -21,16 +32,16 @@ The sixth release of WasmGPU. Commits: [`v0.4.0...v0.5.0`](https://github.com/Zu
 - Fixed glTF correctness and coverage by allocating normal scratch indices as u32, adding 8-influence skinning support, supporting the specular glossiness material extension, improving the UV-set selection, and correcting skinning to use the mesh bind matrix rather than the current world inverse.
 - Fixed robustness and shader correctness by hardening texture upload handling and correcting SMAA uniform layout alignment and fullscreen UV winding.
 
-## [v0.4.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.4.0) - 02/15/2026
-The fifth release of WasmGPU. Commits: [`v0.3.0...v0.4.0`](https://github.com/Zushah/WasmGPU/compare/v0.3.0...v0.4.0)
+## [v0.4.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.4.0) - 02/15/2026
+The fifth release of WasmGPU. Commits: [`v0.3.0...v0.4.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.3.0...v0.4.0)
 - Added a glTF 2.0 loading & importing pipeline that constructs runtime scenes/meshes/materials from `.gltf` & `.glb` files, including PBR/unlit material translation and a real texture abstraction with mipmaps and sampler mapping.
 - Added glTF animation and skinning support, with TRS sampling executed in WebAssembly and per-skin joint matrices generated and streamed to WebGPU storage buffers.
 - Added frustum culling to skip submitting off-screen meshes, using world-space bounds with a WebAssembly sphere-frustum kernel and optional culling stats for visibility debugging.
 - Added SMAA as an optional post-process anti-aliasing path (offscreen scene-color & edge/weight/neighborhood passes) to improve visual quality on single-sampled swapchains.
 - Fixed renderer internals to eliminate per-frame WebAssembly allocations in camera/lighting/model uniform staging buffers, pipeline cache keys, uniform packing, per-mesh world matrix reads, instanced pointer allocations, material uniform arrays, and bind group layouts.
 
-## [v0.3.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.3.0) - 02/08/2026
-The fourth release of WasmGPU. Commits: [`v0.2.1...v0.3.0`](https://github.com/Zushah/WasmGPU/compare/v0.2.1...v0.3.0)
+## [v0.3.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.3.0) - 02/08/2026
+The fourth release of WasmGPU. Commits: [`v0.2.1...v0.3.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.2.1...v0.3.0)
 - Changed the WebAssembly backend from AssemblyScript to Rust and expanded the WebAssembly integration into a pointer-first runtime layer suitable for high-performance engine subsystems.
 - Changed renderer data flow to be WebAssembly-memory-first: uniform data is staged in WebAssembly and uploaded zero-copy to WebGPU buffers, with model matrices uploaded directly from Transform WebAssembly storage and normal matrices computed in WebAssembly.
 - Changed Transform into a WebAssembly-owned structure-of-arrays (SoA) store with batched local/world matrix updates, enabling fewer allocations and fewer cross-boundary calls in the hot path.
@@ -38,20 +49,20 @@ The fourth release of WasmGPU. Commits: [`v0.2.1...v0.3.0`](https://github.com/Z
 - Changed renderer submission to reduce CPU overhead by caching global bind groups, batching opaque draw submission, and adding WebGPU instancing support for large runs of identical pipeline/material/geometry.
 - Fixed Transform lifetime management by adding disposal and slot reuse via a free list, preventing long-running scenes from leaking Transform slots.
 
-## [v0.2.1](https://github.com/Zushah/WasmGPU/releases/tag/v0.2.1) - 02/05/2026
-The third release of WasmGPU. Commits: [`v0.2.0...v0.2.1`](https://github.com/Zushah/WasmGPU/compare/v0.2.0...v0.2.1)
+## [v0.2.1](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.2.1) - 02/05/2026
+The third release of WasmGPU. Commits: [`v0.2.0...v0.2.1`](https://www.github.com/Zushah/WasmGPU/compare/v0.2.0...v0.2.1)
 - Added base64 backup for WebAssembly embedded in `./dist/math.js` so that it can be utilized even if `./dist/math.wasm` is unavailable or inaccessible to the client.
 - Fixed distorted cylinder and prism geometry.
 - Fixed incorrect normal matrix calculation.
 
-## [v0.2.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.2.0) - 02/03/2026
-The second release of WasmGPU. Commits: [`v0.1.0...v0.2.0`](https://github.com/Zushah/WasmGPU/compare/v0.1.0...v0.2.0)
+## [v0.2.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.2.0) - 02/03/2026
+The second release of WasmGPU. Commits: [`v0.1.0...v0.2.0`](https://www.github.com/Zushah/WasmGPU/compare/v0.1.0...v0.2.0)
 - Engine and scene graph: new engine/renderer separation with a high-level render loop, scene/mesh/transform primitives and parented transforms, built-in geometry helpers (box, plane, sphere, torus, cylinder, pyramid, prism), and perspective/orthographic camera functions with `lookAt()` and aspect handling.
 - Materials and lighting: PBR-ish `StandardMaterial` (color, metallic, roughness, emissive) as well as `UnlitMaterial` and `CustomMaterial` support, material uniform and bind-group management, texture/sampler support, and proper model/normal matrix handling for lighting.
 - Builds, WebAssembly, and runtime: AssemblyScript math module (`./build/math.wasm` and `./build/math.js`) with lazy initialization, both ESM and IIFE `./dist/` bundles ready for CDN use, and shader/pipeline and GPU buffer (vertex/index/uniform) management.
 
-## [v0.1.0](https://github.com/Zushah/WasmGPU/releases/tag/v0.1.0) - 02/01/2026
-The first release of WasmGPU. Commits: [`v0.0.0...v0.1.0`](https://github.com/Zushah/WasmGPU/compare/ae3c900860a218f8c52db1d86f9ce54163e9bb6a...v0.1.0)
+## [v0.1.0](https://www.github.com/Zushah/WasmGPU/releases/tag/v0.1.0) - 02/01/2026
+The first release of WasmGPU. Commits: [`v0.0.0...v0.1.0`](https://www.github.com/Zushah/WasmGPU/compare/ae3c900860a218f8c52db1d86f9ce54163e9bb6a...v0.1.0)
 - WebGPU renderer is up and running with a rotating cube demo.
 - AssemblyScript → WebAssembly math module integrated and callable from TypeScript.
 - Build outputs provided for both ESM and CDN consumers.

@@ -7,7 +7,8 @@
 <html>
     <head>
         <meta charset="utf-8">
-        <title>WasmGPU Protein Example</title>
+        <title>WasmGPU | Protein Example</title>
+        <link rel="icon" type="image/png" href="../assets/favicon.png">
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body { background: #05070a; overflow: hidden; color: #d8e2ef; font: 12px/1.4 monospace; }
@@ -325,8 +326,8 @@
 
             // Colormappings setup and build point clouds for each element group, with pre-packed data for each color mode for efficient switching
             const elementSetup = categoricalSetup(atomMeta.map((atom) => atom.element), (element) => ELEMENT_PALETTE[element] ?? ELEMENT_PALETTE.OTHER, "turbo");
-            const residueSetup = categoricalSetup(atomMeta.map((atom) => atom.residue), null, "plasma");
-            const chainSetup = categoricalSetup(atomMeta.map((atom) => atom.chain), null, "viridis");
+            const residueSetup = categoricalSetup(atomMeta.map((atom) => atom.residue), null, "turbo");
+            const chainSetup = categoricalSetup(atomMeta.map((atom) => atom.chain), null, "turbo");
             const groupedAtoms = buildGroupedIndices(atomMeta);
             const cloudAtomIndexMap = new WeakMap();
             const cloudRecords = groupedAtoms.map(([element, atomIndices]) => {
@@ -356,7 +357,7 @@
                 scene.add(proteinCloud);
                 proteinCloud.upload(device, queue);
                 cloudAtomIndexMap.set(proteinCloud, atomIndices);
-                return { element, atomIndices, radius, renderedRadius, dataByMode, cloud: proteinCloud };
+                return { element, atomIndices, radius, renderedRadius, dataByMode, proteinCloud };
             });
 
             // State variables for active color mode, camera, current view, and probing

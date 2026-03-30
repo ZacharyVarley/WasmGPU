@@ -1,9 +1,10 @@
-# WasmGPU v0.6.0
+# WasmGPU v0.7.0
 
-WebGPU × WebAssembly rendering and compute engine for scientific workloads in the browser.
+WebGPU × WebAssembly rendering and computing engine for scientific workloads in the browser.
 
-- WebGPU engine written in TypeScript, spanning **scene & assets** (meshes, point clouds, glyph fields, materials, lights, camera, and glTF 2.0 with PBR or unlit materials, mipmapped texture sampling with robust asynchronous uploads, transparency, animations, and 4- or 8-influence skinning); **rendering architecture** (WebAssembly-driven frustum culling, opaque draw batching with automatic instanced rendering, and optional subpixel morphological anti-aliasing via SMAA); **interaction & diagnostics** (built-in orbit and trackball controls and a HUD for performance stats); and **compute & interop** (a first-class WebGPU compute API with reusable pipelines and buffers, an ndarray abstraction, asynchronous readback utilities, and Python-in-the-browser interop for scientific workloads).
-- WebAssembly driver written in Rust, spanning **data layout & transforms** (transforms stored in SoA memory with per-index dirty tracking and partial local/world propagation); **animation execution** (animation sampling and joint-matrix generation executed in WebAssembly and streamed to WebGPU storage buffers); **array semantics** (ndarray indexing utilities for explicit shape-and-stride byte offset math); **zero-copy staging** (uniforms and instance data staged as zero-copy views into WebAssembly memory with explicit typed-slice handles for JavaScript interop); and **performance envelope** (hot-path allocations avoided via cached pipelines and bind-group layouts plus a reset-every-frame arena and user heap arenas, with builds optimized via LLVM and Binaryen and SIMD128 enabled for higher throughput).
+The WebGPU engine is written in TypeScript, spanning **scene & assets** (meshes, pointclouds, glyphfields, data materials, lights, cameras, glTF 2.0 assets, mipmapped texture sampling, transparency, animations, 4- or 8-influence skinning, and richer built-in geometry including 2D primitives plus cartesian and parametric curves and surfaces for graphing); **rendering architecture** (WebAssembly-driven frustum culling, opaque draw batching with automatic instanced rendering, optional subpixel morphological anti-aliasing, configurable canvas format selection, and GPU ID-pass picking for both single-hit queries and rectangular or lasso region queries with typed results); **interaction, overlays, & diagnostics** (orbit/trackball orthographic/perspective camera navigation with bounds-based scene framing, inspection views, and a composable overlay and annotation toolkit with triads, grids, legends, markers, probes, and measurements); and **compute & interop** (a first-class WebGPU compute subsystem with reusable pipelines and buffers, an extensive kernels library, an ndarray abstraction, asynchronous readback utilities, a unified scale-transform model shared across rendering and computing workflows, and Python-in-the-browser interoperability).
+
+The WebAssembly driver is written in Rust, spanning **data layout & transforms** (transforms stored in SoA memory with per-index dirty tracking and partial local or world propagation plus model and normal matrix packing); **animation & asset hot paths** (animation sampling and joint-matrix generation executed in WebAssembly together with glTF accessor deinterleaving, sparse patch application, numeric conversion, and mesh normal generation); **bounds, culling, & visibility** (world-space bounds computation for geometry, pointclouds, and glyphfields together with frustum plane extraction and sphere-frustum culling kernels); **array semantics & zero-copy staging** (ndarray indexing utilities for explicit shape-and-stride byte-offset math plus uniforms and instance data staged as zero-copy views into WebAssembly memory with explicit typed-slice handles for JavaScript interop); and **performance envelope** (hot-path allocations avoided via cached pipelines and bind-group layouts plus a frame arena and user heap arenas, with builds optimized via LLVM and Binaryen and SIMD128 enabled for even higher throughput).
 
 ## Install
 
@@ -12,7 +13,7 @@ npm install @zushah/wasmgpu
 ```
 
 ```text
-https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.6.0/dist/WasmGPU.iife.min.js
+https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.iife.min.js
 ```
 
 ## Quick Links
@@ -23,7 +24,7 @@ https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.6.0/dist/WasmGPU.iife.min.js
 
 ## Architecture Diagram
 
-The diagram below reflects currently implemented subsystems and runtime flow in WasmGPU v0.6.0.
+The diagram below reflects currently implemented subsystems and runtime flow in WasmGPU v0.7.0.
 
 Solid arrows indicate control flow while dashed arrows indicate data and resource flow.
 
@@ -31,7 +32,7 @@ Solid arrows indicate control flow while dashed arrows indicate data and resourc
 flowchart LR
     subgraph API["Public API"]
         APP["User Application"]
-        ENG["WasmGPU v0.6.0"]
+        ENG["WasmGPU v0.7.0"]
         FAC["Factory surface: scene, camera, controls, geometry, material, texture, mesh, pointcloud, glyphfield, light, asset import, animation, overlay, annotation"]
     end
 
@@ -206,6 +207,8 @@ flowchart LR
 | **Scene Graph Memory** | Not available | Object-oriented (AoS) | Data-oriented (SoA) |
 | **Math Execution** | JavaScript | JavaScript | WebAssembly |
 | **Transform Updates** | Not available | Recursive traversal | Linear iteration |
+| **Bounds Computation** | Manual | JavaScript | WebAssembly |
+| **View Framing** | Manual | Helper-based fitting | Bounds-based scene/object fitting |
 | **Garbage Collection** | Manual & low/high pressure via JavaScript engine | Automatic & high pressure via JavaScript engine | Automatic & low pressure via WebAssembly driver |
 | **Render Loop** | Run by JavaScript | Run by JavaScript | Run by JavaScript & WebAssembly |
 
@@ -216,12 +219,13 @@ flowchart LR
 | **Render State Caching** | Manual | State filtering | Pipeline caching |
 | **Instancing** | Manual | Manual | Automatic |
 | **Visibility Culling** | Not available | Frustum culling in JavaScript | Frustum culling in WebAssembly |
+| **Picking** | Manual GPU / CPU picking | Often CPU-centered | GPU ID-pass with typed hits |
 | **Skinning** | Not available | Data textures | Storage buffers |
 | **Anti-aliasing** | Not available | MSAA | SMAA |
 | **Textures** | Manual | Managed objects | Managed objects |
 | **Animation System** | Not available | Executed in JavaScript | Executed in WebAssembly |
 | **Asset Importing** | Not available | glTF 2.0 | glTF 2.0 |
-| **Camera Controls** | Not available | Built-in | Built-in |
+| **Camera Controls** | Not available | Built-in | Built-in unified orbit & trackball navigation |
 
 ### 4. Compute Workloads and Scientific Visualizations
 |  | **WebGL / WebGPU** | **Three.js / Babylon.js** | **WasmGPU** |
@@ -231,15 +235,21 @@ flowchart LR
 | **GPU Readback** | Manual | Manual | Async readback ring |
 | **Python Interoperability** | Not available | Not available | With Pyodide |
 | **Scientific Primitives** | Manual | Manual | Point clouds & glyph fields |
-| **Colormap Support** | Manual | Manual | Built-in & custom |
+| **Mathematical Geometry** | Manual | Manual | Cartesian & parametric curves & surfaces |
+| **Scaling Statistics** | Manual | Manual | Min/max & percentile analysis |
+| **Colormap Support** | Manual | Manual | Built-ins & custom |
 | **Data-driven Materials** | Manual | Manual | Data material |
+| **Scientific Overlays** | Manual | Manual | Grids, triads, & legends |
+| **Annotation & Measurement** | Manual | Manual | Markers, probes, distance, & angle toolkit |
 
 ## Getting Started
+
+Check out the examples [here](../examples/index.html).
 
 Super basic example to render a cube:
 ```js
 // Setup
-import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.6.0/dist/WasmGPU.min.js";
+import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.min.js";
 const canvas = document.querySelector("canvas");
 const wgpu = await WasmGPU.create(canvas, { antialias: true});
 
@@ -254,7 +264,7 @@ camera.transform.setPosition(-2, 2, -2);
 camera.lookAt(0, 0, 0);
 const controls = wgpu.createControls.orbit(camera, canvas);
 
-// Lights
+// Light
 scene.addLight(wgpu.createLight.directional({
     direction: [1, -1, -1],
     color: [1, 1, 1],

@@ -9,7 +9,7 @@
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>WasmGPU</title>
-        <meta name="description" content="WebGPU × WebAssembly rendering and compute engine for scientific workloads in the browser.">
+        <meta name="description" content="WebGPU × WebAssembly rendering and computing engine for scientific workloads in the browser.">
         <link rel="icon" type="image/png" href="./assets/favicon.png">
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,11 +39,8 @@
             <section class="hero reveal">
                 <img class="hero-logo" data-theme-logo="true" src="./assets/logo-darkmode.png" alt="WasmGPU logo" data-dark-logo="./assets/logo-darkmode.png" data-light-logo="./assets/logo-lightmode.png"><br>
                 <p class="eyebrow"><b>WebGPU × WebAssembly</b></p>
-                <h1>Rendering and compute engine for scientific workloads in the browser.</h1>
-                <p class="hero-copy">
-                    WasmGPU combines a TypeScript WebGPU engine with a Rust WebAssembly driver to support
-                    high-throughput rendering and compute-heavy workflows in a single browser-first runtime.
-                </p>
+                <h1>Rendering and computing engine for scientific workloads in the browser.</h1>
+                <p class="hero-copy">WasmGPU combines a TypeScript WebGPU engine with a Rust WebAssembly driver to support high-throughput rendering and computing workflows in a single browser-first runtime.</p>
                 <div class="hero-actions">
                     <a class="btn btn-primary" href="./docs/">
                         <span class="material-icons-outlined">menu_book</span>
@@ -59,17 +56,17 @@
             <section class="release reveal">
                 <div class="section-head">
                     <p class="eyebrow">Latest release</p>
-                    <h2>v0.6.0 <span class="release-date">Released Friday, March 6, 2026</span></h2>
+                    <h2>v0.7.0 <span class="release-date">Released Monday, March 30, 2026</span></h2>
                 </div>
                 <div class="release-grid">
                     <article class="panel release-panel">
                         <h3>Highlights</h3>
                         <ul class="release-highlights">
-                            <li>Added dedicated scientific visualization primitives for point clouds and glyph fields.</li>
-                            <li>Added colormap subsystem and data-driven materials for scalar/vector field rendering.</li>
-                            <li>Added an ndarray abstraction spanning WebAssembly memory and WebGPU storage buffers.</li>
-                            <li>Added Python-in-the-browser interoperability across Python, JavaScript, WebAssembly, and WebGPU programs.</li>
-                            <li>Added asynchronous readback and trackball camera controls.</li>
+                            <li>Added overlay framework, annotation toolkit, and picking utilities.</li>
+                            <li>Added 2D primitives and mathematical graphing primitives.</li>
+                            <li>Added bounded scene/object framing and inspection views to the camera navigation subsystem.</li>
+                            <li>Added a unified scale transform model shared across pointclouds, glyphfields, data materials, and computed statistics.</li>
+                            <li>Changed frame and load pipelines to have greater performance by moving transform, culling, bounds, & glTF hot paths to the WebAssembly driver.</li>
                         </ul>
                     </article>
                     <div class="release-badges">
@@ -77,17 +74,17 @@
                             <span class="material-icons-outlined">download</span>
                             <span><strong>Manual installation</strong><small>Download WasmGPU.min.js</small></span>
                         </a>
-                        <a class="release-chip" href="https://raw.githubusercontent.com/Zushah/WasmGPU/v0.6.0/dist/WasmGPU.js" target="_blank" rel="noreferrer" aria-label="Minified JavaScript bundle size">
+                        <a class="release-chip" href="https://raw.githubusercontent.com/Zushah/WasmGPU/v0.7.0/dist/WasmGPU.js" target="_blank" rel="noreferrer" aria-label="Minified JavaScript bundle size">
                             <span class="material-icons-outlined">data_object</span>
-                            <span><strong>JavaScript bundle</strong><small>323,831 bytes</small></span>
+                            <span><strong>JavaScript bundle</strong><small>17.1k lines of code in 450.6k bytes</small></span>
                         </a>
-                        <a class="release-chip" href="https://www.github.com/Zushah/WasmGPU/releases/tag/v0.6.0" target="_blank" rel="noreferrer" aria-label="Release notes">
+                        <a class="release-chip" href="https://www.github.com/Zushah/WasmGPU/releases/tag/v0.7.0" target="_blank" rel="noreferrer" aria-label="Release notes">
                             <span class="material-icons-outlined">article</span>
                             <span><strong>Release notes</strong><small>Full details of the updates</small></span>
                         </a>
-                        <a class="release-chip" href="https://www.github.com/Zushah/WasmGPU/compare/v0.5.0...v0.6.0" target="_blank" rel="noreferrer" aria-label="Compare changes">
+                        <a class="release-chip" href="https://www.github.com/Zushah/WasmGPU/compare/v0.6.0...v0.7.0" target="_blank" rel="noreferrer" aria-label="Compare changes">
                             <span class="material-icons-outlined">insights</span>
-                            <span><strong>Compare changes</strong><small>14k additions and 5k deletions</small></span>
+                            <span><strong>Compare changes</strong><small>71.7k additions and 12.0k deletions across 836 files</small></span>
                         </a>
                         <a class="release-chip" href="https://www.github.com/Zushah/WasmGPU/issues" target="_blank" rel="noreferrer" aria-label="Give feedback">
                             <span class="material-icons-outlined">bug_report</span>
@@ -118,7 +115,7 @@
                             <span class="material-icons-outlined">cloud_download</span>
                             <h3>CDN bundle</h3>
                         </header>
-                        <pre id="install-cdn"><code>https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.6.0/dist/WasmGPU.iife.min.js</code></pre>
+                        <pre id="install-cdn"><code>https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.iife.min.js</code></pre>
                         <button class="copy-btn" type="button" data-copy-target="install-cdn">
                             <span class="material-icons-outlined">content_copy</span>
                             Copy link
@@ -134,18 +131,18 @@
                 <div class="overview-grid">
                     <article class="panel reveal" style="--delay: 0ms;">
                         <span class="material-icons-outlined">view_in_ar</span>
-                        <h3>WebGPU power</h3>
+                        <h3>WebGPU engine</h3>
                         <p>Rendering paths are designed for modern pipeline management, batching, and scene throughput.</p>
                     </article>
                     <article class="panel reveal" style="--delay: 40ms;">
                         <span class="material-icons-outlined">memory</span>
-                        <h3>WebAssembly execution</h3>
+                        <h3>WebAssembly driver</h3>
                         <p>Hot paths for transforms, culling, and layout-sensitive logic execute in a memory-safe manner with Rust.</p>
                     </article>
                     <article class="panel reveal" style="--delay: 80ms;">
                         <span class="material-icons-outlined">science</span>
                         <h3>Scientific compute</h3>
-                        <p>Compute APIs include ndarray abstractions, reusable kernels, and async readback support.</p>
+                        <p>Compute APIs include ndarray abstractions, reusable kernels library, and async readback support.</p>
                     </article>
                     <article class="panel reveal" style="--delay: 120ms;">
                         <span class="material-icons-outlined">account_tree</span>
@@ -160,7 +157,7 @@
                     <article class="panel reveal" style="--delay: 200ms;">
                         <span class="material-icons-outlined">terminal</span>
                         <h3>Python interoperability</h3>
-                        <p>Pyodide integration enables browser-native scientific programming to be enveloped with WebGPU.</p>
+                        <p>Pyodide integration enables scientific programming to be enveloped within the browser.</p>
                     </article>
                     <article class="panel reveal" style="--delay: 240ms;">
                         <span class="material-icons-outlined">bolt</span>

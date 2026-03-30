@@ -1,5 +1,5 @@
 site_name: WasmGPU | Documentation
-site_description: WebGPU × WebAssembly rendering and compute engine for scientific workloads in the browser.
+site_description: WebGPU × WebAssembly rendering and computing engine for scientific workloads in the browser.
 site_url: https://zushah.github.io/WasmGPU/
 repo_url: https://www.github.com/Zushah/WasmGPU
 repo_name: Zushah/WasmGPU
@@ -8,8 +8,8 @@ site_dir: ./website/build/docs/
 
 theme:
   name: material
-  favicon: ./assets/favicon.png
-  logo: ./assets/favicon.png
+  favicon: ../../build/assets/favicon.png
+  logo: ../../build/assets/favicon.png
   features:
     - navigation.tabs
     - navigation.sections
