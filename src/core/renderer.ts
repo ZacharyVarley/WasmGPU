@@ -31,6 +31,9 @@ export type RendererDescriptor = {
     canvasFormat?: GPUTextureFormat;
     frustumCulling?: boolean;
     frustumCullingStats?: boolean;
+    maxBufferSize?: number;
+    maxStorageBufferBindingSize?: number;
+    maxUniformBufferBindingSize?: number;
 };
 
 type DrawItem = {
@@ -256,6 +259,11 @@ export class Renderer {
         if (adapter.features.has("primitive-index")) requiredFeatures.push("primitive-index");
         const deviceDesc: GPUDeviceDescriptor = {};
         if (requiredFeatures.length > 0) deviceDesc.requiredFeatures = requiredFeatures;
+        const requiredLimits: GPUDeviceDescriptor["requiredLimits"] = {};
+        if (descriptor.maxBufferSize !== undefined) requiredLimits.maxBufferSize = descriptor.maxBufferSize;
+        if (descriptor.maxStorageBufferBindingSize !== undefined) requiredLimits.maxStorageBufferBindingSize = descriptor.maxStorageBufferBindingSize;
+        if (descriptor.maxUniformBufferBindingSize !== undefined) requiredLimits.maxUniformBufferBindingSize = descriptor.maxUniformBufferBindingSize;
+        if (Object.keys(requiredLimits).length > 0) deviceDesc.requiredLimits = requiredLimits;
         this.device = await adapter.requestDevice(deviceDesc);
         this.gpuTimingSupported = this.device.features.has("timestamp-query");
         this.queue = this.device.queue;
