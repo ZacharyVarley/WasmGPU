@@ -18,7 +18,7 @@
 
 - 🔥 WebGPU × WebAssembly rendering and computing engine for scientific workloads in the browser.
 - 🚀 Latest release: [**`v0.7.0`**](https://github.com/Zushah/WasmGPU/releases/tag/v0.7.0).
-- 💡 Website: [https://zushah.github.io/WasmGPU](https://zushah.github.io/WasmGPU)
+- 💡 Website: [https://zushah.github.io/WasmGPU](https://zushah.github.io/WasmGPU).
 - ⚙️ WebGPU engine written in TypeScript, spanning **scene & assets** (meshes, pointclouds, glyphfields, data materials, lights, cameras, glTF 2.0 assets, mipmapped texture sampling, transparency, animations, 4- or 8-influence skinning, and richer built-in geometry including 2D primitives plus cartesian and parametric curves and surfaces for graphing); **rendering architecture** (WebAssembly-driven frustum culling, opaque draw batching with automatic instanced rendering, optional subpixel morphological anti-aliasing, configurable canvas format selection, and GPU ID-pass picking for both single-hit queries and rectangular or lasso region queries with typed results); **interaction, overlays, & diagnostics** (orbit/trackball orthographic/perspective camera navigation with bounds-based scene framing, inspection views, and a composable overlay and annotation toolkit with triads, grids, legends, markers, probes, and measurements); and **compute & interop** (a first-class WebGPU compute subsystem with reusable pipelines and buffers, an extensive kernels library, an ndarray abstraction, asynchronous readback utilities, a unified scale-transform model shared across rendering and computing workflows, and Python-in-the-browser interoperability).
 - 🦀 WebAssembly driver written in Rust, spanning **data layout & transforms** (transforms stored in SoA memory with per-index dirty tracking and partial local or world propagation plus model and normal matrix packing); **animation & asset hot paths** (animation sampling and joint-matrix generation executed in WebAssembly together with glTF accessor deinterleaving, sparse patch application, numeric conversion, and mesh normal generation); **bounds, culling, & visibility** (world-space bounds computation for geometry, pointclouds, and glyphfields together with frustum plane extraction and sphere-frustum culling kernels); **array semantics & zero-copy staging** (ndarray indexing utilities for explicit shape-and-stride byte-offset math plus uniforms and instance data staged as zero-copy views into WebAssembly memory with explicit typed-slice handles for JavaScript interop); and **performance envelope** (hot-path allocations avoided via cached pipelines and bind-group layouts plus a frame arena and user heap arenas, with builds optimized via LLVM and Binaryen and SIMD128 enabled for even higher throughput).
 
@@ -305,31 +305,9 @@ Using the IIFE bundle instead of the ESM bundle is exactly the same as above, ex
 <script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.iife.min.js"></script>
 ```
 
-## Development
+## Contributing
 
-1. Install dev dependencies: `npm install`.
-2. Make sure you develop in `./src/` rather than `./dist/`.
-3. Build and test: `npm run build` & `npm run test`, or just `npm run dev`.
-4. Serve locally to check if the `./examples/` work: `npm run start` or use the [live server extension](https://marketplace.visualstudio.com/items?itemName=ritwickdey.LiveServer).
-5. Restore latest release build since builds are only committed during releases: `npm run restore`.
-
-The `./dist/` folder contains:
-- ESM bundle: `WasmGPU.js` & `WasmGPU.min.js`
-- IIFE bundle: `WasmGPU.iife.min.js`
-- WebAssembly bridge: `wasm.js`
-- WebAssembly driver: `wasm.wasm`
-
-Note: `wasm.js` and `wasm.wasm` must be located beside the WasmGPU bundles, i.e. in the `./dist/` folder. These files are automatically copied from the `./build/` folder by `./esbuild.config.js`, so this should not be a problem, but it could become one.
-
-The `./build/` folder contains:
-- WebAssembly bridge: `wasm.js`
-- WebAssembly type declarations: `wasm.d.ts`
-- WebAssembly driver: `wasm.wasm`
-- WebAssembly text format: `wasm.wat`
-
-The WasmGPU logo is built by `npm run logo` which runs `./scripts/rasterize_logo.py` to rasterize the `./assets/logo.svg` file to the `./assets/*.png` files used in the repository and on the website.
-
-The WasmGPU [website](https://zushah.github.io/WasmGPU) is built by `npm run website` which runs `./scripts/build_website.py` to compile the files in `./website/src/` to `./website/build/` and then deploys to GitHub Pages via the `./.github/workflows/deploy_website.yaml` action.
+Asking questions, reporting bugs, suggesting features, and contributing code is very welcome. The guidelines can be found [here](https://www.github.com/Zushah/WasmGPU/blob/main/CONTRIBUTING.md).
 
 ## License
 WasmGPU is available under the [Mozilla Public License 2.0 (MPL-2.0)](https://www.github.com/Zushah/WasmGPU/blob/main/LICENSE.md).
