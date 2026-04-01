@@ -9,7 +9,7 @@
 <p align="center">
     <a href="https://www.github.com/Zushah/WasmGPU/releases/tag/v0.7.0"><img src="https://img.shields.io/badge/release-v0.7.0-005a9c?logo=github&logoColor=white" alt="Latest release"></a>
     <a href="https://raw.githubusercontent.com/Zushah/WasmGPU/v0.7.0/dist/WasmGPU.js"><img src="https://img.shields.io/badge/minified-450.6_kB-654ff0?logo=javascript&logoColor=white" alt="450.6 kilobytes minified bundle size"></a>
-    <a href="https://www.npmjs.com/package/@zushah/wasmgpu"><img src="https://img.shields.io/npm/dm/%40zushah/wasmgpu?logo=npm&logoColor=white" alt="npm downloads per month"></a>
+    <a href="https://www.npmjs.com/package/@zushah/wasmgpu"><img src="https://img.shields.io/npm/dm/%40zushah%2Fwasmgpu?logo=npm&logoColor=white&color=9b8df5" alt="npm downloads per month"></a>
     <a href="https://www.jsdelivr.com/package/gh/Zushah/WasmGPU"><img src="https://img.shields.io/jsdelivr/gh/hm/Zushah/WasmGPU?color=654ff0&logo=jsdelivr&logoColor=white" alt="jsDelivr requests per month"></a>
     <a href="https://www.github.com/Zushah/WasmGPU/blob/main/LICENSE.md"><img src="https://img.shields.io/badge/license-MPL--2.0-005a9c?logo=gitbook&logoColor=white" alt="Mozilla Public License 2.0"></a>
 </p><br>
@@ -24,9 +24,11 @@
 
 ## Architecture Diagram
 
-The diagram below reflects currently implemented subsystems and runtime flow in WasmGPU v0.7.0.
+The diagram below reflects the current runtime flow of WasmGPU.
 
-Solid arrows indicate control flow while dashed arrows indicate data and resource flow.
+Solid arrows indicate control flow while dashed arrows indicate data flow.
+
+Click [here](https://mermaid.live/view#pako:eNp9WG1v4jgQ_itWTtpPbsVLKS0rnZRC6FZLKQJ6SHe9DyYYyDWJc47Tllvtf78ZOySxKVuttuHJeDyvzwz94YViw72Bt43Fe7hnUpHJ_CUl8JMX651k2Z74s4e_XrxZsY6jED-8eH8bCfzxZzN4-ZxzSfwsAwmmIpFaIsH0HkRWLE_uZ8_krXXZv2xZAmN_CAJjFiohD3Cv3LKQD0ge8pRTErKESwa_RaqkiHNKdlwkXMkDJQlTXEYspkTxD1VIEE94vqckE1GqwlgUGxCPD9l-G_EYnuNot1eUsDznikRJJiR-SqNEm02JeOMyZgfEUqFsX3i6eUmd2MyX6Bpfo2dBuotSbnk2eXrC8Iwl-EBiITLr7TyYjuDtHBRzyaX1bjH0JwG8XIQsjtIdgQC_RaGt_emPYA4iT8ZmssVb3oV8tRM0nT6BkF_5Q5QQ8WukLKnZw_A7JjkKX_G2QkVxpA6WyNDUwVAkWaE4hiA_5IonttDd8xiE7ortFipC8lwUMuSQp5TtHA-Hs4dZoO_MOLjIjwmOT-Qm_hTkRlGeMRXuCbq4k6LISBZDmlzx78Ecxb9zmfI4h4yvJZOuK3MM3PRiEyU8zSEoLCZMSggiW-dKQiVioLZCwu3P5AvB9CY8Ea6eeeBjBv38kIZ7KVJR5OA026xZ-EokRNIWXwznOqVS-7E2QcogHb-ssZG_9DHN6394qMCYEVOMPELbxk7FTLVy7tTgcrF8mmOgl5KlOfiUkBwajZMoJQvhf-bXY7D4BgceoZXIe6T2n3bcl2PP2YV0j80-q9oPxOr-s6Px6M90PcVgEssyN1qL7w_aIShIMDVXLIVC2oDvdnkfvWsUuHbPlpo86URNBINW04ndxcsx6Vy2Si44VTwKkJX8MOR5DvIbDkyJvfFFy2K1Qt_lLtn5D4_o1YOmFrxKiqRxBTSf4bWqN_Jf5n7lLx4Nw_igI1nHBzKS0ZtT86tvgY7lN84ywuJYGBbWfmZoJPRpqog6ZHzzWb5XY39e0RSTPGX6qMKCiX59cjm3KiuTImO70xmwevSXuqSYktEHJW8cyR6L6N8CKypFc6G29hyZOMztw5omP-vWCJjzwyQF2jba8Aux3UKslVtMq2ZJp1hwMRQ1cMcnpt5PlshhukCYm35KgIVkzonmIg18IWkBIwqG45maWPnTB12h5ZghOUuy2Jj9D3YKeg5hOWvR3dPzdLRAXhVFusl1ck7n3NlOWw2fJxOd3yJXRULCIo6bAfqs8IDx8D4p3nG0z0-KFX9GwR8gc4_ykDIIEU4onVJecIdwh99srmfhHkXXkEHD5RpxxuOiqd7QZV6N-hw91pEE1D448xeLarBCpqB1TNCgOMG4Bp3pEs-w5FUDzUSuLqCUMfdligsMA8Sal8PBGVHmwuNsbNz4asbQZ7EOYxAb8S0Qg3xdx2DXNorjwW9XQf92PKZQ0OKVD35r3XXubo4fL96jjdoPOtkHDZE44fV1u9cdfXVU7iTnaamv0xl1-6Nan3896g7P67vqttu-q0_vTQ0b2_2hZWOrF9y0zuvsdK66XVfngQNTvZcKx-O7TvemUnjrX41a5xX2_M6w1XIVZoWEYigV3rVv_IaFcGLsX59V2Ana173gRGGUvlb29QK_aV8nuO6cVXc1gqR0vlqZxlWZwi5MYd2tUt68UW-LFJdCqrc_ivsdxf2N4npmcmodwJWM4spF9TJF9apE9QZEccehekGhuHfUGbQ0wNJAzYJAkSEpjG-Kg5ni9KVmuFI9PSkORIrjrUycpUdPIIpzhMJIoJruKfA21cRLNadS5EFakhnVpFSmzFIFrEI1X0AoFlT3MtUNptNRipr_IaLk4uJ3_IZhAHjQAITYBjC0NoLBtRGMtI1g2G0EI37MKuYRMYihDaDLNgJhtQGMsaMFAm4jOuwGQo2Nc6X3-N5IQmrMA6SnfImJurhsmldDtYENser-GjOVUaL6DkR1Mo9GYGD11Vi3BoILHcToccDKpxqCMDkI-uuqB0MdCHPpQPjk5FA3kZ1ovzasAcJTo0RKQyDxJgPQbi6EzXeCQSu6GDami0GbuhA2rYtBCzuQ5ohjxOHRKb0aq4qvhuryQ3dKg6HFSgz9OQXBoRMQPToBkW5OTmMDIwjtXULoZg05aZvXZytMs8IxCvBo65vbVzT6VhctElSzZDUIfGUw_fq06BtwnSg8ZbDTCtdal0fBZSmn6bBZvRoENizl4OlE0LSHAaukrmq0BhuShlsbzXSClh_KN8jBzSA7oOFox9XKKytQlQtA2iWENGEw5I4TcFUpPN7c6AVdlefcrK6oja6g-qSGPOrt4HuBN1Cy4NSDNT1h-NH7geIvHn7hgK1zAI84kl-8l_QnnMlY-qcQyfEYLKi7vTfYsjiHT0UG3-T4KGKwKdcietccwn6uvAFsO1qHN_jhfXiD9mXnut26ven1ey341-3dUu_gDS5agPf6_fbNVafd63e63dvuT-r9py9uXQLevm5dXd90O-2bPiwbHt9E8KXp0fzBTv_d7uf_9Ya82A) to interactively view the diagram if it doesn't properly appear below.
 
 ```mermaid
 flowchart LR
@@ -261,7 +263,7 @@ Examples:
 Super basic example to render a cube:
 ```js
 // Setup
-import { WasmGPU } from "https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.min.js";
+import { WasmGPU } from "@zushah/wasmgpu";
 const canvas = document.querySelector("canvas");
 const wgpu = await WasmGPU.create(canvas, { antialias: true});
 
@@ -305,9 +307,19 @@ Using the IIFE bundle instead of the ESM bundle is exactly the same as above, ex
 <script src="https://cdn.jsdelivr.net/gh/Zushah/WasmGPU@0.7.0/dist/WasmGPU.iife.min.js"></script>
 ```
 
+To get started with the comprehensive [documentation](https://zushah.github.io/WasmGPU/docs/), consider visiting the pages for these fundamentals first:
+- [`WasmGPU.create`](https://zushah.github.io/WasmGPU/docs/render/wasmgpu-create/)
+- [`WasmGPU.compute.createPipeline`](https://zushah.github.io/WasmGPU/docs/compute/wasmgpu-compute-createpipeline/)
+- [`WasmGPU.createMesh`](https://zushah.github.io/WasmGPU/docs/objects/wasmgpu-createmesh/)
+- [`WasmGPU.createCamera.perspective`](https://zushah.github.io/WasmGPU/docs/world/wasmgpu-createcamera-perspective/)
+- [`WasmGPU.createControls.orbit`](https://zushah.github.io/WasmGPU/docs/interact/wasmgpu-createcontrols-orbit/)
+- [`WasmGPU.python`](https://zushah.github.io/WasmGPU/docs/interop/wasmgpu-python/)
+- [`WasmGPU.math`](https://zushah.github.io/WasmGPU/docs/math/wasmgpu-math/)
+
 ## Contributing
 
 Asking questions, reporting bugs, suggesting features, and contributing code is very welcome. The guidelines can be found [here](https://www.github.com/Zushah/WasmGPU/blob/main/CONTRIBUTING.md).
 
 ## License
+
 WasmGPU is available under the [Mozilla Public License 2.0 (MPL-2.0)](https://www.github.com/Zushah/WasmGPU/blob/main/LICENSE.md).
