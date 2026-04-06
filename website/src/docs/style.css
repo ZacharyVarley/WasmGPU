@@ -98,13 +98,31 @@ body {
 .md-content__inner, .md-sidebar__scrollwrap {
     border-radius: 14px;
 }
-
 .md-typeset .admonition, .md-typeset details {
     border-radius: 12px;
     border: 1px solid color-mix(in srgb, var(--wasmgpu-4) 26%, transparent);
 }
 .md-typeset h1, .md-typeset h2, .md-typeset h3 {
     letter-spacing: -0.01em;
+}
+.md-typeset video {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    margin: 1.5em auto;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--wasmgpu-4) 26%, transparent);
+    background-color: var(--md-code-bg-color);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    transition: border-color 0.3s ease;
+}
+[data-md-color-scheme="slate"] .md-typeset video {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.md-typeset video:hover {
+    border-color: color-mix(in srgb, var(--wasmgpu-4) 60%, transparent);
 }
 .wasmgpu-docs-footer {
     margin-top: 2rem;

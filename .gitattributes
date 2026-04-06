@@ -7,3 +7,4 @@ esbuild.config.js linguist-detectable=false
 *.wat text
 *.wasm binary
 *.png binary
+*.mp4 binary
