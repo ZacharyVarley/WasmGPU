@@ -7,6 +7,7 @@
 import type { Camera } from "../world/camera";
 import type { NavigationControls } from "../world/controls";
 import type { GlyphField } from "../world/glyphfield";
+import type { NodeLink } from "../world/nodelink";
 import type { Scene } from "../world/scene";
 import type { PointCloud } from "../world/pointcloud";
 import type { Colormap, BuiltinColormapName } from "../graphics/colormap";
@@ -124,7 +125,12 @@ export type OverlayLegendExplicitSource = {
     colormapStops?: ReadonlyArray<Color4>;
 };
 
-export type OverlayLegendSource = PointCloud | GlyphField | DataMaterial | OverlayLegendExplicitSource;
+export type OverlayLegendNodeLinkSource = {
+    nodelink: NodeLink;
+    component?: "node" | "edge";
+};
+
+export type OverlayLegendSource = PointCloud | GlyphField | NodeLink | OverlayLegendNodeLinkSource | DataMaterial | OverlayLegendExplicitSource;
 
 export type LegendLayerDescriptor = {
     id?: string;

@@ -35,6 +35,8 @@ import { NavigationControls, OrbitControls, TrackballControls } from "../world/c
 import type { NavigationControlsDescriptor, OrbitControlsDescriptor, TrackballControlsDescriptor } from "../world/controls";
 import { GlyphField } from "../world/glyphfield";
 import type { GlyphFieldDescriptor } from "../world/glyphfield";
+import { NodeLink } from "../world/nodelink";
+import type { NodeLinkDescriptor } from "../world/nodelink";
 import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { SelectionStore } from "../world/picking";
@@ -189,6 +191,11 @@ export class WasmGPU {
     private buildPickNdIndex(hit: RendererPickHit): number[] | null {
         if (hit.kind === "pointcloud") return hit.object.mapLinearIndexToNd(hit.elementIndex);
         if (hit.kind === "glyphfield") return hit.object.mapLinearIndexToNd(hit.elementIndex);
+        if (hit.kind === "nodelink") {
+            const decoded = hit.object.decodePickElement(hit.elementIndex);
+            if (!decoded || decoded.component !== "node") return null;
+            return hit.object.mapLinearNodeIndexToNd(decoded.componentIndex);
+        }
         return null;
     }
 
@@ -206,6 +213,30 @@ export class WasmGPU {
             const vector = hit.object.getAttributeRecord(hit.elementIndex);
             if (!vector) return null;
             return { vector };
+        }
+        if (hit.kind === "nodelink") {
+            const decoded = hit.object.decodePickElement(hit.elementIndex);
+            if (!decoded) return null;
+            if (decoded.component === "node") {
+                const rec = hit.object.getNodeRecord(decoded.componentIndex);
+                return {
+                    component: "node",
+                    componentIndex: decoded.componentIndex,
+                    scalar: rec?.scalar ?? null,
+                    color: rec?.color ?? null
+                };
+            }
+            const rec = hit.object.getEdgeRecord(decoded.componentIndex);
+            return {
+                component: "edge",
+                componentIndex: decoded.componentIndex,
+                scalar: rec?.scalar ?? null,
+                color: rec?.color ?? null,
+                edgeEndpoints: rec ? [rec.src, rec.dst] : null,
+                edgePositions: (rec && rec.srcPosition && rec.dstPosition)
+                    ? [rec.srcPosition[0], rec.srcPosition[1], rec.srcPosition[2], rec.dstPosition[0], rec.dstPosition[1], rec.dstPosition[2]]
+                    : null
+            };
         }
         return null;
     }
@@ -407,6 +438,10 @@ export class WasmGPU {
 
     createGlyphField(descriptor: GlyphFieldDescriptor): GlyphField {
         return new GlyphField(descriptor);
+    }
+
+    createNodeLink(descriptor: NodeLinkDescriptor): NodeLink {
+        return new NodeLink(descriptor);
     }
 
     readonly colormap = {

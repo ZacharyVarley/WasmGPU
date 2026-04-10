@@ -7,6 +7,7 @@
 import { Mesh } from "./mesh";
 import { PointCloud } from "./pointcloud";
 import { GlyphField } from "./glyphfield";
+import { NodeLink } from "./nodelink";
 import { Color } from "../graphics/material";
 import { Light, AmbientLight } from "./light";
 import { Bounds3, emptyBounds, unionBounds } from "./bounds";
@@ -23,6 +24,7 @@ export class Scene {
     private _meshes: Mesh[] = [];
     private _pointClouds: PointCloud[] = [];
     private _glyphFields: GlyphField[] = [];
+    private _nodeLinks: NodeLink[] = [];
     private _lights: Light[] = [];
     private _background: Color;
     static readonly MAX_LIGHTS = 8;
@@ -51,16 +53,23 @@ export class Scene {
         return this._glyphFields;
     }
 
+    get nodeLinks(): readonly NodeLink[] {
+        return this._nodeLinks;
+    }
+
     add(mesh: Mesh): this;
     add(pointCloud: PointCloud): this;
     add(glyphField: GlyphField): this;
-    add(obj: Mesh | PointCloud | GlyphField): this {
+    add(nodeLink: NodeLink): this;
+    add(obj: Mesh | PointCloud | GlyphField | NodeLink): this {
         if (obj instanceof Mesh) {
             if (!this._meshes.includes(obj)) this._meshes.push(obj);
         } else if (obj instanceof PointCloud) {
             if (!this._pointClouds.includes(obj)) this._pointClouds.push(obj);
-        } else {
+        } else if (obj instanceof GlyphField) {
             if (!this._glyphFields.includes(obj)) this._glyphFields.push(obj);
+        } else {
+            if (!this._nodeLinks.includes(obj)) this._nodeLinks.push(obj);
         }
         return this;
     }
@@ -68,16 +77,20 @@ export class Scene {
     remove(mesh: Mesh): this;
     remove(pointCloud: PointCloud): this;
     remove(glyphField: GlyphField): this;
-    remove(obj: Mesh | PointCloud | GlyphField): this {
+    remove(nodeLink: NodeLink): this;
+    remove(obj: Mesh | PointCloud | GlyphField | NodeLink): this {
         if (obj instanceof Mesh) {
             const idx = this._meshes.indexOf(obj);
             if (idx !== -1) this._meshes.splice(idx, 1);
         } else if (obj instanceof PointCloud) {
             const idx = this._pointClouds.indexOf(obj);
             if (idx !== -1) this._pointClouds.splice(idx, 1);
-        } else {
+        } else if (obj instanceof GlyphField) {
             const idx = this._glyphFields.indexOf(obj);
             if (idx !== -1) this._glyphFields.splice(idx, 1);
+        } else {
+            const idx = this._nodeLinks.indexOf(obj);
+            if (idx !== -1) this._nodeLinks.splice(idx, 1);
         }
         return this;
     }
@@ -86,6 +99,7 @@ export class Scene {
         this._meshes = [];
         this._pointClouds = [];
         this._glyphFields = [];
+        this._nodeLinks = [];
         return this;
     }
 
@@ -96,6 +110,11 @@ export class Scene {
 
     clearGlyphFields(): this {
         this._glyphFields = [];
+        return this;
+    }
+
+    clearNodeLinks(): this {
+        this._nodeLinks = [];
         return this;
     }
 
@@ -146,6 +165,14 @@ export class Scene {
         return this._glyphFields.filter(g => g.name === name);
     }
 
+    findNodeLinkByName(name: string): NodeLink | undefined {
+        return this._nodeLinks.find(n => n.name === name);
+    }
+
+    findAllNodeLinksByName(name: string): NodeLink[] {
+        return this._nodeLinks.filter(n => n.name === name);
+    }
+
     get visibleMeshes(): Mesh[] {
         return this._meshes.filter(m => m.visible);
     }
@@ -156,6 +183,10 @@ export class Scene {
 
     get visibleGlyphFields(): GlyphField[] {
         return this._glyphFields.filter(g => g.visible);
+    }
+
+    get visibleNodeLinks(): NodeLink[] {
+        return this._nodeLinks.filter(n => n.visible);
     }
 
     get enabledLights(): Light[] {
@@ -193,9 +224,11 @@ export class Scene {
         const meshes = visibleOnly ? this.visibleMeshes : this._meshes;
         const clouds = visibleOnly ? this.visiblePointClouds : this._pointClouds;
         const glyphs = visibleOnly ? this.visibleGlyphFields : this._glyphFields;
+        const links = visibleOnly ? this.visibleNodeLinks : this._nodeLinks;
         for (const mesh of meshes) addBounds(mesh.getWorldBounds());
         for (const pointCloud of clouds) addBounds(pointCloud.getWorldBounds());
         for (const glyphField of glyphs) addBounds(glyphField.getWorldBounds());
+        for (const nodeLink of links) addBounds(nodeLink.getWorldBounds());
         return aggregated;
     }
 
@@ -223,13 +256,23 @@ export class Scene {
         for (const g of this._glyphFields) if (g.visible) callback(g);
     }
 
+    traverseNodeLinks(callback: (n: NodeLink) => void): void {
+        for (const n of this._nodeLinks) callback(n);
+    }
+
+    traverseVisibleNodeLinks(callback: (n: NodeLink) => void): void {
+        for (const n of this._nodeLinks) if (n.visible) callback(n);
+    }
+
     destroy(): void {
         for (const mesh of this._meshes) mesh.destroy();
         for (const pc of this._pointClouds) pc.destroy();
         for (const g of this._glyphFields) g.destroy();
+        for (const n of this._nodeLinks) n.destroy();
         this._meshes = [];
         this._pointClouds = [];
         this._glyphFields = [];
+        this._nodeLinks = [];
         this._lights = [];
     }
 }

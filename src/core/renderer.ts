@@ -11,6 +11,7 @@ import { Camera } from "../world/camera";
 import { Mesh } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
+import { NodeLink } from "../world/nodelink";
 import type { PickLassoPoint, PickQuery, PickRegionQuery } from "../world/picking";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
@@ -18,11 +19,13 @@ import { animf, cullf, frameArena, frustumf, mat4, mat4f, transformf, wasm, wasm
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
 import glyphFieldWGSL from "../wgsl/world/glyphfield.wgsl";
+import nodeLinkWGSL from "../wgsl/world/nodelink.wgsl";
 import pickMeshWGSL from "../wgsl/core/picking-mesh.wgsl";
 import pickMeshSkinnedWGSL from "../wgsl/core/picking-mesh-skinned.wgsl";
 import pickMeshSkinned8WGSL from "../wgsl/core/picking-mesh-skinned8.wgsl";
 import pickPointCloudWGSL from "../wgsl/world/picking-pointcloud.wgsl";
 import pickGlyphFieldWGSL from "../wgsl/world/picking-glyphfield.wgsl";
+import pickNodeLinkWGSL from "../wgsl/world/picking-nodelink.wgsl";
 import { createDepthTexture } from "../utils";
 
 export type RendererDescriptor = {
@@ -67,7 +70,18 @@ type GlyphDrawItem = {
     sortKey: number;
 };
 
-type TransparentDrawItem = DrawItem | PointCloudDrawItem | GlyphDrawItem;
+type NodeLinkDrawItem = {
+    link: NodeLink;
+    pipeline: GPURenderPipeline;
+    pipelineId: number;
+    linkId: number;
+    passKind: "node-points" | "node-solid" | "edge-lines" | "edge-cylinders";
+    geometry: Geometry | null;
+    geometryId: number;
+    sortKey: number;
+};
+
+type TransparentDrawItem = DrawItem | PointCloudDrawItem | GlyphDrawItem | NodeLinkDrawItem;
 
 export type RendererPickHit =
     {
@@ -87,6 +101,13 @@ export type RendererPickHit =
     {
         kind: "glyphfield";
         object: GlyphField;
+        objectId: number;
+        elementIndex: number;
+        worldPosition: [number, number, number];
+    } |
+    {
+        kind: "nodelink";
+        object: NodeLink;
         objectId: number;
         elementIndex: number;
         worldPosition: [number, number, number];
@@ -187,6 +208,17 @@ export class Renderer {
     private glyphFieldDrawItemPoolUsed: number = 0;
     private opaqueGlyphFieldDrawList: GlyphDrawItem[] = [];
     private transparentGlyphFieldDrawList: GlyphDrawItem[] = [];
+    private nodeLinkBindGroupLayout: GPUBindGroupLayout | null = null;
+    private nodeLinkDummyF32Buffer: GPUBuffer | null = null;
+    private nodeLinkDummyU32Buffer: GPUBuffer | null = null;
+    private nodeLinkDrawItemPool: NodeLinkDrawItem[] = [];
+    private nodeLinkDrawItemPoolUsed: number = 0;
+    private opaqueNodeLinkDrawList: NodeLinkDrawItem[] = [];
+    private transparentNodeLinkDrawList: NodeLinkDrawItem[] = [];
+    private cullNodeLinkScratch: NodeLink[] = [];
+    private nodeLinkSphereGeometry: Geometry | null = null;
+    private nodeLinkCubeGeometry: Geometry | null = null;
+    private nodeLinkCylinderGeometry: Geometry | null = null;
     private cullGlyphFieldScratch: GlyphField[] = [];
     private transparentMergedDrawList: TransparentDrawItem[] = [];
     private cullPointCloudScratch: PointCloud[] = [];
@@ -450,6 +482,12 @@ export class Renderer {
         return this.glyphFieldDrawItemPool[idx];
     }
 
+    private acquireNodeLinkDrawItem(): NodeLinkDrawItem {
+        const idx = this.nodeLinkDrawItemPoolUsed++;
+        if (idx >= this.nodeLinkDrawItemPool.length) this.nodeLinkDrawItemPool.push({} as any);
+        return this.nodeLinkDrawItemPool[idx];
+    }
+
     private ensureCullingCapacity(count: number): void {
         if (count <= this.cullCapacity) return;
         let cap = Math.max(1, this.cullCapacity);
@@ -498,9 +536,11 @@ export class Renderer {
             this.buildDrawLists(scene, camera);
             this.buildPointCloudDrawLists(scene, camera);
             this.buildGlyphFieldDrawLists(scene, camera);
+            this.buildNodeLinkDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
+            this.executeNodeLinkDrawList(pass, this.opaqueNodeLinkDrawList);
             this.executeTransparentMergedDrawList(pass);
             pass.end();
             if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
@@ -532,9 +572,11 @@ export class Renderer {
             this.buildDrawLists(scene, camera);
             this.buildPointCloudDrawLists(scene, camera);
             this.buildGlyphFieldDrawLists(scene, camera);
+            this.buildNodeLinkDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
+            this.executeNodeLinkDrawList(pass, this.opaqueNodeLinkDrawList);
             this.executeTransparentMergedDrawList(pass);
             pass.end();
             if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
@@ -716,6 +758,7 @@ export class Renderer {
         this.buildDrawLists(scene, camera);
         this.buildPointCloudDrawLists(scene, camera);
         this.buildGlyphFieldDrawLists(scene, camera);
+        this.buildNodeLinkDrawLists(scene, camera);
         if (!this.pickIdView || !this.pickDepthView || !this.pickDepthPayloadView) this.resizePickTargets();
     }
 
@@ -740,6 +783,13 @@ export class Renderer {
         if (obj instanceof GlyphField) {
             return {
                 kind: "glyphfield",
+                object: obj, objectId: sample.objectId,
+                elementIndex: sample.elementIndex, worldPosition
+            };
+        }
+        if (obj instanceof NodeLink) {
+            return {
+                kind: "nodelink",
                 object: obj, objectId: sample.objectId,
                 elementIndex: sample.elementIndex, worldPosition
             };
@@ -798,6 +848,8 @@ export class Renderer {
         this.executeGlyphPickDrawList(pass, this.transparentGlyphFieldDrawList);
         this.executePointCloudPickDrawList(pass, this.opaquePointCloudDrawList);
         this.executePointCloudPickDrawList(pass, this.transparentPointCloudDrawList);
+        this.executeNodeLinkPickDrawList(pass, this.opaqueNodeLinkDrawList);
+        this.executeNodeLinkPickDrawList(pass, this.transparentNodeLinkDrawList);
         pass.end();
         encoder.copyTextureToBuffer(
             { texture: this.pickIdTexture, origin: { x: query.x, y: query.y, z: 0 } },
@@ -958,8 +1010,16 @@ export class Renderer {
         this.shaderCache.clear();
         this.pointCloudBindGroupLayout = null;
         this.glyphFieldBindGroupLayout = null;
+        this.nodeLinkBindGroupLayout = null;
         this.glyphFieldDummyAttributesBuffer?.destroy();
         this.glyphFieldDummyAttributesBuffer = null;
+        this.nodeLinkDummyF32Buffer?.destroy();
+        this.nodeLinkDummyU32Buffer?.destroy();
+        this.nodeLinkDummyF32Buffer = null;
+        this.nodeLinkDummyU32Buffer = null;
+        this.nodeLinkSphereGeometry = null;
+        this.nodeLinkCubeGeometry = null;
+        this.nodeLinkCylinderGeometry = null;
         this.gpuQuerySet?.destroy();
         this.gpuQuerySet = null;
         this.gpuResolveBuffer?.destroy();
@@ -1765,6 +1825,110 @@ export class Renderer {
         }
     }
 
+    private getNodeLinkNodeGeometry(mode: NodeLink["nodeGeometryMode"]): Geometry {
+        if (mode === "cubes") {
+            this.nodeLinkCubeGeometry ??= Geometry.box(1, 1, 1);
+            return this.nodeLinkCubeGeometry;
+        }
+        this.nodeLinkSphereGeometry ??= Geometry.sphere(0.5, 16, 12);
+        return this.nodeLinkSphereGeometry;
+    }
+
+    private getNodeLinkEdgeCylinderGeometry(): Geometry {
+        this.nodeLinkCylinderGeometry ??= Geometry.cylinder(1, 1, 1, 14, 1, false);
+        return this.nodeLinkCylinderGeometry;
+    }
+
+    private buildNodeLinkDrawLists(scene: Scene, camera: Camera): void {
+        this.nodeLinkDrawItemPoolUsed = 0;
+        this.opaqueNodeLinkDrawList.length = 0;
+        this.transparentNodeLinkDrawList.length = 0;
+        this.cullNodeLinkScratch.length = 0;
+        for (const link of scene.nodeLinks) {
+            if (!link.visible) continue;
+            if (link.nodeCount <= 0 && link.edgeCount <= 0) continue;
+            this.cullNodeLinkScratch.push(link);
+        }
+        if (this.cullNodeLinkScratch.length === 0) return;
+        const ts = TransformStore.global();
+        const f32 = ts.f32();
+        const camX = camera.position[0];
+        const camY = camera.position[1];
+        const camZ = camera.position[2];
+        const visible: NodeLink[] = [];
+        if (this.frustumCullingEnabled) {
+            const bounded: NodeLink[] = [];
+            const unbounded: NodeLink[] = [];
+            for (const link of this.cullNodeLinkScratch) {
+                if (link.boundsRadius > 0) bounded.push(link);
+                else unbounded.push(link);
+            }
+            if (bounded.length > 0) {
+                this.ensureCullingCapacity(bounded.length);
+                const bcount = bounded.length;
+                const worldPtrsPtr = frameArena.alloc(bcount * 4, 4) as WasmPtr;
+                const localCentersPtr = frameArena.allocF32(bcount * 3) as WasmPtr;
+                const localRadiiPtr = frameArena.allocF32(bcount) as WasmPtr;
+                const worldPtrs = ts.u32().subarray(worldPtrsPtr >>> 2, (worldPtrsPtr >>> 2) + bcount);
+                const localCenters = ts.f32().subarray(localCentersPtr >>> 2, (localCentersPtr >>> 2) + bcount * 3);
+                const localRadii = ts.f32().subarray(localRadiiPtr >>> 2, (localRadiiPtr >>> 2) + bcount);
+                for (let i = 0; i < bounded.length; i++) {
+                    const link = bounded[i];
+                    worldPtrs[i] = link.transform.worldMatrixPtr >>> 0;
+                    localCenters[i * 3 + 0] = link.boundsCenter[0];
+                    localCenters[i * 3 + 1] = link.boundsCenter[1];
+                    localCenters[i * 3 + 2] = link.boundsCenter[2];
+                    localRadii[i] = link.boundsRadius;
+                }
+                cullf.prepareWorldSpheresFromPtrs(this.cullCentersPtr, this.cullRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, bcount);
+                const planesPtr = frameArena.allocF32(24) as WasmPtr;
+                frustumf.writePlanesFromViewProjection(planesPtr, this.cameraUniformStagingPtr);
+                const outPtr = frameArena.alloc(bounded.length * 4, 4) as WasmPtr;
+                const numVisible = cullf.spheresFrustum(outPtr, this.cullCentersPtr, this.cullRadiiPtr, bounded.length, planesPtr);
+                const u32 = ts.u32();
+                const outBase = outPtr >>> 2;
+                for (let i = 0; i < numVisible; i++) visible.push(bounded[u32[outBase + i]]);
+            }
+            for (const link of unbounded) visible.push(link);
+        } else for (const link of this.cullNodeLinkScratch) visible.push(link);
+        const pushItem = (link: NodeLink, passKind: NodeLinkDrawItem["passKind"], geometry: Geometry | null): void => {
+            const pipeline = this.getOrCreateNodeLinkPipeline(link, passKind);
+            const item = this.acquireNodeLinkDrawItem();
+            item.link = link;
+            item.pipeline = pipeline;
+            item.pipelineId = this.getObjectId(pipeline);
+            item.linkId = this.getObjectId(link);
+            item.passKind = passKind;
+            item.geometry = geometry;
+            item.geometryId = geometry ? this.getObjectId(geometry) : 0;
+            const worldBase = link.transform.worldMatrixPtr >>> 2;
+            const cx = link.boundsCenter[0];
+            const cy = link.boundsCenter[1];
+            const cz = link.boundsCenter[2];
+            const cwx = f32[worldBase + 0] * cx + f32[worldBase + 4] * cy + f32[worldBase + 8] * cz + f32[worldBase + 12];
+            const cwy = f32[worldBase + 1] * cx + f32[worldBase + 5] * cy + f32[worldBase + 9] * cz + f32[worldBase + 13];
+            const cwz = f32[worldBase + 2] * cx + f32[worldBase + 6] * cy + f32[worldBase + 10] * cz + f32[worldBase + 14];
+            const dx = cwx - camX;
+            const dy = cwy - camY;
+            const dz = cwz - camZ;
+            item.sortKey = dx * dx + dy * dy + dz * dz;
+            if (link.blendMode === BlendMode.Opaque) this.opaqueNodeLinkDrawList.push(item);
+            else this.transparentNodeLinkDrawList.push(item);
+        };
+        for (const link of visible) {
+            if (link.nodeCount > 0) {
+                if (link.nodeGeometryMode === "points") pushItem(link, "node-points", null);
+                else pushItem(link, "node-solid", this.getNodeLinkNodeGeometry(link.nodeGeometryMode));
+            }
+            if (link.edgeCount > 0) {
+                if (link.edgeGeometryMode === "lines") pushItem(link, "edge-lines", null);
+                else pushItem(link, "edge-cylinders", this.getNodeLinkEdgeCylinderGeometry());
+            }
+        }
+        this.opaqueNodeLinkDrawList.sort((a, b) => a.pipelineId - b.pipelineId || a.geometryId - b.geometryId || a.linkId - b.linkId);
+        this.transparentNodeLinkDrawList.sort((a, b) => b.sortKey - a.sortKey || a.pipelineId - b.pipelineId || a.geometryId - b.geometryId || a.linkId - b.linkId);
+    }
+
     private executeDrawList(pass: GPURenderPassEncoder, items: DrawItem[]): void {
         let lastPipeline: GPURenderPipeline | null = null;
         let lastMaterial: Material | null = null;
@@ -1930,16 +2094,74 @@ export class Renderer {
         }
     }
 
+    private executeNodeLinkDrawList(pass: GPURenderPassEncoder, list: NodeLinkDrawItem[]): void {
+        if (list.length === 0) return;
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastGeometry: Geometry | null = null;
+        let lastLink: NodeLink | null = null;
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            const link = item.link;
+            this.ensureNodeLinkBindGroup(link);
+            if (!link.bindGroup) continue;
+            if (item.pipeline !== lastPipeline) {
+                pass.setPipeline(item.pipeline);
+                lastPipeline = item.pipeline;
+                lastGeometry = null;
+                lastLink = null;
+            }
+            if (item.geometry && item.geometry !== lastGeometry) {
+                item.geometry.upload(this.device);
+                pass.setVertexBuffer(0, item.geometry.positionBuffer);
+                pass.setVertexBuffer(1, item.geometry.normalBuffer);
+                if (item.geometry.isIndexed) pass.setIndexBuffer(item.geometry.indexBuffer!, "uint32");
+                lastGeometry = item.geometry;
+            }
+            if (link !== lastLink) {
+                pass.setBindGroup(1, link.bindGroup);
+                lastLink = link;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const slot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[slot];
+            const globalBindGroup = this.globalBindGroups[slot];
+            const modelPtr = link.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            pass.setBindGroup(0, globalBindGroup);
+            if (item.passKind === "node-points") {
+                pass.draw(6, link.nodeCount);
+            } else if (item.passKind === "edge-lines") {
+                pass.draw(2, link.edgeCount);
+            } else if (item.passKind === "node-solid") {
+                if (!item.geometry) continue;
+                if (item.geometry.isIndexed) pass.drawIndexed(item.geometry.indexCount, link.nodeCount);
+                else pass.draw(item.geometry.vertexCount, link.nodeCount);
+            } else {
+                if (!item.geometry) continue;
+                if (item.geometry.isIndexed) pass.drawIndexed(item.geometry.indexCount, link.edgeCount);
+                else pass.draw(item.geometry.vertexCount, link.edgeCount);
+            }
+        }
+    }
+
     private executeTransparentMergedDrawList(pass: GPURenderPassEncoder): void {
         this.transparentMergedDrawList.length = 0;
         for (const item of this.transparentDrawList) this.transparentMergedDrawList.push(item);
         for (const item of this.transparentGlyphFieldDrawList) this.transparentMergedDrawList.push(item);
         for (const item of this.transparentPointCloudDrawList) this.transparentMergedDrawList.push(item);
+        for (const item of this.transparentNodeLinkDrawList) this.transparentMergedDrawList.push(item);
         if (this.transparentMergedDrawList.length === 0) return;
         const typeOrder = (x: TransparentDrawItem): number => {
             if ("mesh" in x) return 0;
             if ("field" in x) return 1;
-            return 2;
+            if ("cloud" in x) return 2;
+            return 3;
         };
         this.transparentMergedDrawList.sort((a, b) => {
             const d0 = b.sortKey - a.sortKey;
@@ -1972,6 +2194,13 @@ export class Renderer {
                 const bg = b as GlyphDrawItem;
                 return (ag.geometryId - bg.geometryId) || (ag.fieldId - bg.fieldId);
             }
+            const aIsNodeLink = "link" in a;
+            const bIsNodeLink = "link" in b;
+            if (aIsNodeLink && bIsNodeLink) {
+                const an = a as NodeLinkDrawItem;
+                const bn = b as NodeLinkDrawItem;
+                return (an.geometryId - bn.geometryId) || (an.linkId - bn.linkId);
+            }
             return typeOrder(a) - typeOrder(b);
         });
         const bytes = wasmInterop.bytes();
@@ -1982,6 +2211,7 @@ export class Renderer {
         let lastSkinned8: boolean = false;
         let lastCloud: PointCloud | null = null;
         let lastGlyph: GlyphField | null = null;
+        let lastNodeLink: NodeLink | null = null;
         for (let i = 0; i < this.transparentMergedDrawList.length; i++) {
             const item = this.transparentMergedDrawList[i];
             if ("mesh" in item) {
@@ -1998,6 +2228,7 @@ export class Renderer {
                     lastSkinned8 = false;
                     lastCloud = null;
                     lastGlyph = null;
+                    lastNodeLink = null;
                 }
                 if (geometry !== lastGeometry) geometry.upload(this.device);
                 if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
@@ -2086,6 +2317,7 @@ export class Renderer {
                     lastGlyph = field;
                     lastCloud = null;
                     lastMaterial = null;
+                    lastNodeLink = null;
                 }
                 if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
                 const modelSlot = this.modelBufferIndex++;
@@ -2103,41 +2335,103 @@ export class Renderer {
                 else pass.draw(geometry.vertexCount, field.instanceCount);
                 continue;
             }
-            const drawItem = item as PointCloudDrawItem;
-            const cloud = drawItem.cloud;
-            if (!cloud.visible) continue;
-            if (cloud.pointCount <= 0) continue;
-            this.ensurePointCloudBindGroup(cloud);
-            if (!cloud.bindGroup) continue;
-            if (drawItem.pipeline !== lastPipeline) {
-                pass.setPipeline(drawItem.pipeline);
-                lastPipeline = drawItem.pipeline;
-                lastMaterial = null;
-                lastGeometry = null;
-                lastSkinned = false;
-                lastSkinned8 = false;
-                lastCloud = null;
-                lastGlyph = null;
+            if ("cloud" in item) {
+                const drawItem = item as PointCloudDrawItem;
+                const cloud = drawItem.cloud;
+                if (!cloud.visible) continue;
+                if (cloud.pointCount <= 0) continue;
+                this.ensurePointCloudBindGroup(cloud);
+                if (!cloud.bindGroup) continue;
+                if (drawItem.pipeline !== lastPipeline) {
+                    pass.setPipeline(drawItem.pipeline);
+                    lastPipeline = drawItem.pipeline;
+                    lastMaterial = null;
+                    lastGeometry = null;
+                    lastSkinned = false;
+                    lastSkinned8 = false;
+                    lastCloud = null;
+                    lastGlyph = null;
+                    lastNodeLink = null;
+                }
+                if (cloud !== lastCloud) {
+                    pass.setBindGroup(1, cloud.bindGroup);
+                    lastCloud = cloud;
+                    lastGlyph = null;
+                    lastMaterial = null;
+                    lastNodeLink = null;
+                }
+                if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+                const modelSlot = this.modelBufferIndex++;
+                const modelBuffer = this.modelUniformBuffers[modelSlot];
+                const globalBindGroup = this.globalBindGroups[modelSlot];
+                const modelPtr = cloud.transform.worldMatrixPtr as WasmPtr;
+                const invPtr = this.modelUniformStagingPtr;
+                const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+                mat4f.invert(invPtr, modelPtr);
+                mat4f.transpose(normalPtr, invPtr);
+                this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+                this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+                pass.setBindGroup(0, globalBindGroup);
+                pass.draw(6, cloud.pointCount);
+                continue;
             }
-            if (cloud !== lastCloud) {
-                pass.setBindGroup(1, cloud.bindGroup);
-                lastCloud = cloud;
-                lastGlyph = null;
-                lastMaterial = null;
+            if ("link" in item) {
+                const drawItem = item as NodeLinkDrawItem;
+                const link = drawItem.link;
+                this.ensureNodeLinkBindGroup(link);
+                if (!link.bindGroup) continue;
+                if (drawItem.pipeline !== lastPipeline) {
+                    pass.setPipeline(drawItem.pipeline);
+                    lastPipeline = drawItem.pipeline;
+                    lastMaterial = null;
+                    lastGeometry = null;
+                    lastSkinned = false;
+                    lastSkinned8 = false;
+                    lastCloud = null;
+                    lastGlyph = null;
+                    lastNodeLink = null;
+                }
+                if (drawItem.geometry && drawItem.geometry !== lastGeometry) {
+                    drawItem.geometry.upload(this.device);
+                    pass.setVertexBuffer(0, drawItem.geometry.positionBuffer);
+                    pass.setVertexBuffer(1, drawItem.geometry.normalBuffer);
+                    if (drawItem.geometry.isIndexed) pass.setIndexBuffer(drawItem.geometry.indexBuffer!, "uint32");
+                    lastGeometry = drawItem.geometry;
+                }
+                if (link !== lastNodeLink) {
+                    pass.setBindGroup(1, link.bindGroup);
+                    lastNodeLink = link;
+                    lastCloud = null;
+                    lastGlyph = null;
+                    lastMaterial = null;
+                }
+                if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+                const modelSlot = this.modelBufferIndex++;
+                const modelBuffer = this.modelUniformBuffers[modelSlot];
+                const globalBindGroup = this.globalBindGroups[modelSlot];
+                const modelPtr = link.transform.worldMatrixPtr as WasmPtr;
+                const invPtr = this.modelUniformStagingPtr;
+                const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+                mat4f.invert(invPtr, modelPtr);
+                mat4f.transpose(normalPtr, invPtr);
+                this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+                this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+                pass.setBindGroup(0, globalBindGroup);
+                if (drawItem.passKind === "node-points") {
+                    pass.draw(6, link.nodeCount);
+                } else if (drawItem.passKind === "edge-lines") {
+                    pass.draw(2, link.edgeCount);
+                } else if (drawItem.passKind === "node-solid") {
+                    if (!drawItem.geometry) continue;
+                    if (drawItem.geometry.isIndexed) pass.drawIndexed(drawItem.geometry.indexCount, link.nodeCount);
+                    else pass.draw(drawItem.geometry.vertexCount, link.nodeCount);
+                } else {
+                    if (!drawItem.geometry) continue;
+                    if (drawItem.geometry.isIndexed) pass.drawIndexed(drawItem.geometry.indexCount, link.edgeCount);
+                    else pass.draw(drawItem.geometry.vertexCount, link.edgeCount);
+                }
+                continue;
             }
-            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
-            const modelSlot = this.modelBufferIndex++;
-            const modelBuffer = this.modelUniformBuffers[modelSlot];
-            const globalBindGroup = this.globalBindGroups[modelSlot];
-            const modelPtr = cloud.transform.worldMatrixPtr as WasmPtr;
-            const invPtr = this.modelUniformStagingPtr;
-            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
-            mat4f.invert(invPtr, modelPtr);
-            mat4f.transpose(normalPtr, invPtr);
-            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
-            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
-            pass.setBindGroup(0, globalBindGroup);
-            pass.draw(6, cloud.pointCount);
         }
     }
 
@@ -2296,6 +2590,64 @@ export class Renderer {
             pass.setBindGroup(2, this.pickBindGroups[slot]);
             if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, field.instanceCount);
             else pass.draw(geometry.vertexCount, field.instanceCount);
+        }
+    }
+
+    private executeNodeLinkPickDrawList(pass: GPURenderPassEncoder, items: NodeLinkDrawItem[]): void {
+        const bytes = wasmInterop.bytes();
+        let lastPipeline: GPURenderPipeline | null = null;
+        let lastGeometry: Geometry | null = null;
+        let lastLink: NodeLink | null = null;
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const link = item.link;
+            this.ensureNodeLinkBindGroup(link);
+            if (!link.bindGroup) continue;
+            const pipeline = this.getOrCreatePickNodeLinkPipeline(item.passKind, link);
+            if (pipeline !== lastPipeline) {
+                pass.setPipeline(pipeline);
+                lastPipeline = pipeline;
+                lastGeometry = null;
+                lastLink = null;
+            }
+            if (item.geometry && item.geometry !== lastGeometry) {
+                item.geometry.upload(this.device);
+                pass.setVertexBuffer(0, item.geometry.positionBuffer);
+                if (item.geometry.isIndexed) pass.setIndexBuffer(item.geometry.indexBuffer!, "uint32");
+                lastGeometry = item.geometry;
+            }
+            if (this.modelBufferIndex >= this.modelUniformBuffers.length) this.ensureModelBufferPool(this.modelBufferIndex + 1);
+            const slot = this.modelBufferIndex++;
+            const modelBuffer = this.modelUniformBuffers[slot];
+            const globalBindGroup = this.globalBindGroups[slot];
+            const modelPtr = link.transform.worldMatrixPtr as WasmPtr;
+            const invPtr = this.modelUniformStagingPtr;
+            const normalPtr = (this.modelUniformStagingPtr + 16 * 4) as WasmPtr;
+            mat4f.invert(invPtr, modelPtr);
+            mat4f.transpose(normalPtr, invPtr);
+            this.queue.writeBuffer(modelBuffer, 0, bytes, modelPtr, 16 * 4);
+            this.queue.writeBuffer(modelBuffer, 16 * 4, bytes, normalPtr, 16 * 4);
+            const elementBase = (item.passKind === "edge-lines" || item.passKind === "edge-cylinders") ? link.nodeCount : 0;
+            this.writePickUniform(slot, this.getObjectId(link), elementBase);
+            pass.setBindGroup(0, globalBindGroup);
+            if (link !== lastLink) {
+                pass.setBindGroup(1, link.bindGroup);
+                lastLink = link;
+            }
+            pass.setBindGroup(2, this.pickBindGroups[slot]);
+            if (item.passKind === "node-points") {
+                pass.draw(6, link.nodeCount);
+            } else if (item.passKind === "edge-lines") {
+                pass.draw(2, link.edgeCount);
+            } else if (item.passKind === "node-solid") {
+                if (!item.geometry) continue;
+                if (item.geometry.isIndexed) pass.drawIndexed(item.geometry.indexCount, link.nodeCount);
+                else pass.draw(item.geometry.vertexCount, link.nodeCount);
+            } else {
+                if (!item.geometry) continue;
+                if (item.geometry.isIndexed) pass.drawIndexed(item.geometry.indexCount, link.edgeCount);
+                else pass.draw(item.geometry.vertexCount, link.edgeCount);
+            }
         }
     }
 
@@ -2554,6 +2906,47 @@ export class Renderer {
                 depthWriteEnabled: true,
                 depthCompare: "less"
             }
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getOrCreatePickNodeLinkPipeline(passKind: NodeLinkDrawItem["passKind"], link: NodeLink): GPURenderPipeline {
+        const cullMode = (passKind === "node-solid" || passKind === "edge-cylinders") ? this.getCullMode(link.cullMode) : "none";
+        const key = `pick:nodelink:${passKind}:${cullMode}`;
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        let shaderModule = this.shaderCache.get(pickNodeLinkWGSL);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: pickNodeLinkWGSL });
+            this.shaderCache.set(pickNodeLinkWGSL, shaderModule);
+        }
+        const layout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, this.getNodeLinkBindGroupLayout(), this.getPickBindGroupLayout()]
+        });
+        let entryPoint = "vs_pick_node_points";
+        let buffers: GPUVertexBufferLayout[] = [];
+        let topology: GPUPrimitiveTopology = "triangle-list";
+        if (passKind === "node-solid") {
+            entryPoint = "vs_pick_node_solid";
+            buffers = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }];
+            topology = "triangle-list";
+        } else if (passKind === "edge-lines") {
+            entryPoint = "vs_pick_edge_lines";
+            buffers = [];
+            topology = "line-list";
+        } else if (passKind === "edge-cylinders") {
+            entryPoint = "vs_pick_edge_cylinders";
+            buffers = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }];
+            topology = "triangle-list";
+        }
+        const pipeline = this.device.createRenderPipeline({
+            label: key,
+            layout,
+            vertex: { module: shaderModule, entryPoint, buffers },
+            fragment: { module: shaderModule, entryPoint: "fs_pick", targets: [{ format: "rg32uint" }, { format: "r32float" }] },
+            primitive: { topology, cullMode },
+            depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
         });
         this.pipelineCache.set(key, pipeline);
         return pipeline;
@@ -3001,5 +3394,135 @@ export class Renderer {
             ]
         });
         field.bindGroupKey = key;
+    }
+
+    private getNodeLinkBindGroupLayout(): GPUBindGroupLayout {
+        if (this.nodeLinkBindGroupLayout) return this.nodeLinkBindGroupLayout;
+        this.nodeLinkBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+                { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+                { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+                { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+                { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+                { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+                { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+                { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", minBindingSize: 512 } },
+                { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "1d" } },
+                { binding: 10, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+                { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "1d" } }
+            ]
+        });
+        return this.nodeLinkBindGroupLayout;
+    }
+
+    private getNodeLinkPipelineCacheKey(link: NodeLink, passKind: NodeLinkDrawItem["passKind"]): string {
+        const cull = (passKind === "node-solid" || passKind === "edge-cylinders") ? link.cullMode : "none";
+        return ["nodelink", passKind, `blend=${link.blendMode}`, `depthTest=${link.depthTest ? 1 : 0}`, `depthWrite=${link.depthWrite ? 1 : 0}`, `cull=${cull}`, `fmt=${this.format}`].join("|");
+    }
+
+    private getOrCreateNodeLinkPipeline(link: NodeLink, passKind: NodeLinkDrawItem["passKind"]): GPURenderPipeline {
+        const key = this.getNodeLinkPipelineCacheKey(link, passKind);
+        const cached = this.pipelineCache.get(key);
+        if (cached) return cached;
+        let shaderModule = this.shaderCache.get(nodeLinkWGSL);
+        if (!shaderModule) {
+            shaderModule = this.device.createShaderModule({ code: nodeLinkWGSL });
+            this.shaderCache.set(nodeLinkWGSL, shaderModule);
+        }
+        const layout = this.device.createPipelineLayout({
+            bindGroupLayouts: [this.globalBindGroupLayout, this.getNodeLinkBindGroupLayout()]
+        });
+        let vertexEntry = "vs_node_points";
+        let fragmentEntry = "fs_node";
+        let buffers: GPUVertexBufferLayout[] = [];
+        let topology: GPUPrimitiveTopology = "triangle-list";
+        let cullMode: GPUCullMode = "none";
+        if (passKind === "node-solid") {
+            vertexEntry = "vs_node_solid";
+            fragmentEntry = "fs_node";
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] }
+            ];
+            topology = "triangle-list";
+            cullMode = this.getCullMode(link.cullMode);
+        } else if (passKind === "edge-lines") {
+            vertexEntry = "vs_edge_lines";
+            fragmentEntry = "fs_edge";
+            buffers = [];
+            topology = "line-list";
+            cullMode = "none";
+        } else if (passKind === "edge-cylinders") {
+            vertexEntry = "vs_edge_cylinders";
+            fragmentEntry = "fs_edge";
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] }
+            ];
+            topology = "triangle-list";
+            cullMode = this.getCullMode(link.cullMode);
+        }
+        const pipeline = this.device.createRenderPipeline({
+            label: key,
+            layout,
+            vertex: { module: shaderModule, entryPoint: vertexEntry, buffers },
+            fragment: { module: shaderModule, entryPoint: fragmentEntry, targets: [{ format: this.format, blend: this.getBlendState(link.blendMode) }] },
+            primitive: { topology, cullMode },
+            depthStencil: (link.depthTest || link.depthWrite) ? { format: "depth24plus", depthWriteEnabled: link.depthWrite, depthCompare: link.depthTest ? "less" : "always" } : undefined
+        });
+        this.pipelineCache.set(key, pipeline);
+        return pipeline;
+    }
+
+    private getNodeLinkBindGroupKey(link: NodeLink): string {
+        const np = link.nodePositionsBuffer;
+        const ns = link.nodeScalarsBuffer;
+        const nc = link.nodeColorsBuffer;
+        const nr = link.nodeRadiiBuffer;
+        const ep = link.edgesBuffer;
+        const es = link.edgeScalarsBuffer;
+        const ec = link.edgeColorsBuffer;
+        const u = link.uniformBuffer;
+        return `nodelink:${np ? this.getObjectId(np) : 0}:${ns ? this.getObjectId(ns) : 0}:${nc ? this.getObjectId(nc) : 0}:${nr ? this.getObjectId(nr) : 0}:${ep ? this.getObjectId(ep) : 0}:${es ? this.getObjectId(es) : 0}:${ec ? this.getObjectId(ec) : 0}:${u ? this.getObjectId(u) : 0}:${link.getNodeColormapKey()}:${link.getEdgeColormapKey()}`;
+    }
+
+    private ensureNodeLinkBindGroup(link: NodeLink): void {
+        link.upload(this.device, this.queue);
+        if (!link.nodePositionsBuffer) return;
+        if (!link.uniformBuffer) {
+            link.uniformBuffer = this.device.createBuffer({ size: link.getUniformBufferSize(), usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            link.bindGroupKey = null;
+        }
+        if (link.dirtyUniforms) {
+            const data = link.getUniformData();
+            this.queue.writeBuffer(link.uniformBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
+            link.markUniformsClean();
+        }
+        if (!this.nodeLinkDummyF32Buffer) this.nodeLinkDummyF32Buffer = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        if (!this.nodeLinkDummyU32Buffer) this.nodeLinkDummyU32Buffer = this.device.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const key = this.getNodeLinkBindGroupKey(link);
+        if (link.bindGroup && link.bindGroupKey === key) return;
+        const nodeCmap = link.getNodeColormapForBinding().getGPUResources(this.device, this.queue);
+        const edgeCmap = link.getEdgeColormapForBinding().getGPUResources(this.device, this.queue);
+        link.bindGroup = this.device.createBindGroup({
+            layout: this.getNodeLinkBindGroupLayout(),
+            entries: [
+                { binding: 0, resource: { buffer: link.nodePositionsBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 1, resource: { buffer: link.nodeScalarsBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 2, resource: { buffer: link.nodeColorsBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 3, resource: { buffer: link.nodeRadiiBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 4, resource: { buffer: link.edgesBuffer ?? this.nodeLinkDummyU32Buffer } },
+                { binding: 5, resource: { buffer: link.edgeScalarsBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 6, resource: { buffer: link.edgeColorsBuffer ?? this.nodeLinkDummyF32Buffer } },
+                { binding: 7, resource: { buffer: link.uniformBuffer } },
+                { binding: 8, resource: nodeCmap.sampler },
+                { binding: 9, resource: nodeCmap.view },
+                { binding: 10, resource: edgeCmap.sampler },
+                { binding: 11, resource: edgeCmap.view }
+            ]
+        });
+        link.bindGroupKey = key;
     }
 }

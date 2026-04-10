@@ -8,6 +8,7 @@ import { Colormap } from "../graphics/colormap";
 import { DataMaterial, type Color4 } from "../graphics/material";
 import { invertScaleTransformCPU, normalizeScaleTransform, type ScaleTransform } from "../scaling";
 import { GlyphField } from "../world/glyphfield";
+import { NodeLink } from "../world/nodelink";
 import { PointCloud } from "../world/pointcloud";
 import { DOMNodePool } from "./pool";
 import { resolveScreenAnchorPoint } from "./projection";
@@ -72,8 +73,15 @@ const serializeTransform = (transform: ScaleTransform): string => {
     ].join("|");
 };
 
+const toEmitterSource = (source: OverlayLegendSource): OverlayLegendSource | NodeLink => {
+    if (source instanceof NodeLink) return source;
+    const maybe = source as { nodelink?: NodeLink };
+    if (maybe.nodelink instanceof NodeLink) return maybe.nodelink;
+    return source;
+};
+
 const subscribeSource = (source: OverlayLegendSource, callback: () => void): (() => void) | null => {
-    const emitter = source as OverlayVisualChangeEmitter;
+    const emitter = toEmitterSource(source) as OverlayVisualChangeEmitter;
     if (typeof emitter.onVisualChange !== "function") return null;
     return emitter.onVisualChange(() => callback()) ?? null;
 };
@@ -113,6 +121,27 @@ const resolveSource = (source: OverlayLegendSource, strictParity: boolean): Lege
             transform,
             signature: `glyphfield|cm:${colormap.id}|f:${colormap.filter}|w:${colormap.width}|${serializeTransform(transform)}`,
             sample: (t: number) => colormap.sampleCPU(t)
+        };
+    }
+    if (source instanceof NodeLink || (source as { nodelink?: NodeLink }).nodelink instanceof NodeLink) {
+        const obj = source instanceof NodeLink ? source : (source as { nodelink: NodeLink }).nodelink;
+        const component = source instanceof NodeLink ? "node" : ((source as { component?: "node" | "edge" }).component ?? "node");
+        const transform = normalizeScaleTransform(component === "edge" ? obj.edgeScaleTransform : obj.nodeScaleTransform);
+        const colormap = component === "edge" ? obj.edgeColormap : obj.nodeColormap;
+        const stops = component === "edge" ? obj.edgeColormapStops : obj.nodeColormapStops;
+        if (typeof colormap === "string" && colormap === "custom") {
+            return {
+                transform,
+                signature: `nodelink|${component}|custom|${serializeTransform(transform)}|${JSON.stringify(stops)}`,
+                sample: (t: number) => sampleCustomStops(t, stops)
+            };
+        }
+        const resolved = component === "edge" ? obj.getEdgeColormapForBinding() : obj.getNodeColormapForBinding();
+        if (strictParity && !resolved.canSampleCPU) throw new Error("LegendLayer: bound nodelink colormap is GPU-only and cannot be sampled on CPU in strict parity mode.");
+        return {
+            transform,
+            signature: `nodelink|${component}|cm:${resolved.id}|f:${resolved.filter}|w:${resolved.width}|${serializeTransform(transform)}`,
+            sample: (t: number) => resolved.sampleCPU(t)
         };
     }
     if (source instanceof DataMaterial) {

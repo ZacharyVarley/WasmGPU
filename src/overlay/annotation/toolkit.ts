@@ -66,6 +66,18 @@ let TOOLKIT_ID = 1;
 
 const midpoint = (a: readonly number[], b: readonly number[]): AnnotationVec3 => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
 
+const clonePickAttributesLocal = (attributes: PickHit["attributes"]): PickHit["attributes"] => {
+    if (!attributes) return null;
+    return {
+        ...attributes,
+        vector: attributes.vector ? [...attributes.vector] as [number, number, number, number] : null,
+        packedPoint: attributes.packedPoint ? [...attributes.packedPoint] as [number, number, number, number] : null,
+        color: attributes.color ? [...attributes.color] as [number, number, number, number] : null,
+        edgeEndpoints: attributes.edgeEndpoints ? [...attributes.edgeEndpoints] as [number, number] : null,
+        edgePositions: attributes.edgePositions ? [...attributes.edgePositions] as [number, number, number, number, number, number] : null
+    };
+};
+
 const probeReadoutFromHit = (hit: PickResult | null): AnnotationProbeReadout => {
     if (!hit) {
         return {
@@ -85,7 +97,7 @@ const probeReadoutFromHit = (hit: PickResult | null): AnnotationProbeReadout => 
         elementIndex: hit.elementIndex,
         worldPosition: [hit.worldPosition[0], hit.worldPosition[1], hit.worldPosition[2]],
         ndIndex: hit.ndIndex ? hit.ndIndex.slice() : null,
-        attributes: hit.attributes ? { ...hit.attributes, vector: hit.attributes.vector ? [...hit.attributes.vector] as [number, number, number, number] : null, packedPoint: hit.attributes.packedPoint ? [...hit.attributes.packedPoint] as [number, number, number, number] : null } : null
+        attributes: clonePickAttributesLocal(hit.attributes)
     };
 };
 
@@ -110,7 +122,7 @@ const clonePending = (pending: readonly AnnotationAnchor[]): AnnotationAnchor[] 
                 objectId: src.pick.objectId,
                 elementIndex: src.pick.elementIndex,
                 ndIndex: src.pick.ndIndex ? src.pick.ndIndex.slice() : null,
-                attributes: src.pick.attributes ? { ...src.pick.attributes, vector: src.pick.attributes.vector ? [...src.pick.attributes.vector] as [number, number, number, number] : null, packedPoint: src.pick.attributes.packedPoint ? [...src.pick.attributes.packedPoint] as [number, number, number, number] : null } : null
+                attributes: clonePickAttributesLocal(src.pick.attributes)
             } : null
         };
     }
@@ -229,11 +241,11 @@ export class AnnotationToolkit {
     }
 
     get hoverProbe(): AnnotationProbeReadout {
-        return { ...this.hoverReadout, worldPosition: this.hoverReadout.worldPosition ? [this.hoverReadout.worldPosition[0], this.hoverReadout.worldPosition[1], this.hoverReadout.worldPosition[2]] : null, ndIndex: this.hoverReadout.ndIndex ? this.hoverReadout.ndIndex.slice() : null, attributes: this.hoverReadout.attributes ? { ...this.hoverReadout.attributes, vector: this.hoverReadout.attributes.vector ? [...this.hoverReadout.attributes.vector] as [number, number, number, number] : null, packedPoint: this.hoverReadout.attributes.packedPoint ? [...this.hoverReadout.attributes.packedPoint] as [number, number, number, number] : null } : null };
+        return { ...this.hoverReadout, worldPosition: this.hoverReadout.worldPosition ? [this.hoverReadout.worldPosition[0], this.hoverReadout.worldPosition[1], this.hoverReadout.worldPosition[2]] : null, ndIndex: this.hoverReadout.ndIndex ? this.hoverReadout.ndIndex.slice() : null, attributes: clonePickAttributesLocal(this.hoverReadout.attributes) };
     }
 
     get selectionProbe(): AnnotationSelectionReadout {
-        return { ...this.selectionReadout, worldPosition: this.selectionReadout.worldPosition ? [this.selectionReadout.worldPosition[0], this.selectionReadout.worldPosition[1], this.selectionReadout.worldPosition[2]] : null, ndIndex: this.selectionReadout.ndIndex ? this.selectionReadout.ndIndex.slice() : null, attributes: this.selectionReadout.attributes ? { ...this.selectionReadout.attributes, vector: this.selectionReadout.attributes.vector ? [...this.selectionReadout.attributes.vector] as [number, number, number, number] : null, packedPoint: this.selectionReadout.attributes.packedPoint ? [...this.selectionReadout.attributes.packedPoint] as [number, number, number, number] : null } : null };
+        return { ...this.selectionReadout, worldPosition: this.selectionReadout.worldPosition ? [this.selectionReadout.worldPosition[0], this.selectionReadout.worldPosition[1], this.selectionReadout.worldPosition[2]] : null, ndIndex: this.selectionReadout.ndIndex ? this.selectionReadout.ndIndex.slice() : null, attributes: clonePickAttributesLocal(this.selectionReadout.attributes) };
     }
 
     onAnnotationsChange(listener: AnnotationChangeListener): () => void {

@@ -119,8 +119,17 @@ export const cloneAnnotationVec3 = (v: readonly number[]): AnnotationVec3 => [v[
 export const clonePickAttributes = (attributes: PickAttributes | null): PickAttributes | null => {
     if (!attributes) return null;
     return {
-        scalar: attributes.scalar ?? null, vector: attributes.vector ? [attributes.vector[0], attributes.vector[1], attributes.vector[2], attributes.vector[3]] : null,
-        packedPoint: attributes.packedPoint ? [attributes.packedPoint[0], attributes.packedPoint[1], attributes.packedPoint[2], attributes.packedPoint[3]] : null
+        scalar: attributes.scalar ?? null,
+        vector: attributes.vector ? [attributes.vector[0], attributes.vector[1], attributes.vector[2], attributes.vector[3]] : null,
+        packedPoint: attributes.packedPoint ? [attributes.packedPoint[0], attributes.packedPoint[1], attributes.packedPoint[2], attributes.packedPoint[3]] : null,
+        component: attributes.component ?? null,
+        componentIndex: attributes.componentIndex ?? null,
+        color: attributes.color ? [attributes.color[0], attributes.color[1], attributes.color[2], attributes.color[3]] : null,
+        edgeEndpoints: attributes.edgeEndpoints ? [attributes.edgeEndpoints[0], attributes.edgeEndpoints[1]] : null,
+        edgePositions: attributes.edgePositions ? [
+            attributes.edgePositions[0], attributes.edgePositions[1], attributes.edgePositions[2],
+            attributes.edgePositions[3], attributes.edgePositions[4], attributes.edgePositions[5]
+        ] : null
     };
 };
 

@@ -7,18 +7,24 @@
 import { Mesh } from "./mesh";
 import { PointCloud } from "./pointcloud";
 import { GlyphField } from "./glyphfield";
+import { NodeLink } from "./nodelink";
 
-export type PickKind = "mesh" | "pointcloud" | "glyphfield";
+export type PickKind = "mesh" | "pointcloud" | "glyphfield" | "nodelink";
 
 export type PickAttributes = {
     scalar?: number | null;
     vector?: [number, number, number, number] | null;
     packedPoint?: [number, number, number, number] | null;
+    component?: "node" | "edge" | null;
+    componentIndex?: number | null;
+    color?: [number, number, number, number] | null;
+    edgeEndpoints?: [number, number] | null;
+    edgePositions?: [number, number, number, number, number, number] | null;
 };
 
 export type PickHit = {
     kind: PickKind;
-    object: Mesh | PointCloud | GlyphField;
+    object: Mesh | PointCloud | GlyphField | NodeLink;
     objectId: number;
     elementIndex: number;
     worldPosition: [number, number, number];

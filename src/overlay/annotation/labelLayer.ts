@@ -30,8 +30,25 @@ const formatAttributes = (attributes: AnnotationProbeReadout["attributes"]): str
     if (attributes.scalar !== undefined && attributes.scalar !== null) lines.push(`scalar: ${formatFiniteNumber(attributes.scalar, 6)}`);
     if (attributes.vector) lines.push(`vector: [${formatFiniteNumber(attributes.vector[0], 4)}, ${formatFiniteNumber(attributes.vector[1], 4)}, ${formatFiniteNumber(attributes.vector[2], 4)}, ${formatFiniteNumber(attributes.vector[3], 4)}]`);
     if (attributes.packedPoint) lines.push(`packedPoint: [${formatFiniteNumber(attributes.packedPoint[0], 4)}, ${formatFiniteNumber(attributes.packedPoint[1], 4)}, ${formatFiniteNumber(attributes.packedPoint[2], 4)}, ${formatFiniteNumber(attributes.packedPoint[3], 4)}]`);
+    if (attributes.component) lines.push(`component: ${attributes.component}`);
+    if (attributes.componentIndex !== undefined && attributes.componentIndex !== null) lines.push(`componentIndex: ${attributes.componentIndex}`);
+    if (attributes.color) lines.push(`color: [${formatFiniteNumber(attributes.color[0], 4)}, ${formatFiniteNumber(attributes.color[1], 4)}, ${formatFiniteNumber(attributes.color[2], 4)}, ${formatFiniteNumber(attributes.color[3], 4)}]`);
+    if (attributes.edgeEndpoints) lines.push(`edgeEndpoints: [${attributes.edgeEndpoints[0]}, ${attributes.edgeEndpoints[1]}]`);
+    if (attributes.edgePositions) lines.push(`edgePositions: [${formatFiniteNumber(attributes.edgePositions[0], 4)}, ${formatFiniteNumber(attributes.edgePositions[1], 4)}, ${formatFiniteNumber(attributes.edgePositions[2], 4)}, ${formatFiniteNumber(attributes.edgePositions[3], 4)}, ${formatFiniteNumber(attributes.edgePositions[4], 4)}, ${formatFiniteNumber(attributes.edgePositions[5], 4)}]`);
     if (lines.length === 0) lines.push("attributes: {}");
     return lines;
+};
+
+const cloneProbeAttributes = (attributes: AnnotationProbeReadout["attributes"]): AnnotationProbeReadout["attributes"] => {
+    if (!attributes) return null;
+    return {
+        ...attributes,
+        vector: attributes.vector ? [...attributes.vector] as [number, number, number, number] : null,
+        packedPoint: attributes.packedPoint ? [...attributes.packedPoint] as [number, number, number, number] : null,
+        color: attributes.color ? [...attributes.color] as [number, number, number, number] : null,
+        edgeEndpoints: attributes.edgeEndpoints ? [...attributes.edgeEndpoints] as [number, number] : null,
+        edgePositions: attributes.edgePositions ? [...attributes.edgePositions] as [number, number, number, number, number, number] : null
+    };
 };
 
 const formatProbe = (title: string, readout: AnnotationProbeReadout | null): string => {
@@ -160,13 +177,13 @@ export class AnnotationLabelLayer implements OverlayLayer {
     }
 
     setHoverReadout(readout: AnnotationProbeReadout | null): void {
-        this.hoverReadout = readout ? { ...readout, worldPosition: readout.worldPosition ? [readout.worldPosition[0], readout.worldPosition[1], readout.worldPosition[2]] : null, ndIndex: readout.ndIndex ? readout.ndIndex.slice() : null, attributes: readout.attributes ? { ...readout.attributes, vector: readout.attributes.vector ? [...readout.attributes.vector] as [number, number, number, number] : null, packedPoint: readout.attributes.packedPoint ? [...readout.attributes.packedPoint] as [number, number, number, number] : null } : null } : null;
+        this.hoverReadout = readout ? { ...readout, worldPosition: readout.worldPosition ? [readout.worldPosition[0], readout.worldPosition[1], readout.worldPosition[2]] : null, ndIndex: readout.ndIndex ? readout.ndIndex.slice() : null, attributes: cloneProbeAttributes(readout.attributes) } : null;
         this.readoutDirty = true;
         this._system?.invalidate("manual");
     }
 
     setSelectionReadout(readout: AnnotationSelectionReadout | null): void {
-        this.selectionReadout = readout ? { ...readout, worldPosition: readout.worldPosition ? [readout.worldPosition[0], readout.worldPosition[1], readout.worldPosition[2]] : null, ndIndex: readout.ndIndex ? readout.ndIndex.slice() : null, attributes: readout.attributes ? { ...readout.attributes, vector: readout.attributes.vector ? [...readout.attributes.vector] as [number, number, number, number] : null, packedPoint: readout.attributes.packedPoint ? [...readout.attributes.packedPoint] as [number, number, number, number] : null } : null } : null;
+        this.selectionReadout = readout ? { ...readout, worldPosition: readout.worldPosition ? [readout.worldPosition[0], readout.worldPosition[1], readout.worldPosition[2]] : null, ndIndex: readout.ndIndex ? readout.ndIndex.slice() : null, attributes: cloneProbeAttributes(readout.attributes) } : null;
         this.readoutDirty = true;
         this._system?.invalidate("manual");
     }
