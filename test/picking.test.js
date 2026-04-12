@@ -149,7 +149,35 @@ const cloudNoCPU = wgpu.createPointCloud({
 });
 cloudNoCPU.upload(wgpu.gpu.device, wgpu.gpu.queue);
 
-scene.add(mesh).add(cloud).add(field).add(cloudNoCPU);
+const link = wgpu.createNodeLink({
+    nodePositions: new Float32Array([
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        1, 1, 0
+    ]),
+    edges: new Uint16Array([
+        0, 1,
+        2, 3
+    ]),
+    nodeScalars: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+    nodeColors: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+        0, 0, 1, 1,
+        1, 1, 0, 1
+    ]),
+    edgeScalars: new Float32Array([0.6, 0.9]),
+    edgeColors: new Float32Array([
+        0.2, 0.2, 0.2, 1,
+        0.8, 0.8, 0.8, 1
+    ]),
+    keepCPUData: true,
+    ndShape: [2, 2]
+});
+link.upload(wgpu.gpu.device, wgpu.gpu.queue);
+
+scene.add(mesh).add(cloud).add(field).add(cloudNoCPU).add(link);
 
 const renderer = wgpu.renderer;
 assert.ok(renderer && typeof renderer.pick === "function", "Internal renderer.pick is required for WasmGPU.pick");
@@ -200,6 +228,33 @@ try {
     assert.deepStrictEqual(glyphHit.ndIndex, [0, 1], "GlyphField nd index decode mismatch");
     assert.ok(glyphHit.attributes, "GlyphField attributes should be present when CPU data exists");
     arraysApproxEqual(glyphHit.attributes.vector, [4.5, 5.5, 6.5, 7.5], 1e-6, "GlyphField vec4 attribute mismatch");
+
+    renderer.pick = async () => makePickHit("nodelink", link, 41, 2, [0, 1, 0]);
+    const nodeLinkNodeHit = await wgpu.pick(scene, camera, 128, 128, { includeAttributes: true });
+    assert.ok(nodeLinkNodeHit, "Expected nodelink node pick hit");
+    assert.strictEqual(nodeLinkNodeHit.kind, "nodelink");
+    assert.strictEqual(nodeLinkNodeHit.object, link);
+    assert.deepStrictEqual(nodeLinkNodeHit.ndIndex, [1, 0], "NodeLink node nd-index mismatch");
+    assert.ok(nodeLinkNodeHit.attributes, "NodeLink node attributes should be present");
+    assert.strictEqual(nodeLinkNodeHit.attributes.component, "node", "NodeLink node component mismatch");
+    assert.strictEqual(nodeLinkNodeHit.attributes.componentIndex, 2, "NodeLink node componentIndex mismatch");
+    numberApproxEqual(nodeLinkNodeHit.attributes.scalar, 0.30, 1e-6, "NodeLink node scalar mismatch");
+    arraysApproxEqual(nodeLinkNodeHit.attributes.color, [0, 0, 1, 1], 1e-6, "NodeLink node color mismatch");
+    assert.strictEqual(nodeLinkNodeHit.attributes.edgeEndpoints, undefined, "NodeLink node hit should not have edge endpoints");
+
+    renderer.pick = async () => makePickHit("nodelink", link, 41, link.nodeCount + 1, [0.5, 1, 0]);
+    const nodeLinkEdgeHit = await wgpu.pick(scene, camera, 128, 128, { includeAttributes: true });
+    assert.ok(nodeLinkEdgeHit, "Expected nodelink edge pick hit");
+    assert.strictEqual(nodeLinkEdgeHit.kind, "nodelink");
+    assert.strictEqual(nodeLinkEdgeHit.object, link);
+    assert.strictEqual(nodeLinkEdgeHit.ndIndex, null, "NodeLink edge ndIndex should be null");
+    assert.ok(nodeLinkEdgeHit.attributes, "NodeLink edge attributes should be present");
+    assert.strictEqual(nodeLinkEdgeHit.attributes.component, "edge", "NodeLink edge component mismatch");
+    assert.strictEqual(nodeLinkEdgeHit.attributes.componentIndex, 1, "NodeLink edge componentIndex mismatch");
+    numberApproxEqual(nodeLinkEdgeHit.attributes.scalar, 0.90, 1e-6, "NodeLink edge scalar mismatch");
+    arraysApproxEqual(nodeLinkEdgeHit.attributes.color, [0.8, 0.8, 0.8, 1], 1e-6, "NodeLink edge color mismatch");
+    assert.deepStrictEqual(nodeLinkEdgeHit.attributes.edgeEndpoints, [2, 3], "NodeLink edge endpoints mismatch");
+    arraysApproxEqual(nodeLinkEdgeHit.attributes.edgePositions, [0, 1, 0, 1, 1, 0], 1e-6, "NodeLink edge positions mismatch");
 
     renderer.pick = async () => makePickHit("mesh", mesh, 31, 7, [-2, 0, 0]);
     const meshHit = await wgpu.pick(scene, camera, 128, 128);
@@ -282,6 +337,24 @@ try {
 
     renderer.pickRect = async () => ({
         mode: "rect",
+        hits: [
+            makePickHit("nodelink", link, 41, 1, [1, 0, 0]),
+            makePickHit("nodelink", link, 41, link.nodeCount + 0, [0.5, 0, 0])
+        ],
+        truncated: false,
+        bounds: { x: 10, y: 20, width: 100, height: 100 },
+        sampledPixels: 64
+    });
+    const nodeLinkRect = await wgpu.pickRect(scene, camera, 10, 20, 110, 120, { includeAttributes: true, maxHits: 8 });
+    assert.strictEqual(nodeLinkRect.mode, "rect", "NodeLink pickRect mode mismatch");
+    assert.strictEqual(nodeLinkRect.hits.length, 2, "NodeLink pickRect hit count mismatch");
+    assert.strictEqual(nodeLinkRect.hits[0].attributes.component, "node", "NodeLink pickRect first hit should decode as node");
+    assert.strictEqual(nodeLinkRect.hits[1].attributes.component, "edge", "NodeLink pickRect second hit should decode as edge");
+    assert.deepStrictEqual(nodeLinkRect.hits[0].ndIndex, [0, 1], "NodeLink pickRect node ndIndex mismatch");
+    assert.strictEqual(nodeLinkRect.hits[1].ndIndex, null, "NodeLink pickRect edge ndIndex should be null");
+
+    renderer.pickRect = async () => ({
+        mode: "rect",
         hits: [],
         truncated: false,
         bounds: { x: 0, y: 0, width: 0, height: 0 },
@@ -327,6 +400,24 @@ try {
         ndIndex: [0, 1],
         attributes: { vector: [4.5, 5.5, 6.5, 7.5] }
     };
+    const h3 = {
+        kind: "nodelink",
+        object: link,
+        objectId: 41,
+        elementIndex: 2,
+        worldPosition: [0, 1, 0],
+        ndIndex: [1, 0],
+        attributes: { component: "node", componentIndex: 2, scalar: 0.3 }
+    };
+    const h4 = {
+        kind: "nodelink",
+        object: link,
+        objectId: 41,
+        elementIndex: link.nodeCount + 1,
+        worldPosition: [0.5, 1, 0],
+        ndIndex: null,
+        attributes: { component: "edge", componentIndex: 1, edgeEndpoints: [2, 3], scalar: 0.9 }
+    };
 
     store.replace(h0);
     assert.strictEqual(store.size, 1, "replace() should clear and add exactly one hit");
@@ -347,6 +438,17 @@ try {
 
     store.apply("replace", [h0, h2]);
     assert.strictEqual(store.size, 2, "apply(replace) should replace from many-hits input");
+
+    store.add([h3, h4]);
+    assert.strictEqual(store.has(41, 2), true, "Selection should include NodeLink node entry");
+    assert.strictEqual(store.has(41, link.nodeCount + 1), true, "Selection should include NodeLink edge entry");
+    store.toggle(h4);
+    assert.strictEqual(store.has(41, link.nodeCount + 1), false, "Selection toggle should remove NodeLink edge entry");
+    store.toggle(h4);
+    assert.strictEqual(store.has(41, link.nodeCount + 1), true, "Selection toggle should re-add NodeLink edge entry");
+    store.remove([h3, h4]);
+    assert.strictEqual(store.has(41, 2), false, "Selection remove should clear NodeLink node entry");
+    assert.strictEqual(store.has(41, link.nodeCount + 1), false, "Selection remove should clear NodeLink edge entry");
 
     store.clear();
     assert.strictEqual(store.size, 0, "clear() should empty selection state");
