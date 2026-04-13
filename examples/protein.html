@@ -202,14 +202,82 @@
             };
             const getAtomicRadius = (element) => ATOMIC_RADII[element] ?? ATOMIC_RADII.OTHER;
             const getRenderedRadius = (element) => VISUAL_RADIUS_ANCHOR + (VISUAL_RADIUS_GAIN * (getAtomicRadius(element) - VISUAL_RADIUS_ANCHOR));
-            const buildGroupedIndices = (atoms) => {
-                const groups = new Map();
-                for (let i = 0; i < atoms.length; i++) {
-                    const key = atoms[i].element || "OTHER";
-                    if (!groups.has(key)) groups.set(key, []);
-                    groups.get(key).push(i);
+
+            // Covalent radii and utility to build edges between covalently bonded atoms based on their positions and element types, using a spatial grid for efficiency
+            const COVALENT_RADII = {
+                H: 0.31,
+                C: 0.76,
+                N: 0.71,
+                O: 0.66,
+                S: 1.05,
+                P: 1.07,
+                FE: 1.26,
+                ZN: 1.22,
+                OTHER: 0.77
+            };
+            const getCovalentRadius = (element) => COVALENT_RADII[element] ?? COVALENT_RADII.OTHER;
+            const buildCovalentEdges = (positions, atoms) => {
+                const atomCount = atoms.length;
+                const cellSize = 2.15;
+                const grid = new Map();
+                const cellCoords = new Int32Array(atomCount * 3);
+                const keyOf = (ix, iy, iz) => `${ix}|${iy}|${iz}`;
+                for (let i = 0; i < atomCount; i++) {
+                    const o = i * 3;
+                    const ix = Math.floor(positions[o + 0] / cellSize);
+                    const iy = Math.floor(positions[o + 1] / cellSize);
+                    const iz = Math.floor(positions[o + 2] / cellSize);
+                    cellCoords[o + 0] = ix;
+                    cellCoords[o + 1] = iy;
+                    cellCoords[o + 2] = iz;
+                    const key = keyOf(ix, iy, iz);
+                    let bucket = grid.get(key);
+                    if (!bucket) {
+                        bucket = [];
+                        grid.set(key, bucket);
+                    }
+                    bucket.push(i);
                 }
-                return Array.from(groups.entries()).sort((a, b) => getAtomicRadius(b[0]) - getAtomicRadius(a[0]));
+                const edges = [];
+                const lengths = [];
+                for (let i = 0; i < atomCount; i++) {
+                    const oi = i * 3;
+                    const xi = positions[oi + 0];
+                    const yi = positions[oi + 1];
+                    const zi = positions[oi + 2];
+                    const ri = getCovalentRadius(atoms[i].element);
+                    const cx = cellCoords[oi + 0];
+                    const cy = cellCoords[oi + 1];
+                    const cz = cellCoords[oi + 2];
+                    for (let dz = -1; dz <= 1; dz++) {
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                const bucket = grid.get(keyOf(cx + dx, cy + dy, cz + dz));
+                                if (!bucket) continue;
+                                for (let k = 0; k < bucket.length; k++) {
+                                    const j = bucket[k];
+                                    if (j <= i) continue;
+                                    const oj = j * 3;
+                                    const xj = positions[oj + 0];
+                                    const yj = positions[oj + 1];
+                                    const zj = positions[oj + 2];
+                                    const dxij = xj - xi;
+                                    const dyij = yj - yi;
+                                    const dzij = zj - zi;
+                                    const d2 = (dxij * dxij) + (dyij * dyij) + (dzij * dzij);
+                                    if (d2 < 0.06) continue;
+                                    const rj = getCovalentRadius(atoms[j].element);
+                                    const threshold = ((ri + rj) * 1.18) + 0.28;
+                                    if (d2 > (threshold * threshold)) continue;
+                                    edges.push(i, j);
+                                    lengths.push(Math.sqrt(d2));
+                                }
+                            }
+                        }
+                    }
+                }
+                const edgeIndices = atomCount < 65536 ? new Uint16Array(edges) : new Uint32Array(edges);
+                return { edgeIndices, edgeLengths: new Float32Array(lengths) };
             };
 
             // WasmGPU setup
@@ -230,6 +298,7 @@
                 minDistance: 0.6,
                 maxDistance: 240
             });
+            scene.addLight(wgpu.createLight.ambient({ color: [1, 1, 1], intensity: 0.35 })).addLight(wgpu.createLight.directional({ direction: [-0.55, -1.0, -0.35], color: [1, 1, 1], intensity: 1.25 }));
 
             // Create overlay layers for axis triads
             const overlaySystem = wgpu.createOverlay.system({
@@ -289,16 +358,58 @@
                 sourceLabel = "embedded fallback";
             }
 
-            // Extract atom data
+            // Extract atom data and build nodelink buffers
             const coords = parsed.coords;
             const atomMeta = parsed.meta;
             const summary = parsed.summary;
             const atomCount = atomMeta.length;
-            const baseScale = {
-                componentCount: 4,
-                componentIndex: 3,
+            const nodePositions = new Float32Array(atomCount * 3);
+            const nodeRadii = new Float32Array(atomCount * 3);
+            for (let i = 0; i < atomCount; i++) {
+                const src = i * 3;
+                const dst = i * 3;
+                nodePositions[dst + 0] = coords[src + 0];
+                nodePositions[dst + 1] = coords[src + 1];
+                nodePositions[dst + 2] = coords[src + 2];
+                const rendered = getRenderedRadius(atomMeta[i].element) * 0.09;
+                nodeRadii[dst + 0] = rendered;
+                nodeRadii[dst + 1] = rendered;
+                nodeRadii[dst + 2] = rendered;
+            }
+
+            // Set up categorical color mappings for element, residue, and chain, and build corresponding node scalar arrays for efficient switching between color modes
+            const elementSetup = categoricalSetup(atomMeta.map((atom) => atom.element), (element) => ELEMENT_PALETTE[element] ?? ELEMENT_PALETTE.OTHER, "turbo");
+            const residueSetup = categoricalSetup(atomMeta.map((atom) => atom.residue), null, "turbo");
+            const chainSetup = categoricalSetup(atomMeta.map((atom) => atom.chain), null, "turbo");
+            const buildNodeScalars = (lookup, getKey) => {
+                const out = new Float32Array(atomCount);
+                for (let i = 0; i < atomCount; i++) out[i] = lookup.get(getKey(atomMeta[i])) ?? 0.0;
+                return out;
+            };
+            const nodeScalarsByMode = {
+                element: buildNodeScalars(elementSetup.lookup, (atom) => atom.element),
+                residue: buildNodeScalars(residueSetup.lookup, (atom) => atom.residue),
+                chain: buildNodeScalars(chainSetup.lookup, (atom) => atom.chain)
+            };
+
+            // Build covalent edges based on atom positions and element types, and compute edge scalar values based on bond lengths for coloring
+            const { edgeIndices, edgeLengths } = buildCovalentEdges(nodePositions, atomMeta);
+            const edgeScalars = new Float32Array(edgeLengths.length);
+            let edgeMin = Infinity;
+            let edgeMax = -Infinity;
+            for (let i = 0; i < edgeLengths.length; i++) {
+                edgeMin = Math.min(edgeMin, edgeLengths[i]);
+                edgeMax = Math.max(edgeMax, edgeLengths[i]);
+            }
+            const edgeDen = Math.max(1e-9, edgeMax - edgeMin);
+            for (let i = 0; i < edgeLengths.length; i++) edgeScalars[i] = (edgeLengths[i] - edgeMin) / edgeDen;
+
+            // Set up scale transforms for node and edge properties
+            const nodeScale = {
+                componentCount: 1,
+                componentIndex: 0,
                 valueMode: "component",
-                stride: 4,
+                stride: 1,
                 offset: 0,
                 mode: "linear",
                 clampMode: "range",
@@ -309,67 +420,65 @@
                 gamma: 1,
                 invert: false
             };
-            const buildPackedData = (atomIndices, scalarLookup, getKey) => {
-                const data = new Float32Array(atomIndices.length * 4);
-                for (let localIndex = 0; localIndex < atomIndices.length; localIndex++) {
-                    const atomIndex = atomIndices[localIndex];
-                    const atom = atomMeta[atomIndex];
-                    const o = localIndex * 4;
-                    const c = atomIndex * 3;
-                    data[o + 0] = coords[c + 0];
-                    data[o + 1] = coords[c + 1];
-                    data[o + 2] = coords[c + 2];
-                    data[o + 3] = scalarLookup.get(getKey(atom)) ?? 0.0;
-                }
-                return data;
+            const edgeScale = {
+                componentCount: 1,
+                componentIndex: 0,
+                valueMode: "component",
+                stride: 1,
+                offset: 0,
+                mode: "linear",
+                clampMode: "range",
+                domainMin: 0,
+                domainMax: 1,
+                clampMin: 0,
+                clampMax: 1,
+                gamma: 1,
+                invert: false
             };
 
-            // Colormappings setup and build point clouds for each element group, with pre-packed data for each color mode for efficient switching
-            const elementSetup = categoricalSetup(atomMeta.map((atom) => atom.element), (element) => ELEMENT_PALETTE[element] ?? ELEMENT_PALETTE.OTHER, "turbo");
-            const residueSetup = categoricalSetup(atomMeta.map((atom) => atom.residue), null, "turbo");
-            const chainSetup = categoricalSetup(atomMeta.map((atom) => atom.chain), null, "turbo");
-            const groupedAtoms = buildGroupedIndices(atomMeta);
-            const cloudAtomIndexMap = new WeakMap();
-            const cloudRecords = groupedAtoms.map(([element, atomIndices]) => {
-                const radius = getAtomicRadius(element);
-                const renderedRadius = getRenderedRadius(element);
-                const dataByMode = {
-                    element: buildPackedData(atomIndices, elementSetup.lookup, (atom) => atom.element),
-                    residue: buildPackedData(atomIndices, residueSetup.lookup, (atom) => atom.residue),
-                    chain: buildPackedData(atomIndices, chainSetup.lookup, (atom) => atom.chain)
-                };
-                const proteinCloud = wgpu.createPointCloud({
-                    name: `protein-atoms-${element.toLowerCase()}`,
-                    data: dataByMode.element,
-                    keepCPUData: true,
-                    basePointSize: renderedRadius * 14.0,
-                    minPointSize: Math.max(6.0, renderedRadius * 4.8),
-                    maxPointSize: renderedRadius * 24.0,
-                    sizeAttenuation: 10,
-                    softness: 0.1,
-                    opacity: 1.0,
-                    blendMode: "transparent",
-                    depthWrite: true,
-                    scaleTransform: baseScale,
-                    colormap: elementSetup.colormap,
-                    colormapStops: elementSetup.colormapStops ?? undefined
-                });
-                scene.add(proteinCloud);
-                proteinCloud.upload(device, queue);
-                cloudAtomIndexMap.set(proteinCloud, atomIndices);
-                return { element, atomIndices, radius, renderedRadius, dataByMode, proteinCloud };
+            // Create the nodelink for the protein structure
+            const proteinGraph = wgpu.createNodeLink({
+                name: "protein-graph",
+                nodePositions,
+                nodePositionsStride: 3,
+                nodeRadii,
+                nodeRadiiStride: 3,
+                nodeScalars: nodeScalarsByMode.element,
+                nodeGeometryMode: "spheres",
+                nodeColorMode: "scalar",
+                nodeColormap: elementSetup.colormap,
+                nodeColormapStops: elementSetup.colormapStops ?? undefined,
+                nodeScaleTransform: nodeScale,
+                nodeSize: 1.0,
+                minPointSize: 4,
+                maxPointSize: 28,
+                pointSizeAttenuation: 9,
+                edges: edgeIndices,
+                edgeScalars,
+                edgeGeometryMode: "cylinders",
+                edgeColorMode: "solid",
+                edgeSolidColor: [0.72, 0.80, 0.92, 0.9],
+                edgeScaleTransform: edgeScale,
+                edgeSize: 0.065,
+                opacity: 1.0,
+                lit: true,
+                blendMode: "opaque",
+                keepCPUData: true,
+                ndShape: [atomCount]
             });
+            scene.add(proteinGraph);
+            proteinGraph.upload(device, queue);
 
             // State variables for active color mode, camera, current view, and probing
             let activeColorMode = "element";
             let activeCamera = perspective;
             let currentView = null;
-            let hoverAtom = null;
-            let selectedAtom = null;
+            let hoverRecord = null;
+            let selectedRecord = null;
             let hoverPickToken = 0;
-            let lastMessage = `loaded ${sourceLabel}`;
+            let lastMessage = `loaded ${sourceLabel} | built ${edgeIndices.length / 2} covalent edges`;
 
-            // Utilities for switching colormaps and applying hit results to atoms
+            // Utilities for switching colormaps and applying hit results
             const modeConfigFor = (mode) => {
                 if (mode === "element") return { label: "element", setup: elementSetup };
                 if (mode === "residue") return { label: "residue", setup: residueSetup };
@@ -378,30 +487,47 @@
             const applyColorMode = (mode) => {
                 const config = modeConfigFor(mode);
                 activeColorMode = mode;
-                for (const record of cloudRecords) {
-                    record.proteinCloud.setData(record.dataByMode[mode], { keepCPUData: true });
-                    record.proteinCloud.colormap = config.setup.colormap;
-                    if (config.setup.colormapStops) record.proteinCloud.colormapStops = config.setup.colormapStops;
-                    record.proteinCloud.setScaleTransform(baseScale);
-                    record.proteinCloud.upload(device, queue);
-                }
+                proteinGraph.setNodeScalars(nodeScalarsByMode[mode], { keepCPUData: true });
+                proteinGraph.nodeColormap = config.setup.colormap;
+                if (config.setup.colormapStops) proteinGraph.nodeColormapStops = config.setup.colormapStops;
+                proteinGraph.setNodeScaleTransform(nodeScale);
+                proteinGraph.upload(device, queue);
                 lastMessage = `color mode: ${config.label}`;
                 updateHud();
             };
-            const hitToAtom = (hit) => {
-                if (!hit || hit.kind !== "pointcloud") return null;
-                const atomIndices = cloudAtomIndexMap.get(hit.object);
-                if (!atomIndices) return null;
-                const atomIndex = atomIndices[hit.elementIndex];
-                const atom = atomMeta[atomIndex];
-                if (!atom) return null;
-                const c = atomIndex * 3;
+            const nodeSampleFromIndex = (nodeIndex) => {
+                if (nodeIndex < 0 || nodeIndex >= atomCount) return null;
+                const atom = atomMeta[nodeIndex];
+                const o = nodeIndex * 3;
                 return {
-                    hit,
+                    nodeIndex,
                     atom,
                     radius: getAtomicRadius(atom.element),
-                    position: [coords[c + 0], coords[c + 1], coords[c + 2]]
+                    position: [nodePositions[o + 0], nodePositions[o + 1], nodePositions[o + 2]]
                 };
+            };
+            const edgeSampleFromIndex = (edgeIndex) => {
+                const rec = proteinGraph.getEdgeRecord(edgeIndex);
+                if (!rec) return null;
+                const src = nodeSampleFromIndex(rec.src);
+                const dst = nodeSampleFromIndex(rec.dst);
+                if (!src || !dst) return null;
+                const dx = dst.position[0] - src.position[0];
+                const dy = dst.position[1] - src.position[1];
+                const dz = dst.position[2] - src.position[2];
+                const length = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+                return { edgeIndex, src, dst, length };
+            };
+            const hitToRecord = (hit) => {
+                if (!hit || hit.kind !== "nodelink") return null;
+                const component = hit.attributes?.component ?? "node";
+                const componentIndex = hit.attributes?.componentIndex ?? hit.elementIndex;
+                if (component === "edge") {
+                    const edge = edgeSampleFromIndex(componentIndex);
+                    return edge ? { component: "edge", edge } : null;
+                }
+                const node = nodeSampleFromIndex(componentIndex);
+                return node ? { component: "node", node } : null;
             };
 
             // More utilities for the HUD
@@ -423,14 +549,24 @@
                 controls.saveState();
                 updateHud();
             };
-            const atomLines = (label, sample) => {
+            const recordLines = (label, sample) => {
                 if (!sample) return [`${label}: none`];
+                if (sample.component === "node") {
+                    const node = sample.node;
+                    return [
+                        `${label}: node ${node.nodeIndex} (${node.atom.atom})`,
+                        `element: ${node.atom.element} (${fmt(node.radius, 2)} A radius)`,
+                        `residue: ${node.atom.residue} ${node.atom.residueNumber}${node.atom.insertionCode || ""}`,
+                        `chain: ${node.atom.chain}`,
+                        `coords: ${fmtVec3(node.position)}`
+                    ];
+                }
+                const edge = sample.edge;
                 return [
-                    `${label}: ${sample.atom.atom}`,
-                    `element: ${sample.atom.element} (${fmt(sample.radius, 2)} A radius)`,
-                    `residue: ${sample.atom.residue} ${sample.atom.residueNumber}${sample.atom.insertionCode || ""}`,
-                    `chain: ${sample.atom.chain}`,
-                    `coords: ${fmtVec3(sample.position)}`
+                    `${label}: edge ${edge.edgeIndex} (${edge.src.nodeIndex} -> ${edge.dst.nodeIndex})`,
+                    `src: ${edge.src.atom.atom} ${edge.src.atom.element} ${edge.src.atom.residue}${edge.src.atom.residueNumber} chain ${edge.src.atom.chain}`,
+                    `dst: ${edge.dst.atom.atom} ${edge.dst.atom.element} ${edge.dst.atom.residue}${edge.dst.atom.residueNumber} chain ${edge.dst.atom.chain}`,
+                    `length: ${fmt(edge.length, 3)} A`
                 ];
             };
             const updateHud = () => {
@@ -441,6 +577,7 @@
                     `view: ${currentView ?? "fit"}`,
                     `color mode: ${activeColorMode}`,
                     `atoms: ${summary.atomCount}`,
+                    `bonds: ${edgeIndices.length / 2}`,
                     `residues: ${summary.residueCount}`,
                     `chains: ${summary.chains.join(", ")}`,
                     "",
@@ -455,9 +592,9 @@
                 ].join("\n");
 
                 probeHud.textContent = [
-                    ...atomLines("hover", hoverAtom),
+                    ...recordLines("hover", hoverRecord),
                     "",
-                    ...atomLines("selected", selectedAtom)
+                    ...recordLines("selected", selectedRecord)
                 ].join("\n");
             };
             window.addEventListener("keydown", (event) => {
@@ -491,24 +628,26 @@
                 const token = ++hoverPickToken;
                 wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true }).then((hit) => {
                     if (token !== hoverPickToken) return;
-                    hoverAtom = hitToAtom(hit);
+                    hoverRecord = hitToRecord(hit);
                     updateHud();
                 }).catch(() => {
                     if (token !== hoverPickToken) return;
-                    hoverAtom = null;
+                    hoverRecord = null;
                     updateHud();
                 });
             });
             canvas.addEventListener("pointerleave", () => {
                 hoverPickToken++;
-                hoverAtom = null;
+                hoverRecord = null;
                 updateHud();
             });
             canvas.addEventListener("click", async (event) => {
                 const { x, y } = getRelativePointer(event);
                 const hit = await wgpu.pick(scene, activeCamera, x, y, { includeAttributes: true });
-                selectedAtom = hitToAtom(hit);
-                lastMessage = selectedAtom ? "selected atom updated" : "selection cleared";
+                selectedRecord = hitToRecord(hit);
+                if (!selectedRecord) lastMessage = "selection cleared";
+                else if (selectedRecord.component === "edge") lastMessage = "selected edge";
+                else lastMessage = "selected node";
                 updateHud();
             });
             const handleResize = () => {
