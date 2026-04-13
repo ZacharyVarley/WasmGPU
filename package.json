@@ -17,7 +17,7 @@
     "@types/node": "^25.2",
     "@webgpu/types": "^0.1.69",
     "esbuild": "^0.27.2",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.2",
     "webgpu": "^0.3.8"
   },
   "scripts": {
