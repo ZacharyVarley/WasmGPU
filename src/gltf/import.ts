@@ -4,17 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { wasm, mat4f, meshf, WasmPtr } from "../wasm";
-import { Geometry } from "../graphics/geometry";
+import { wasm, mat4f, WasmPtr } from "../wasm";
+import { Geometry, computeGeometryVertexNormals, type GeometryMorphTargetDescriptor } from "../graphics/geometry";
 import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
 import { AnimationClip, Skin } from "../graphics/animation";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
 import { Scene } from "../world/scene";
-import { Mesh } from "../world/mesh";
+import { Mesh, initializeMeshMorphRuntime } from "../world/mesh";
 import { DirectionalLight, PointLight, type Light } from "../world/light";
 import { Transform } from "../core/transform";
-import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfCamera, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
+import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfAsset, GltfCamera, GltfExtensions, GltfExtras, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
 import { decodeDataUri, isDataUri, resolveUri } from "./uri";
 import { readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32 } from "./accessors";
 
@@ -45,6 +45,32 @@ export type ImportedAnimation = {
     clip: AnimationClip | null;
 };
 
+export type GltfImportMetadataRecord = {
+    index: number;
+    name?: string;
+    extras?: GltfExtras;
+    extensions?: GltfExtensions;
+};
+
+export type GltfImportMeshPrimitiveMetadata = GltfImportMetadataRecord & {
+    material?: number;
+};
+
+export type GltfImportMeshMetadata = GltfImportMetadataRecord & {
+    primitives: GltfImportMeshPrimitiveMetadata[];
+};
+
+export type GltfImportMetadata = {
+    asset: GltfImportMetadataRecord;
+    scene: GltfImportMetadataRecord | null;
+    nodes: GltfImportMetadataRecord[];
+    meshes: GltfImportMeshMetadata[];
+    materials: GltfImportMetadataRecord[];
+    cameras: GltfImportMetadataRecord[];
+    skins: GltfImportMetadataRecord[];
+    animations: GltfImportMetadataRecord[];
+};
+
 export type GltfImportResult = {
     scene: Scene;
     meshes: Mesh[];
@@ -54,6 +80,7 @@ export type GltfImportResult = {
     skins: ImportedSkin[];
     animations: ImportedAnimation[];
     clips: AnimationClip[];
+    metadata: GltfImportMetadata;
     destroy(): void;
 };
 
@@ -196,52 +223,53 @@ const applyNodeMatrixViaWasmDecompose = (t: { setPosition(x:number,y:number,z:nu
     t.setScale(out[7]!, out[8]!, out[9]!);
 };
 
-let _normPosPtr: WasmPtr = 0;
-let _normPosCap: number = 0;
-
-let _normIdxPtr: WasmPtr = 0;
-let _normIdxCap: number = 0;
-
-let _normOutPtr: WasmPtr = 0;
-let _normOutCap: number = 0;
-
-const nextPow2 = (x: number): number => {
-    let v = Math.max(1, x | 0);
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v++;
-    return v;
+type GltfMetadataSource = {
+    name?: string;
+    extras?: GltfExtras;
+    extensions?: GltfExtensions;
 };
 
-const ensureNormalScratch = (posLenF32: number, idxLenU32: number): void => {
-    if (_normPosCap < posLenF32) {
-        _normPosCap = nextPow2(posLenF32);
-        _normPosPtr = wasm.allocF32(_normPosCap);
-    }
-    if (_normOutCap < posLenF32) {
-        _normOutCap = nextPow2(posLenF32);
-        _normOutPtr = wasm.allocF32(_normOutCap);
-    }
-    if (idxLenU32 > 0 && _normIdxCap < idxLenU32) {
-        _normIdxCap = nextPow2(idxLenU32);
-        _normIdxPtr = wasm.allocU32(_normIdxCap);
-    }
+const buildMetadataRecord = (index: number, source: GltfMetadataSource | undefined | null): GltfImportMetadataRecord => {
+    return {
+        index,
+        name: source?.name,
+        extras: source?.extras,
+        extensions: source?.extensions
+    };
 };
 
-const computeVertexNormalsWasm = (positions: Float32Array, indices: Uint32Array | null): Float32Array => {
-    const vcount = (positions.length / 3) | 0;
-    const idxLen = indices ? (indices.length | 0) : 0;
-    ensureNormalScratch(positions.length, idxLen);
-    wasm.f32view(_normPosPtr, positions.length).set(positions);
-    const idxPtr = (indices && idxLen > 0) ? _normIdxPtr : 0;
-    if (indices && idxLen > 0) wasm.u32view(_normIdxPtr, idxLen).set(indices);
-    meshf.computeVertexNormals(_normOutPtr, _normPosPtr, vcount, idxPtr, idxLen);
-    const out = new Float32Array(positions.length);
-    out.set(wasm.f32view(_normOutPtr, positions.length));
+const buildMeshMetadata = (index: number, mesh: GltfMesh): GltfImportMeshMetadata => {
+    return {
+        ...buildMetadataRecord(index, mesh),
+        primitives: mesh.primitives.map((primitive, primitiveIndex) => ({
+            ...buildMetadataRecord(primitiveIndex, primitive),
+            material: primitive.material
+        }))
+    };
+};
+
+const buildImportMetadata = (json: GltfRoot, sceneIndex: number): GltfImportMetadata => {
+    const scene = json.scenes?.[sceneIndex];
+    return {
+        asset: buildMetadataRecord(0, json.asset),
+        scene: scene ? buildMetadataRecord(sceneIndex, scene) : null,
+        nodes: (json.nodes ?? []).map((node, index) => buildMetadataRecord(index, node)),
+        meshes: (json.meshes ?? []).map((mesh, index) => buildMeshMetadata(index, mesh)),
+        materials: (json.materials ?? []).map((material, index) => buildMetadataRecord(index, material)),
+        cameras: (json.cameras ?? []).map((camera, index) => buildMetadataRecord(index, camera)),
+        skins: (json.skins ?? []).map((skin, index) => buildMetadataRecord(index, skin)),
+        animations: (json.animations ?? []).map((animation, index) => buildMetadataRecord(index, animation))
+    };
+};
+
+const resolveMorphWeights = (weights: ReadonlyArray<number> | undefined, targetCount: number, opts: ImportGltfOptions | undefined, context: string): Float32Array => {
+    const out = new Float32Array(targetCount);
+    if (!weights || targetCount <= 0) return out;
+    const srcCount = weights.length | 0;
+    const copyCount = Math.min(srcCount, targetCount);
+    for (let i = 0; i < copyCount; i++) out[i] = Number(weights[i] ?? 0) || 0;
+    if (srcCount < targetCount) warn(opts, `${context}: morph weights length ${srcCount} is smaller than target count ${targetCount}; padding with zeros.`);
+    else if (srcCount > targetCount) warn(opts, `${context}: morph weights length ${srcCount} exceeds target count ${targetCount}; truncating extra values.`);
     return out;
 };
 
@@ -552,7 +580,29 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         warn(opts, `Unsupported primitive mode=${mode} (only triangles/strip/fan supported); skipping primitive`);
         return null;
     }
-    if (!normals && computeMissingNormals) normals = computeVertexNormalsWasm(positions, indices);
+    const morphTargets: GeometryMorphTargetDescriptor[] = [];
+    if (prim.targets && prim.targets.length > 0) {
+        for (let targetIndex = 0; targetIndex < prim.targets.length; targetIndex++) {
+            const targetAttrs = prim.targets[targetIndex]!;
+            const target: GeometryMorphTargetDescriptor = {};
+            const targetPosAcc = targetAttrs["POSITION"];
+            const targetNormalAcc = targetAttrs["NORMAL"];
+            if (targetPosAcc !== undefined) {
+                const targetPositions = readAccessorAsFloat32(doc, targetPosAcc);
+                if (targetPositions.length === positions.length) target.positions = targetPositions;
+                else warn(opts, `Primitive morph target ${targetIndex} POSITION length ${targetPositions.length} does not match base POSITION length ${positions.length}; ignoring POSITION deltas.`);
+            }
+            if (targetNormalAcc !== undefined) {
+                const targetNormals = readAccessorAsFloat32(doc, targetNormalAcc);
+                if (targetNormals.length === positions.length) target.normals = targetNormals;
+                else warn(opts, `Primitive morph target ${targetIndex} NORMAL length ${targetNormals.length} does not match base NORMAL length ${positions.length}; ignoring NORMAL deltas.`);
+            }
+            if (targetAttrs["TANGENT"] !== undefined) warn(opts, `Primitive morph target ${targetIndex} provides TANGENT deltas; WasmGPU ignores tangent morph data.`);
+            if (!target.positions && !target.normals) warn(opts, `Primitive morph target ${targetIndex} has no supported POSITION or NORMAL deltas; preserving target slot with no runtime effect.`);
+            morphTargets.push(target);
+        }
+    }
+    if (!normals && computeMissingNormals) normals = computeGeometryVertexNormals(positions, indices);
     return new Geometry({
         positions,
         normals: normals ?? undefined,
@@ -561,11 +611,13 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         weights: weights ?? undefined,
         joints1: joints1 ?? undefined,
         weights1: weights1 ?? undefined,
-        indices: indices ?? undefined
+        indices: indices ?? undefined,
+        morphTargets,
+        authoredNormals: nAcc !== undefined
     });
 };
 
-const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, geometryCache: Map<string, Geometry | null>, opts: ImportGltfOptions): Mesh[] => {
+const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: number, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, geometryCache: Map<string, Geometry | null>, opts: ImportGltfOptions): Mesh[] => {
     if (node.mesh === undefined) return [];
     const gltfMesh: GltfMesh | undefined = json.meshes?.[node.mesh];
     if (!gltfMesh) {
@@ -595,6 +647,26 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, node: GltfNode, 
         const mesh = new Mesh(geom, mat);
         mesh.name = node.name ?? gltfMesh.name ?? `gltf_mesh_${node.mesh}_${primIndex}`;
         mesh.transform.setParent(nodeT);
+        const resolvedWeights = resolveMorphWeights(node.weights ?? gltfMesh.weights, geom.morphTargets.length | 0, opts, `Mesh '${mesh.name}' primitive ${primIndex}`);
+        if (geom.morphTargets.length > 0) initializeMeshMorphRuntime(mesh, resolvedWeights);
+        mesh.userData.gltf = {
+            nodeIndex,
+            meshIndex: node.mesh,
+            primitiveIndex: primIndex,
+            resolvedWeights: Array.from(resolvedWeights),
+            extras: {
+                node: node.extras,
+                mesh: gltfMesh.extras,
+                primitive: prim.extras,
+                material: matJson?.extras
+            },
+            extensions: {
+                node: node.extensions,
+                mesh: gltfMesh.extensions,
+                primitive: prim.extensions,
+                material: matJson?.extensions
+            }
+        };
         out.push(mesh);
     }
     return out;
@@ -684,7 +756,7 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform
     return out;
 };
 
-const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform[], opts: ImportGltfOptions): ImportedAnimation[] => {
+const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform[], nodeMeshes: Mesh[][], opts: ImportGltfOptions): ImportedAnimation[] => {
     const anims = json.animations ?? [];
     const out: ImportedAnimation[] = [];
     const interpToCode = (interp: string): number => {
@@ -706,6 +778,7 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
     for (let i = 0; i < anims.length; i++) {
         const a: GltfAnimation = anims[i]!;
         const samplers: ImportedAnimationSampler[] = [];
+        const weightSamplers: Array<{ interpolation: "LINEAR" | "STEP" | "CUBICSPLINE"; input: Float32Array; output: Float32Array; valueSize: number }> = [];
         const channels: ImportedAnimationChannel[] = [];
         const samplerCount = a.samplers.length | 0;
         const samplerTablePtr = samplerCount > 0 ? (wasm.allocU32(samplerCount * 5) as WasmPtr) : (0 as WasmPtr);
@@ -725,6 +798,10 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
                 input,
                 output,
             });
+            const interpolation = (s.interpolation ?? "LINEAR") as ImportedAnimationSampler["interpolation"];
+            const denom = interpolation === "CUBICSPLINE" ? Math.max(1, (input.length | 0) * 3) : Math.max(1, input.length | 0);
+            const valueSize = Math.max(0, Math.floor(output.length / denom));
+            weightSamplers.push({ interpolation, input, output, valueSize });
             if (input.length > 0) {
                 startTime = Math.min(startTime, input[0]!);
                 endTime = Math.max(endTime, input[input.length - 1]!);
@@ -745,6 +822,7 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
             }
         }
         const runtimeChannels: { sampler: number; targetIndex: number; pathCode: number }[] = [];
+        const runtimeWeightChannels: { sampler: number; meshes: Mesh[] }[] = [];
         for (let ci = 0; ci < a.channels.length; ci++) {
             const c: GltfAnimationChannel = a.channels[ci]!;
             const nodeIndex = c.target.node;
@@ -762,20 +840,27 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
                     targetIndex: t.index >>> 0,
                     pathCode,
                 });
+            } else if (chan.path === "weights" && nodeIndex !== undefined) {
+                const meshes = (nodeMeshes[nodeIndex] ?? []).filter((mesh) => mesh.geometry.morphTargets.length > 0);
+                if (meshes.length > 0) runtimeWeightChannels.push({ sampler: chan.sampler | 0, meshes });
             }
         }
         let clip: AnimationClip | null = null;
         const channelCount = runtimeChannels.length | 0;
-        if (samplerCount > 0 && channelCount > 0) {
-            const channelsPtr = wasm.allocU32(channelCount * 3) as WasmPtr;
-            const ch = wasm.u32view(channelsPtr, channelCount * 3);
-            ownedU32Allocs.push({ ptr: channelsPtr, len: channelCount * 3 });
-            for (let ci = 0; ci < channelCount; ci++) {
-                const rc = runtimeChannels[ci]!;
-                const base = ci * 3;
-                ch[base + 0] = rc.sampler >>> 0;
-                ch[base + 1] = rc.targetIndex >>> 0;
-                ch[base + 2] = rc.pathCode >>> 0;
+        const weightChannelCount = runtimeWeightChannels.length | 0;
+        if (samplerCount > 0 && (channelCount > 0 || weightChannelCount > 0)) {
+            let channelsPtr = 0 as WasmPtr;
+            if (channelCount > 0) {
+                channelsPtr = wasm.allocU32(channelCount * 3) as WasmPtr;
+                const ch = wasm.u32view(channelsPtr, channelCount * 3);
+                ownedU32Allocs.push({ ptr: channelsPtr, len: channelCount * 3 });
+                for (let ci = 0; ci < channelCount; ci++) {
+                    const rc = runtimeChannels[ci]!;
+                    const base = ci * 3;
+                    ch[base + 0] = rc.sampler >>> 0;
+                    ch[base + 1] = rc.targetIndex >>> 0;
+                    ch[base + 2] = rc.pathCode >>> 0;
+                }
             }
             if (!Number.isFinite(startTime)) startTime = 0;
             if (!Number.isFinite(endTime)) endTime = 0;
@@ -788,7 +873,13 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
                 startTime,
                 endTime,
                 ownedF32Allocs,
-                ownedU32Allocs
+                ownedU32Allocs,
+                weightSamplers,
+                weightChannels: runtimeWeightChannels.map((channel) => ({
+                    sampler: channel.sampler,
+                    meshes: channel.meshes,
+                    scratch: new Float32Array(weightSamplers[channel.sampler]?.valueSize ?? 0)
+                }))
             });
         } else {
             for (const a of ownedF32Allocs) wasm.freeF32(a.ptr, a.len);
@@ -803,6 +894,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const json = doc.json;
     const scene = opts.targetScene ?? new Scene();
     const addToScene = opts.addToScene !== false;
+    const sceneIndex = getSceneIndex(json, opts);
     const nodes = json.nodes ?? [];
     const nodeTransforms: Transform[] = new Array(nodes.length);
     for (let i = 0; i < nodes.length; i++) {
@@ -834,6 +926,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const textureCache = new Map<number, Texture2D>();
     const geometryCache = new Map<string, Geometry | null>();
     const meshes: Mesh[] = [];
+    const nodeMeshes: Mesh[][] = Array.from({ length: nodes.length }, () => []);
     const cameras: Camera[] = [];
     const lights: Light[] = [];
     const khrLights = getKHRLightsFromRoot(json);
@@ -842,7 +935,8 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         if (!node) return;
         const nodeT = nodeTransforms[nodeIndex]!;
         if (!nodeT) return;
-        const createdMeshes = instantiateMeshNode(doc, json, node, nodeT, materialCache, textureCache, geometryCache, opts);
+        const createdMeshes = instantiateMeshNode(doc, json, nodeIndex, node, nodeT, materialCache, textureCache, geometryCache, opts);
+        nodeMeshes[nodeIndex] = createdMeshes;
         const skinIndex = node.skin !== undefined ? (node.skin | 0) : inheritedSkinIndex;
         if (skinIndex !== undefined) {
             const skinDef = skins[skinIndex];
@@ -885,14 +979,14 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         }
         for (const child of node.children ?? []) instantiateNodeRecursive(child, skinIndex);
     };
-    const sceneIndex = getSceneIndex(json, opts);
     const gltfScene: GltfScene | undefined = json.scenes?.[sceneIndex];
     const roots = gltfScene?.nodes ?? [];
     for (const root of roots) instantiateNodeRecursive(root, undefined);
-    const animations = parseAnimations(doc, json, nodeTransforms, opts);
+    const animations = parseAnimations(doc, json, nodeTransforms, nodeMeshes, opts);
     const clips = animations.map((a) => a.clip).filter((c): c is AnimationClip => c !== null);
     const uniqueGeometries = Array.from(new Set(meshes.map((m) => m.geometry)));
     const uniqueMaterials = Array.from(new Set(meshes.map((m) => m.material)));
+    const metadata = buildImportMetadata(json, sceneIndex);
     return {
         scene,
         meshes,
@@ -902,6 +996,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         skins,
         animations,
         clips,
+        metadata,
         destroy(): void {
             if (addToScene) for (const m of meshes) scene.remove(m);
             for (const m of meshes) m.destroy();

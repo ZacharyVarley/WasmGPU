@@ -8,7 +8,7 @@ import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
 import { DirectionalLight, PointLight } from "../world/light";
 import { Camera } from "../world/camera";
-import { Mesh } from "../world/mesh";
+import { Mesh, getMeshLocalBoundsSource, getMeshVertexBuffers, getMeshVertexSource, hasMeshMorphRuntime } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
 import { GlyphField } from "../world/glyphfield";
 import { NodeLink } from "../world/nodelink";
@@ -47,8 +47,10 @@ type DrawItem = {
     pipelineId: number;
     materialId: number;
     geometryId: number;
+    vertexSourceId: number;
     skinned: boolean;
     skinned8: boolean;
+    mirrored: boolean;
     sortKey: number;
 };
 
@@ -451,8 +453,10 @@ export class Renderer {
                 pipelineId: 0,
                 materialId: 0,
                 geometryId: 0,
+                vertexSourceId: 0,
                 skinned: false,
                 skinned8: false,
+                mirrored: false,
                 sortKey: 0
             };
             this.drawItemPool[i] = item;
@@ -1545,14 +1549,14 @@ export class Renderer {
             const localRadii = storeF32.subarray(localRadiiPtr >>> 2, (localRadiiPtr >>> 2) + count);
             for (let i = 0; i < count; i++) {
                 const mesh = candidates[i];
-                const geom = mesh.geometry;
-                const lc = geom.boundsCenter;
+                const bounds = getMeshLocalBoundsSource(mesh);
+                const lc = bounds.boundsCenter;
                 const centerBase = i * 3;
                 worldPtrs[i] = mesh.transform.worldMatrixPtr >>> 0;
                 localCenters[centerBase + 0] = lc[0];
                 localCenters[centerBase + 1] = lc[1];
                 localCenters[centerBase + 2] = lc[2];
-                localRadii[i] = geom.boundsRadius;
+                localRadii[i] = bounds.boundsRadius;
             }
             cullf.prepareWorldSpheresFromPtrs(this.cullCentersPtr, this.cullRadiiPtr, worldPtrsPtr, localCentersPtr, localRadiiPtr, count);
             const frustumPtr = frameArena.allocF32(24) as WasmPtr;
@@ -1565,71 +1569,45 @@ export class Renderer {
             this.cullingStats.tested = count;
             this.cullingStats.visible = visibleCount;
         }
-        if (!this.frustumCullingEnabled) {
-            for (let i = 0; i < count; i++) {
-                const mesh = candidates[i];
-                const geometry = mesh.geometry;
-                const material = mesh.material;
-                const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
-                const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
-                const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8);
-                const item = this.acquireDrawItem();
-                item.mesh = mesh;
-                item.geometry = geometry;
-                item.material = material;
-                item.pipeline = pipeline;
-                item.pipelineId = this.getObjectId(pipeline);
-                item.materialId = this.getObjectId(material);
-                item.geometryId = this.getObjectId(geometry);
-                item.skinned = skinned;
-                item.skinned8 = skinned8;
-                item.sortKey = 0;
-                if (material.blendMode === BlendMode.Opaque) {
-                    this.opaqueDrawList.push(item);
-                } else {
-                    const wb = (mesh.transform.worldMatrixPtr >>> 2);
-                    const dx = storeF32[wb + 12] - camX;
-                    const dy = storeF32[wb + 13] - camY;
-                    const dz = storeF32[wb + 14] - camZ;
-                    item.sortKey = dx * dx + dy * dy + dz * dz;
-                    this.transparentDrawList.push(item);
-                }
+        const pushMesh = (mesh: Mesh): void => {
+            const geometry = mesh.geometry;
+            const material = mesh.material;
+            const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
+            const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
+            const wb = mesh.transform.worldMatrixPtr >>> 2;
+            const mirrored = this.isMirroredWorldMatrix(storeF32, wb);
+            const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8, mirrored);
+            const item = this.acquireDrawItem();
+            item.mesh = mesh;
+            item.geometry = geometry;
+            item.material = material;
+            item.pipeline = pipeline;
+            item.pipelineId = this.getObjectId(pipeline);
+            item.materialId = this.getObjectId(material);
+            item.geometryId = this.getObjectId(geometry);
+            item.vertexSourceId = this.getObjectId(getMeshVertexSource(mesh));
+            item.skinned = skinned;
+            item.skinned8 = skinned8;
+            item.mirrored = mirrored;
+            item.sortKey = 0;
+            if (material.blendMode === BlendMode.Opaque) {
+                this.opaqueDrawList.push(item);
+            } else {
+                const dx = storeF32[wb + 12] - camX;
+                const dy = storeF32[wb + 13] - camY;
+                const dz = storeF32[wb + 14] - camZ;
+                item.sortKey = dx * dx + dy * dy + dz * dz;
+                this.transparentDrawList.push(item);
             }
+        };
+        if (!this.frustumCullingEnabled) {
+            for (let i = 0; i < count; i++) pushMesh(candidates[i]);
         } else {
             const visBase = visibleIndicesBase;
-            for (let k = 0; k < visibleCount; k++) {
-                const i = storeU32[visBase + k];
-                const mesh = candidates[i];
-                const geometry = mesh.geometry;
-                const material = mesh.material;
-                const skinned = mesh.skin !== null && geometry.joints !== null && geometry.weights !== null && this.materialSupportsSkinning(material);
-                const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
-                const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8);
-                const item = this.acquireDrawItem();
-                item.mesh = mesh;
-                item.geometry = geometry;
-                item.material = material;
-                item.pipeline = pipeline;
-                item.pipelineId = this.getObjectId(pipeline);
-                item.materialId = this.getObjectId(material);
-                item.geometryId = this.getObjectId(geometry);
-                item.skinned = skinned;
-                item.skinned8 = skinned8;
-                item.sortKey = 0;
-                if (material.blendMode === BlendMode.Opaque) {
-                    this.opaqueDrawList.push(item);
-                } else {
-                    const wb = (mesh.transform.worldMatrixPtr >>> 2);
-                    const dx = storeF32[wb + 12] - camX;
-                    const dy = storeF32[wb + 13] - camY;
-                    const dz = storeF32[wb + 14] - camZ;
-                    item.sortKey = dx * dx + dy * dy + dz * dz;
-                    this.transparentDrawList.push(item);
-                }
-            }
+            for (let k = 0; k < visibleCount; k++) pushMesh(candidates[storeU32[visBase + k]]);
         }
-        this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
-        this.transparentDrawList.sort((a, b) => (b.sortKey - a.sortKey) || (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.geometryId - b.geometryId));
+        this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.vertexSourceId - b.vertexSourceId));
+        this.transparentDrawList.sort((a, b) => (b.sortKey - a.sortKey) || (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.vertexSourceId - b.vertexSourceId));
     }
 
     private buildPointCloudDrawLists(scene: Scene, camera: Camera): void {
@@ -1933,21 +1911,23 @@ export class Renderer {
         let lastPipeline: GPURenderPipeline | null = null;
         let lastMaterial: Material | null = null;
         let lastGeometry: Geometry | null = null;
+        let lastVertexSourceId = -1;
         for (let i = 0; i < items.length; ) {
             const first = items[i];
             const pipeline = first.pipeline;
             const material = first.material;
             const geometry = first.geometry;
+            const vertexSourceId = first.vertexSourceId;
             let j = i + 1;
             while (j < items.length) {
                 const it = items[j];
                 if (it.pipeline !== pipeline) break;
                 if (it.material !== material) break;
-                if (it.geometry !== geometry) break;
+                if (it.vertexSourceId !== vertexSourceId) break;
                 j++;
             }
             const runCount = j - i;
-            if (geometry !== lastGeometry) geometry.upload(this.device);
+            if (geometry !== lastGeometry || vertexSourceId !== lastVertexSourceId) geometry.upload(this.device);
             if (material !== lastMaterial) this.ensureMaterialBindGroup(material);
             if (pipeline !== lastPipeline) {
                 pass.setPipeline(pipeline);
@@ -1957,9 +1937,10 @@ export class Renderer {
                 pass.setBindGroup(1, material.bindGroup!);
                 lastMaterial = material;
             }
-            if (geometry !== lastGeometry) {
-                pass.setVertexBuffer(0, geometry.positionBuffer);
-                pass.setVertexBuffer(1, geometry.normalBuffer);
+            if (geometry !== lastGeometry || vertexSourceId !== lastVertexSourceId) {
+                const buffers = getMeshVertexBuffers(first.mesh, this.device, this.queue);
+                pass.setVertexBuffer(0, buffers.positionBuffer);
+                pass.setVertexBuffer(1, buffers.normalBuffer);
                 pass.setVertexBuffer(2, geometry.uvBuffer);
                 if (first.skinned) {
                     pass.setVertexBuffer(3, geometry.jointsBuffer!);
@@ -1971,10 +1952,11 @@ export class Renderer {
                 }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                 lastGeometry = geometry;
+                lastVertexSourceId = vertexSourceId;
             }
-            const canInstance = runCount > 1 && !first.skinned && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
+            const canInstance = runCount > 1 && !first.skinned && !hasMeshMorphRuntime(first.mesh) && this.materialSupportsInstancing(material) && items === this.opaqueDrawList;
             if (canInstance) {
-                const instancedPipeline = this.getOrCreatePipeline(material, true);
+                const instancedPipeline = this.getOrCreatePipeline(material, true, false, false, first.mirrored);
                 if (instancedPipeline !== lastPipeline) {
                     pass.setPipeline(instancedPipeline);
                     lastPipeline = instancedPipeline;
@@ -2440,6 +2422,7 @@ export class Renderer {
         const bytes = wasmInterop.bytes();
         let lastPipeline: GPURenderPipeline | null = null;
         let lastGeometry: Geometry | null = null;
+        let lastVertexSourceId = -1;
         let lastSkinned = false;
         let lastSkinned8 = false;
         for (let i = 0; i < items.length; i++) {
@@ -2447,17 +2430,19 @@ export class Renderer {
             const mesh = item.mesh;
             const geometry = item.geometry;
             if (!mesh.visible) continue;
-            const pipeline = this.getOrCreatePickMeshPipeline(item.material, item.skinned, item.skinned8);
+            const pipeline = this.getOrCreatePickMeshPipeline(item.material, item.skinned, item.skinned8, item.mirrored);
             if (pipeline !== lastPipeline) {
                 pass.setPipeline(pipeline);
                 lastPipeline = pipeline;
                 lastGeometry = null;
+                lastVertexSourceId = -1;
                 lastSkinned = false;
                 lastSkinned8 = false;
             }
-            if (geometry !== lastGeometry || item.skinned !== lastSkinned || item.skinned8 !== lastSkinned8) {
+            if (geometry !== lastGeometry || item.vertexSourceId !== lastVertexSourceId || item.skinned !== lastSkinned || item.skinned8 !== lastSkinned8) {
                 geometry.upload(this.device);
-                pass.setVertexBuffer(0, geometry.positionBuffer);
+                const buffers = getMeshVertexBuffers(mesh, this.device, this.queue);
+                pass.setVertexBuffer(0, buffers.positionBuffer);
                 if (item.skinned) {
                     pass.setVertexBuffer(3, geometry.jointsBuffer!);
                     pass.setVertexBuffer(4, geometry.weightsBuffer!);
@@ -2468,6 +2453,7 @@ export class Renderer {
                 }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                 lastGeometry = geometry;
+                lastVertexSourceId = item.vertexSourceId;
                 lastSkinned = item.skinned;
                 lastSkinned8 = item.skinned8;
             }
@@ -2671,10 +2657,10 @@ export class Renderer {
         this.instanceBufferOffset = dstEnd;
     }
 
-    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false, skinned8: boolean = false): GPURenderPipeline {
+    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false, skinned8: boolean = false, mirrored: boolean = false): GPURenderPipeline {
         if (instanced && skinned) throw new Error("Renderer: instanced + skinned pipelines are not supported (attribute layout conflict).");
         if (skinned8 && !skinned) skinned = true;
-        const key = this.getPipelineCacheKey(material, instanced, skinned, skinned8);
+        const key = this.getPipelineCacheKey(material, instanced, skinned, skinned8, mirrored);
         let pipeline = this.pipelineCache.get(key);
         if (pipeline) return pipeline;
         const shaderCode = material.getShaderCode({ instanced, skinned, skinned8 });
@@ -2753,7 +2739,7 @@ export class Renderer {
             primitive: {
                 topology: "triangle-list",
                 cullMode: this.getCullMode(material.cullMode),
-                frontFace: "ccw"
+                frontFace: mirrored ? "cw" : "ccw"
             },
             depthStencil: {
                 format: "depth24plus",
@@ -2765,10 +2751,10 @@ export class Renderer {
         return pipeline;
     }
 
-    private getOrCreatePickMeshPipeline(material: Material, skinned: boolean, skinned8: boolean): GPURenderPipeline {
+    private getOrCreatePickMeshPipeline(material: Material, skinned: boolean, skinned8: boolean, mirrored: boolean = false): GPURenderPipeline {
         if (skinned8 && !skinned) skinned = true;
         const cullMode = this.getCullMode(material.cullMode);
-        const key = `pick:mesh:${cullMode}:${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
+        const key = `pick:mesh:${cullMode}:${mirrored ? "cw" : "ccw"}:${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
         const cached = this.pipelineCache.get(key);
         if (cached) return cached;
         const shaderCode = skinned8 ? pickMeshSkinned8WGSL : skinned ? pickMeshSkinnedWGSL : pickMeshWGSL;
@@ -2815,7 +2801,7 @@ export class Renderer {
             primitive: {
                 topology: "triangle-list",
                 cullMode,
-                frontFace: "ccw"
+                frontFace: mirrored ? "cw" : "ccw"
             },
             depthStencil: {
                 format: "depth24plus",
@@ -2952,11 +2938,25 @@ export class Renderer {
         return pipeline;
     }
 
-    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean): string {
+    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean, mirrored: boolean): string {
         const ctorId = this.getObjectId(material.constructor as unknown as object);
         const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial || material.constructor === DataMaterial;
         const matKey = isBuiltin ? `${ctorId}` : `${ctorId}_${this.getObjectId(material)}`;
-        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
+        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${mirrored ? "cw" : "ccw"}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
+    }
+
+    private isMirroredWorldMatrix(storeF32: Float32Array, base: number): boolean {
+        const a00 = storeF32[base + 0];
+        const a01 = storeF32[base + 4];
+        const a02 = storeF32[base + 8];
+        const a10 = storeF32[base + 1];
+        const a11 = storeF32[base + 5];
+        const a12 = storeF32[base + 9];
+        const a20 = storeF32[base + 2];
+        const a21 = storeF32[base + 6];
+        const a22 = storeF32[base + 10];
+        const det = (a00 * ((a11 * a22) - (a12 * a21))) - (a01 * ((a10 * a22) - (a12 * a20))) + (a02 * ((a10 * a21) - (a11 * a20)));
+        return det < 0;
     }
 
     private getBlendState(mode: BlendMode): GPUBlendState | undefined {

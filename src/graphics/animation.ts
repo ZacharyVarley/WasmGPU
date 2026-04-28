@@ -6,6 +6,8 @@
 
 import { animf, WasmPtr, wasm } from "../wasm";
 import { Transform, TransformStore } from "../core/transform";
+import type { Mesh } from "../world/mesh";
+import { setMeshMorphWeights } from "../world/mesh";
 
 export type AnimationClipDescriptor = {
     name: string;
@@ -19,6 +21,103 @@ export type AnimationClipDescriptor = {
     ownedU32Allocs?: ReadonlyArray<{ ptr: WasmPtr; len: number }>;
 };
 
+type AnimationWeightSampler = {
+    interpolation: "LINEAR" | "STEP" | "CUBICSPLINE";
+    input: Float32Array;
+    output: Float32Array;
+    valueSize: number;
+};
+
+type AnimationWeightChannel = {
+    sampler: number;
+    meshes: ReadonlyArray<Mesh>;
+    scratch: Float32Array;
+};
+
+type AnimationClipInternalDescriptor = AnimationClipDescriptor & {
+    weightSamplers?: ReadonlyArray<AnimationWeightSampler>;
+    weightChannels?: ReadonlyArray<AnimationWeightChannel>;
+};
+
+const clamp01 = (x: number): number => {
+    if (x < 0) return 0;
+    if (x > 1) return 1;
+    return x;
+};
+
+const findKeyframe = (times: Float32Array, time: number): { i0: number; i1: number; alpha: number; dt: number } => {
+    const n = times.length | 0;
+    if (n <= 1) return { i0: 0, i1: 0, alpha: 0, dt: 0 };
+    if (time <= times[0]) return { i0: 0, i1: 0, alpha: 0, dt: times[1] - times[0] };
+    if (time >= times[n - 1]) return { i0: n - 1, i1: n - 1, alpha: 0, dt: times[n - 1] - times[n - 2] };
+    let lo = 0;
+    let hi = n - 1;
+    while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (times[mid] <= time) lo = mid;
+        else hi = mid;
+    }
+    const i0 = lo;
+    const i1 = lo + 1;
+    const dt = times[i1] - times[i0];
+    if (dt === 0) return { i0, i1: i0, alpha: 0, dt: 0 };
+    return { i0, i1, alpha: clamp01((time - times[i0]) / dt), dt };
+};
+
+const hermite = (t: number): [number, number, number, number] => {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return [
+        (2 * t3) - (3 * t2) + 1,
+        t3 - (2 * t2) + t,
+        (-2 * t3) + (3 * t2),
+        t3 - t2
+    ];
+};
+
+const sampleWeightSampler = (sampler: AnimationWeightSampler, time: number, out: Float32Array): void => {
+    out.fill(0);
+    const valueSize = sampler.valueSize | 0;
+    if (valueSize <= 0) return;
+    const { i0, i1, alpha, dt } = findKeyframe(sampler.input, time);
+    switch (sampler.interpolation) {
+        case "STEP": {
+            const base = i0 * valueSize;
+            for (let i = 0; i < valueSize; i++) out[i] = sampler.output[base + i] ?? 0;
+            return;
+        }
+        case "CUBICSPLINE": {
+            const [h00, h10, h01, h11] = hermite(alpha);
+            const stride = valueSize * 3;
+            const base0 = i0 * stride;
+            const base1 = i1 * stride;
+            const v0 = base0 + valueSize;
+            const out0 = base0 + (valueSize * 2);
+            const in1 = base1;
+            const v1 = base1 + valueSize;
+            for (let i = 0; i < valueSize; i++) {
+                const p0 = sampler.output[v0 + i] ?? 0;
+                const m0 = (sampler.output[out0 + i] ?? 0) * dt;
+                const p1 = sampler.output[v1 + i] ?? 0;
+                const m1 = (sampler.output[in1 + i] ?? 0) * dt;
+                out[i] = (h00 * p0) + (h10 * m0) + (h01 * p1) + (h11 * m1);
+            }
+            return;
+        }
+        case "LINEAR":
+        default: {
+            const base0 = i0 * valueSize;
+            const base1 = i1 * valueSize;
+            for (let i = 0; i < valueSize; i++) {
+                const v0 = sampler.output[base0 + i] ?? 0;
+                const v1 = sampler.output[base1 + i] ?? 0;
+                out[i] = v0 + ((v1 - v0) * alpha);
+            }
+            return;
+        }
+    }
+};
+
 export class AnimationClip {
     readonly name: string;
     readonly samplerCount: number;
@@ -29,9 +128,11 @@ export class AnimationClip {
     readonly endTime: number;
     private _ownedF32Allocs: ReadonlyArray<{ ptr: WasmPtr; len: number }> | null;
     private _ownedU32Allocs: ReadonlyArray<{ ptr: WasmPtr; len: number }> | null;
+    private _weightSamplers: ReadonlyArray<AnimationWeightSampler> | null;
+    private _weightChannels: ReadonlyArray<AnimationWeightChannel> | null;
     private _disposed: boolean = false;
 
-    constructor(desc: AnimationClipDescriptor) {
+    constructor(desc: AnimationClipInternalDescriptor) {
         this.name = desc.name;
         this.samplerCount = desc.samplerCount | 0;
         this.channelCount = desc.channelCount | 0;
@@ -41,6 +142,8 @@ export class AnimationClip {
         this.endTime = desc.endTime;
         this._ownedF32Allocs = desc.ownedF32Allocs ?? null;
         this._ownedU32Allocs = desc.ownedU32Allocs ?? null;
+        this._weightSamplers = desc.weightSamplers ?? null;
+        this._weightChannels = desc.weightChannels ?? null;
     }
 
     get duration(): number {
@@ -48,24 +151,20 @@ export class AnimationClip {
     }
 
     sample(timeSeconds: number): void {
-        const store = TransformStore.global();
-        const soa = {
-            posPtr: store.posPtr as WasmPtr,
-            rotPtr: store.rotPtr as WasmPtr,
-            sclPtr: store.sclPtr as WasmPtr
+        if (this.channelCount > 0) {
+            const store = TransformStore.global();
+            const soa = { posPtr: store.posPtr as WasmPtr, rotPtr: store.rotPtr as WasmPtr, sclPtr: store.sclPtr as WasmPtr }
+            animf.sampleClipTRS(soa.posPtr, soa.rotPtr, soa.sclPtr, store.count | 0, this.samplersPtr, this.samplerCount, this.channelsPtr, this.channelCount, timeSeconds);
+            store.markDirty();
         }
-        animf.sampleClipTRS(
-            soa.posPtr,
-            soa.rotPtr,
-            soa.sclPtr,
-            store.count | 0,
-            this.samplersPtr,
-            this.samplerCount,
-            this.channelsPtr,
-            this.channelCount,
-            timeSeconds
-        );
-        store.markDirty();
+        if (this._weightSamplers && this._weightChannels) {
+            for (const channel of this._weightChannels) {
+                const sampler = this._weightSamplers[channel.sampler];
+                if (!sampler || channel.meshes.length === 0) continue;
+                sampleWeightSampler(sampler, timeSeconds, channel.scratch);
+                for (const mesh of channel.meshes) setMeshMorphWeights(mesh, channel.scratch);
+            }
+        }
     }
 
     dispose(): void {
@@ -75,6 +174,8 @@ export class AnimationClip {
         if (this._ownedU32Allocs) for (const a of this._ownedU32Allocs) if (a.ptr) wasm.freeU32(a.ptr, a.len | 0);
         this._ownedF32Allocs = null;
         this._ownedU32Allocs = null;
+        this._weightSamplers = null;
+        this._weightChannels = null;
     }
 }
 

@@ -16,6 +16,7 @@ export type GltfAsset = {
     copyright?: string;
     minVersion?: string;
     extras?: GltfExtras;
+    extensions?: GltfExtensions;
 };
 
 export type GltfBuffer = {

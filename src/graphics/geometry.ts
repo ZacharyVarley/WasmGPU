@@ -5,11 +5,16 @@
  */
 
 import { createBuffer } from "../utils";
-import { boundsf, wasm } from "../wasm";
+import { boundsf, meshf, wasm } from "../wasm";
 
 export type GeometryAttribute = {
     data: Float32Array;
     itemSize: number;
+};
+
+export type GeometryMorphTargetDescriptor = {
+    positions?: Float32Array;
+    normals?: Float32Array;
 };
 
 export type GeometryDescriptor = {
@@ -21,6 +26,8 @@ export type GeometryDescriptor = {
     joints1?: Uint16Array;
     weights1?: Float32Array;
     indices?: Uint32Array;
+    morphTargets?: ReadonlyArray<GeometryMorphTargetDescriptor>;
+    authoredNormals?: boolean;
 };
 
 export type CartesianCurveDescriptor = {
@@ -75,6 +82,83 @@ export type ParametricSurfaceDescriptor = {
     doubleSided?: boolean;
 };
 
+export type GeometryBoundsDescriptor = {
+    boxMin: [number, number, number];
+    boxMax: [number, number, number];
+    sphereCenter: [number, number, number];
+    sphereRadius: number;
+};
+
+let _boundsPosPtr = 0;
+let _boundsPosCap = 0;
+let _boundsBoxMinPtr = 0;
+let _boundsBoxMaxPtr = 0;
+let _boundsSphereCenterPtr = 0;
+let _boundsSphereRadiusPtr = 0;
+let _normPosPtr = 0;
+let _normPosCap = 0;
+let _normIdxPtr = 0;
+let _normIdxCap = 0;
+let _normOutPtr = 0;
+let _normOutCap = 0;
+
+const nextPow2 = (x: number): number => {
+    let v = Math.max(1, x | 0);
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v++;
+    return v;
+};
+
+const ensureBoundsScratch = (posLenF32: number): void => {
+    if (_boundsPosCap < posLenF32) { _boundsPosCap = nextPow2(posLenF32); _boundsPosPtr = wasm.allocF32(_boundsPosCap); }
+    if (_boundsBoxMinPtr === 0) _boundsBoxMinPtr = wasm.allocF32(3);
+    if (_boundsBoxMaxPtr === 0) _boundsBoxMaxPtr = wasm.allocF32(3);
+    if (_boundsSphereCenterPtr === 0) _boundsSphereCenterPtr = wasm.allocF32(3);
+    if (_boundsSphereRadiusPtr === 0) _boundsSphereRadiusPtr = wasm.allocF32(1);
+};
+
+const ensureNormalScratch = (posLenF32: number, idxLenU32: number): void => {
+    if (_normPosCap < posLenF32) { _normPosCap = nextPow2(posLenF32); _normPosPtr = wasm.allocF32(_normPosCap); }
+    if (_normOutCap < posLenF32) { _normOutCap = nextPow2(posLenF32); _normOutPtr = wasm.allocF32(_normOutCap); }
+    if (idxLenU32 > 0 && _normIdxCap < idxLenU32) { _normIdxCap = nextPow2(idxLenU32); _normIdxPtr = wasm.allocU32(_normIdxCap); }
+};
+
+export const computeGeometryBounds = (positions: Float32Array): GeometryBoundsDescriptor => {
+    const vertexCount = (positions.length / 3) | 0;
+    if (vertexCount <= 0) return { boxMin: [0, 0, 0], boxMax: [0, 0, 0], sphereCenter: [0, 0, 0], sphereRadius: 0 };
+    ensureBoundsScratch(positions.length);
+    wasm.f32view(_boundsPosPtr, positions.length).set(positions);
+    boundsf.geometryPositions(_boundsBoxMinPtr, _boundsBoxMaxPtr, _boundsSphereCenterPtr, _boundsSphereRadiusPtr, _boundsPosPtr, vertexCount);
+    const boxMin = wasm.f32view(_boundsBoxMinPtr, 3);
+    const boxMax = wasm.f32view(_boundsBoxMaxPtr, 3);
+    const sphereCenter = wasm.f32view(_boundsSphereCenterPtr, 3);
+    const sphereRadius = wasm.f32view(_boundsSphereRadiusPtr, 1);
+    return {
+        boxMin: [boxMin[0], boxMin[1], boxMin[2]],
+        boxMax: [boxMax[0], boxMax[1], boxMax[2]],
+        sphereCenter: [sphereCenter[0], sphereCenter[1], sphereCenter[2]],
+        sphereRadius: sphereRadius[0]
+    };
+};
+
+export const computeGeometryVertexNormals = (positions: Float32Array, indices: Uint32Array | null): Float32Array => {
+    const vertexCount = (positions.length / 3) | 0;
+    const idxLen = indices ? (indices.length | 0) : 0;
+    ensureNormalScratch(positions.length, idxLen);
+    wasm.f32view(_normPosPtr, positions.length).set(positions);
+    const idxPtr = (indices && idxLen > 0) ? _normIdxPtr : 0;
+    if (indices && idxLen > 0) wasm.u32view(_normIdxPtr, idxLen).set(indices);
+    meshf.computeVertexNormals(_normOutPtr, _normPosPtr, vertexCount, idxPtr, idxLen);
+    const out = new Float32Array(positions.length);
+    out.set(wasm.f32view(_normOutPtr, positions.length));
+    return out;
+};
+
 export class Geometry {
     readonly positions: Float32Array;
     readonly normals: Float32Array;
@@ -88,6 +172,8 @@ export class Geometry {
     private _joints1Buffer: GPUBuffer | null = null;
     private _weights1Buffer: GPUBuffer | null = null;
     readonly indices: Uint32Array | null;
+    readonly morphTargets: ReadonlyArray<GeometryMorphTargetDescriptor>;
+    readonly authoredNormals: boolean;
     readonly vertexCount: number;
     readonly indexCount: number;
     private _boundsMin: [number, number, number];
@@ -103,9 +189,11 @@ export class Geometry {
     constructor(descriptor: GeometryDescriptor) {
         this.positions = descriptor.positions;
         this.vertexCount = this.positions.length / 3;
+        this.authoredNormals = descriptor.authoredNormals ?? !!descriptor.normals;
         this.normals = descriptor.normals ?? new Float32Array(this.vertexCount * 3).fill(0);
         if (!descriptor.normals) for (let i = 1; i < this.normals.length; i += 3) this.normals[i] = 1;
         this.uvs = descriptor.uvs ?? new Float32Array(this.vertexCount * 2);
+        this.morphTargets = descriptor.morphTargets ?? [];
         let joints = descriptor.joints ?? null;
         let weights = descriptor.weights ?? null;
         const expected = this.vertexCount * 4;
@@ -145,36 +233,11 @@ export class Geometry {
         this.weights1 = weights1;
         this.indices = descriptor.indices ?? null;
         this.indexCount = this.indices?.length ?? this.vertexCount;
-        if (this.vertexCount > 0) {
-            const positionsPtr = wasm.allocF32(this.positions.length);
-            const boxMinPtr = wasm.allocF32(3);
-            const boxMaxPtr = wasm.allocF32(3);
-            const sphereCenterPtr = wasm.allocF32(3);
-            const sphereRadiusPtr = wasm.allocF32(1);
-            try {
-                wasm.f32view(positionsPtr, this.positions.length).set(this.positions);
-                boundsf.geometryPositions(boxMinPtr, boxMaxPtr, sphereCenterPtr, sphereRadiusPtr, positionsPtr, this.vertexCount);
-                const boxMin = wasm.f32view(boxMinPtr, 3);
-                const boxMax = wasm.f32view(boxMaxPtr, 3);
-                const sphereCenter = wasm.f32view(sphereCenterPtr, 3);
-                const sphereRadius = wasm.f32view(sphereRadiusPtr, 1);
-                this._boundsMin = [boxMin[0], boxMin[1], boxMin[2]];
-                this._boundsMax = [boxMax[0], boxMax[1], boxMax[2]];
-                this._boundsCenter = [sphereCenter[0], sphereCenter[1], sphereCenter[2]];
-                this._boundsRadius = sphereRadius[0];
-            } finally {
-                wasm.freeF32(sphereRadiusPtr, 1);
-                wasm.freeF32(sphereCenterPtr, 3);
-                wasm.freeF32(boxMaxPtr, 3);
-                wasm.freeF32(boxMinPtr, 3);
-                wasm.freeF32(positionsPtr, this.positions.length);
-            }
-        } else {
-            this._boundsMin = [0, 0, 0];
-            this._boundsMax = [0, 0, 0];
-            this._boundsCenter = [0, 0, 0];
-            this._boundsRadius = 0;
-        }
+        const bounds = computeGeometryBounds(this.positions);
+        this._boundsMin = bounds.boxMin;
+        this._boundsMax = bounds.boxMax;
+        this._boundsCenter = bounds.sphereCenter;
+        this._boundsRadius = bounds.sphereRadius;
     }
 
     upload(device: GPUDevice): void {
