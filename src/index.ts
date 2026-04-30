@@ -23,7 +23,7 @@ export type { BuiltinColormapName, ColormapFilter, ColormapStop, ColormapDescrip
 export { Geometry } from "./graphics/geometry";
 export type { GeometryDescriptor, GeometryAttribute } from "./graphics/geometry";
 export { Material, UnlitMaterial, StandardMaterial, DataMaterial, CustomMaterial, BlendMode, CullMode } from "./graphics/material";
-export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, DataMaterialDescriptor, DataMaterialVisualChangeKind, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
+export type { Color, Color4, MaterialDescriptor, UnlitMaterialDescriptor, StandardMaterialDescriptor, StandardMaterialExtensionsDescriptor, StandardMaterialExtensions, StandardMaterialClearcoatExtensionDescriptor, StandardMaterialTransmissionExtensionDescriptor, StandardMaterialVolumeExtensionDescriptor, StandardMaterialSpecularExtensionDescriptor, StandardMaterialSheenExtensionDescriptor, StandardMaterialIridescenceExtensionDescriptor, StandardMaterialAnisotropyExtensionDescriptor, StandardMaterialIorExtensionDescriptor, StandardMaterialEmissiveStrengthExtensionDescriptor, DataMaterialDescriptor, DataMaterialVisualChangeKind, CustomMaterialDescriptor, UniformType, UniformDefinition } from "./graphics/material";
 export { Texture2D } from "./graphics/texture";
 export type { Texture2DDescriptor, TextureColorSpace, TextureSamplerOptions, TextureSource } from "./graphics/texture";
 export { OverlaySystem, AxisTriadLayer, GridLayer, LegendLayer, AnnotationToolkit, AnnotationStore, AnnotationMarkerRenderer, AnnotationLabelLayer, AnnotationMode, AnnotationKind, AnnotationAngleUnit, annotationAnchorFromHit, colorToCssRgba, mapAnnotationProbeReadout, computeDistanceWorld, computeAngleRadians, createAnnotationAnchor, resolveAnnotationUnits, formatFiniteNumber, formatDistanceWorld, formatAngleRadians, formatWorldVector } from "./overlay";
@@ -40,8 +40,8 @@ export { NavigationControls, OrbitControls, TrackballControls, AxisConventions }
 export type { NavigationMode, InspectionView, NavigationControlsMouseButtons, OrbitControlsMouseButtons, TrackballControlsMouseButtons, NavigationControlsChangeListener, NavigationControlsInteractionListener, NavigationControlsDescriptor, OrbitControlsDescriptor, TrackballControlsDescriptor, AxisConventionDescriptor, AxisConventionPreset, AxisConventionInput, FitToBoundsOptions, SetViewOptions } from "./world/controls";
 export { GlyphField } from "./world/glyphfield";
 export type { GlyphFieldDescriptor, GlyphShape, GlyphColorMode, GlyphColormap, GlyphFieldVisualChangeKind } from "./world/glyphfield";
-export { Light, AmbientLight, DirectionalLight, PointLight } from "./world/light";
-export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor } from "./world/light";
+export { Light, AmbientLight, DirectionalLight, PointLight, SpotLight } from "./world/light";
+export type { LightType, AmbientLightDescriptor, DirectionalLightDescriptor, PointLightDescriptor, SpotLightDescriptor } from "./world/light";
 export { Mesh } from "./world/mesh";
 export { NodeLink } from "./world/nodelink";
 export type { NodeLinkDescriptor, NodeLinkNodeGeometryMode, NodeLinkEdgeGeometryMode, NodeLinkColorMode, NodeLinkColormap, NodeLinkComponentKind, NodeLinkVisualChangeKind } from "./world/nodelink";

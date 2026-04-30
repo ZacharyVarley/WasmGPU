@@ -49,6 +49,7 @@ struct ModelUniforms {
 struct Light {
     position: vec4f,
     color: vec4f,
+    direction: vec4f,
     params: vec4f
 };
 
@@ -123,6 +124,23 @@ fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, nor
     return normalize(tbn * ns);
 }
 
+fn computeRangeAttenuation(distance: f32, range: f32) -> f32 {
+    let invSq = 1.0 / max(distance * distance, 0.0001);
+    if (range <= 0.0) {
+        return invSq;
+    }
+    let fade = clamp(1.0 - distance / range, 0.0, 1.0);
+    return invSq * fade * fade;
+}
+
+fn computeSpotFactor(L: vec3f, direction: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
+    let angleCos = dot(-L, normalize(direction));
+    if (cosInner <= cosOuter) {
+        return select(0.0, 1.0, angleCos >= cosOuter);
+    }
+    return clamp((angleCos - cosOuter) / max(cosInner - cosOuter, 1e-4), 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let baseSample = textureSample(baseColorTex, baseColorSampler, in.uv);
@@ -153,8 +171,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         } else {
             let lightDir = light.position.xyz - in.worldPos;
             let distance = length(lightDir);
-            L = normalize(lightDir);
-            attenuation = 1.0 / (distance * distance);
+            if (distance <= 1e-5) {
+                continue;
+            }
+            L = lightDir / distance;
+            attenuation = computeRangeAttenuation(distance, light.params.x);
+            if (light.position.w == 2.0) {
+                attenuation = attenuation * computeSpotFactor(L, light.direction.xyz, light.params.y, light.params.z);
+            }
+        }
+        if (attenuation <= 0.0) {
+            continue;
         }
         let H = normalize(V + L);
         let radiance = light.color.rgb * light.color.a * attenuation;

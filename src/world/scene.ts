@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { Mesh } from "./mesh";
+import { Mesh, registerMeshSceneOwner, unregisterMeshSceneOwner } from "./mesh";
 import { PointCloud } from "./pointcloud";
 import { GlyphField } from "./glyphfield";
 import { NodeLink } from "./nodelink";
@@ -63,7 +63,11 @@ export class Scene {
     add(nodeLink: NodeLink): this;
     add(obj: Mesh | PointCloud | GlyphField | NodeLink): this {
         if (obj instanceof Mesh) {
-            if (!this._meshes.includes(obj)) this._meshes.push(obj);
+            if (obj.destroyed) throw new Error("Scene: cannot add a destroyed mesh.");
+            if (!this._meshes.includes(obj)) {
+                this._meshes.push(obj);
+                registerMeshSceneOwner(obj, this);
+            }
         } else if (obj instanceof PointCloud) {
             if (!this._pointClouds.includes(obj)) this._pointClouds.push(obj);
         } else if (obj instanceof GlyphField) {
@@ -82,6 +86,7 @@ export class Scene {
         if (obj instanceof Mesh) {
             const idx = this._meshes.indexOf(obj);
             if (idx !== -1) this._meshes.splice(idx, 1);
+            unregisterMeshSceneOwner(obj, this);
         } else if (obj instanceof PointCloud) {
             const idx = this._pointClouds.indexOf(obj);
             if (idx !== -1) this._pointClouds.splice(idx, 1);
@@ -96,6 +101,7 @@ export class Scene {
     }
 
     clear(): this {
+        for (const mesh of this._meshes) unregisterMeshSceneOwner(mesh, this);
         this._meshes = [];
         this._pointClouds = [];
         this._glyphFields = [];
@@ -265,7 +271,9 @@ export class Scene {
     }
 
     destroy(): void {
-        for (const mesh of this._meshes) mesh.destroy();
+        const meshes = [...this._meshes];
+        for (const mesh of meshes) this.remove(mesh);
+        for (const mesh of meshes) mesh.destroy();
         for (const pc of this._pointClouds) pc.destroy();
         for (const g of this._glyphFields) g.destroy();
         for (const n of this._nodeLinks) n.destroy();

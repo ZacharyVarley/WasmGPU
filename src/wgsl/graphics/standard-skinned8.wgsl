@@ -53,6 +53,7 @@ struct ModelUniforms {
 struct Light {
     position: vec4f,
     color: vec4f,
+    direction: vec4f,
     params: vec4f
 };
 
@@ -103,7 +104,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 }
 
 fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
-    return F0 + (vec3f(1.0) - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
 fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
@@ -111,7 +112,7 @@ fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
     let a2 = a * a;
     let NdotH = max(dot(N, H), 0.0);
     let NdotH2 = NdotH * NdotH;
-    let denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    let denom = NdotH2 * (a2 - 1.0) + 1.0;
     return a2 / (PI * denom * denom);
 }
 
@@ -124,45 +125,103 @@ fn geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
 fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
     let NdotV = max(dot(N, V), 0.0);
     let NdotL = max(dot(N, L), 0.0);
-    let ggx2 = geometrySchlickGGX(NdotV, roughness);
-    let ggx1 = geometrySchlickGGX(NdotL, roughness);
-    return ggx1 * ggx2;
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
 }
 
-fn toneMap(color: vec3f) -> vec3f {
-    return color / (color + vec3f(1.0));
+fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+    let n = normalize(N);
+    let dp1 = dpdx(worldPos);
+    let dp2 = dpdy(worldPos);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let det = duv1.x * duv2.y - duv1.y * duv2.x;
+    if (abs(det) < 1e-6) {
+        return n;
+    }
+    let r = 1.0 / det;
+    var T = (dp1 * duv2.y - dp2 * duv1.y) * r;
+    T = normalize(T - n * dot(n, T));
+    let B = normalize(cross(n, T)) * sign(det);
+    let tbn = mat3x3f(T, B, n);
+    var ns = normalSample * 2.0 - vec3f(1.0);
+    ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
+    return normalize(tbn * ns);
+}
+
+fn computeRangeAttenuation(distance: f32, range: f32) -> f32 {
+    let invSq = 1.0 / max(distance * distance, 0.0001);
+    if (range <= 0.0) {
+        return invSq;
+    }
+    let fade = clamp(1.0 - distance / range, 0.0, 1.0);
+    return invSq * fade * fade;
+}
+
+fn computeSpotFactor(L: vec3f, direction: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
+    let angleCos = dot(-L, normalize(direction));
+    if (cosInner <= cosOuter) {
+        return select(0.0, 1.0, angleCos >= cosOuter);
+    }
+    return clamp((angleCos - cosOuter) / max(cosInner - cosOuter, 1e-4), 0.0, 1.0);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let baseColor = material.color * textureSample(baseColorTex, baseColorSampler, in.uv);
+    let baseSample = textureSample(baseColorTex, baseColorSampler, in.uv);
+    let baseColor = material.color * baseSample;
+    let alphaCutoff = material.params2.x;
+    if (alphaCutoff > 0.0 && baseColor.a < alphaCutoff) {
+        discard;
+    }
     let mrSample = textureSample(metallicRoughnessTex, metallicRoughnessSampler, in.uv);
-    let metallic = material.params.z * mrSample.b;
-    let roughness = material.params.y * mrSample.g;
-    let N = normalize(in.normal);
+    let metallic = clamp(material.params.x * mrSample.b, 0.0, 1.0);
+    let roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
+    let normalSample = textureSample(normalTex, normalSampler, in.uv).xyz;
+    let N = applyNormalMap(in.normal, in.worldPos, in.uv, normalSample, material.params.z);
+    let occlSample = textureSample(occlusionTex, occlusionSampler, in.uv).r;
+    let ao = 1.0 + material.params.w * (occlSample - 1.0);
+    let emissiveSample = textureSample(emissiveTex, emissiveSampler, in.uv).rgb;
+    let emissive = emissiveSample * material.emissive.rgb * material.emissive.a;
+    let albedo = baseColor.rgb;
     let V = normalize(camera.position - in.worldPos);
-    let F0 = mix(vec3f(0.04), baseColor.rgb, metallic);
-    var Lo = vec3f(0.0);
-    for (var i: u32 = 0u; i < lighting.lightCount; i = i + 1u) {
+    let F0 = mix(vec3f(0.04), albedo, metallic);
+    var Lo = lighting.ambient.rgb * albedo * ao;
+    for (var i = 0u; i < lighting.lightCount; i++) {
         let light = lighting.lights[i];
-        let L = normalize(light.position.xyz - in.worldPos);
+        var L: vec3f;
+        var attenuation: f32 = 1.0;
+        if (light.position.w == 0.0) {
+            L = normalize(-light.position.xyz);
+        } else {
+            let lightDir = light.position.xyz - in.worldPos;
+            let distance = length(lightDir);
+            if (distance <= 1e-5) {
+                continue;
+            }
+            L = lightDir / distance;
+            attenuation = computeRangeAttenuation(distance, light.params.x);
+            if (light.position.w == 2.0) {
+                attenuation = attenuation * computeSpotFactor(L, light.direction.xyz, light.params.y, light.params.z);
+            }
+        }
+        if (attenuation <= 0.0) {
+            continue;
+        }
         let H = normalize(V + L);
-        let distance = length(light.position.xyz - in.worldPos);
-        let attenuation = 1.0 / max(distance * distance, 0.0001);
-        let radiance = light.color.rgb * attenuation * light.params.x;
+        let radiance = light.color.rgb * light.color.a * attenuation;
         let NDF = distributionGGX(N, H, roughness);
         let G = geometrySmith(N, V, L, roughness);
         let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-        let kS = F;
-        let kD = (vec3f(1.0) - kS) * (1.0 - metallic);
         let numerator = NDF * G * F;
-        let denom = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-        let specular = numerator / denom;
+        let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        let specular = numerator / denominator;
+        let kS = F;
+        let kD = (1.0 - kS) * (1.0 - metallic);
         let NdotL = max(dot(N, L), 0.0);
-        Lo = Lo + (kD * baseColor.rgb / PI + specular) * radiance * NdotL;
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
     }
-    let ambient = lighting.ambient.rgb * baseColor.rgb;
-    let color = ambient + Lo + material.emissive.rgb * textureSample(emissiveTex, emissiveSampler, in.uv).rgb;
-    let mapped = toneMap(color);
-    return vec4f(mapped, baseColor.a);
+    Lo += emissive;
+    Lo = Lo / (Lo + vec3f(1.0));
+    Lo = pow(Lo, vec3f(1.0 / 2.2));
+    return vec4f(Lo, baseColor.a);
 }

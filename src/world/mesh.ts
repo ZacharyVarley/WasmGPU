@@ -47,7 +47,7 @@ const resolveWeights = (weights: ArrayLike<number> | null | undefined, targetCou
     return out;
 };
 
-const updateMeshMorphCpuState = (runtime: MeshMorphRuntime, geometry: Geometry): boolean => {
+const updateMeshMorphCPUState = (runtime: MeshMorphRuntime, geometry: Geometry): boolean => {
     if (!runtime.dirty) return false;
     runtime.positions.set(geometry.positions);
     for (let i = 0; i < runtime.targetCount; i++) {
@@ -147,7 +147,7 @@ export const getMeshMorphWeights = (mesh: Mesh): Float32Array | null => {
 export const getMeshLocalBoundsSource = (mesh: Mesh): MeshBoundsSource => {
     const runtime = meshMorphRuntimes.get(mesh);
     if (!runtime) return mesh.geometry;
-    updateMeshMorphCpuState(runtime, mesh.geometry);
+    updateMeshMorphCPUState(runtime, mesh.geometry);
     return runtime;
 };
 
@@ -161,7 +161,7 @@ export const getMeshVertexBuffers = (mesh: Mesh, device: GPUDevice, queue: GPUQu
         mesh.geometry.upload(device);
         return { positionBuffer: mesh.geometry.positionBuffer, normalBuffer: mesh.geometry.normalBuffer };
     }
-    const updated = updateMeshMorphCpuState(runtime, mesh.geometry);
+    const updated = updateMeshMorphCPUState(runtime, mesh.geometry);
     if (runtime.device !== device || !runtime.positionBuffer || !runtime.normalBuffer) {
         destroyMeshMorphBuffers(runtime);
         runtime.positionBuffer = createBuffer(device, runtime.positions, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
@@ -178,19 +178,28 @@ export const getMeshVertexBuffers = (mesh: Mesh, device: GPUDevice, queue: GPUQu
 
 export class Mesh {
     readonly geometry: Geometry;
-    readonly material: Material;
     readonly transform: Transform;
+    private _material: Material;
     private _visible: boolean = true;
     private _castShadow: boolean = true;
     private _receiveShadow: boolean = true;
+    private _destroyed: boolean = false;
     name: string = "";
     userData: Record<string, unknown> = {};
     skin: SkinInstance | null = null;
 
     constructor(geometry: Geometry, material: Material) {
         this.geometry = geometry;
-        this.material = material;
+        this._material = material;
         this.transform = new Transform();
+    }
+
+    get material(): Material {
+        return this._material;
+    }
+
+    get destroyed(): boolean {
+        return this._destroyed;
     }
 
     get visible(): boolean {
@@ -217,22 +226,39 @@ export class Mesh {
         this._receiveShadow = value;
     }
 
+    private assertAlive(action: string): void {
+        if (this._destroyed) throw new Error(`Mesh: cannot ${action}; mesh has already been destroyed.`);
+    }
+
+    setMaterial(material: Material): this {
+        this.assertAlive("set material");
+        if (material === this._material) return this;
+        const previous = this._material;
+        this._material = material;
+        previous.release();
+        return this;
+    }
+
     setParent(parent: Mesh | null): this {
+        this.assertAlive("set parent");
         this.transform.setParent(parent?.transform ?? null);
         return this;
     }
 
     addChild(child: Mesh): this {
+        this.assertAlive("add child");
         this.transform.addChild(child.transform);
         return this;
     }
 
     removeChild(child: Mesh): this {
+        this.assertAlive("remove child");
         this.transform.removeChild(child.transform);
         return this;
     }
 
     get worldMatrix(): number[] {
+        this.assertAlive("access world matrix");
         return this.transform.worldMatrix;
     }
 
@@ -250,15 +276,21 @@ export class Mesh {
     }
 
     destroy(): void {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        detachMeshFromSceneOwners(this);
         destroyMeshMorphRuntime(this);
         this.skin?.dispose();
         this.skin = null;
         this.transform.dispose();
-        this.geometry.destroy();
-        this.material.destroy();
+        this.geometry.release();
+        this._material.release();
     }
 
     clone(): Mesh {
+        this.assertAlive("clone");
+        this.geometry.retain();
+        this.material.retain();
         const mesh = new Mesh(this.geometry, this.material);
         mesh.transform.copyFrom(this.transform);
         mesh.name = this.name;
@@ -270,6 +302,8 @@ export class Mesh {
     }
 
     cloneWithMaterial(material: Material): Mesh {
+        this.assertAlive("clone with material");
+        this.geometry.retain();
         const mesh = new Mesh(this.geometry, material);
         mesh.transform.copyFrom(this.transform);
         mesh.name = this.name;
@@ -284,3 +318,31 @@ export class Mesh {
         return getMeshLocalBoundsSource(this);
     }
 }
+
+type MeshSceneOwner = {
+    remove(mesh: object): void;
+};
+
+const meshSceneOwners = new WeakMap<object, Set<MeshSceneOwner>>();
+
+export const registerMeshSceneOwner = (mesh: object, owner: MeshSceneOwner): void => {
+    let owners = meshSceneOwners.get(mesh);
+    if (!owners) {
+        owners = new Set<MeshSceneOwner>();
+        meshSceneOwners.set(mesh, owners);
+    }
+    owners.add(owner);
+};
+
+export const unregisterMeshSceneOwner = (mesh: object, owner: MeshSceneOwner): void => {
+    const owners = meshSceneOwners.get(mesh);
+    if (!owners) return;
+    owners.delete(owner);
+    if (owners.size === 0) meshSceneOwners.delete(mesh);
+};
+
+export const detachMeshFromSceneOwners = (mesh: object): void => {
+    const owners = meshSceneOwners.get(mesh);
+    if (!owners) return;
+    for (const owner of [...owners]) owner.remove(mesh);
+};

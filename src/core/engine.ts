@@ -37,7 +37,7 @@ import { GlyphField } from "../world/glyphfield";
 import type { GlyphFieldDescriptor } from "../world/glyphfield";
 import { NodeLink } from "../world/nodelink";
 import type { NodeLinkDescriptor } from "../world/nodelink";
-import { AmbientLight, DirectionalLight, PointLight } from "../world/light";
+import { AmbientLight, DirectionalLight, PointLight, SpotLight } from "../world/light";
 import { Mesh } from "../world/mesh";
 import { SelectionStore } from "../world/picking";
 import type { PickAttributes, PickHit, PickLassoPoint, PickQuery, PickRegionQuery, PickRegionResult, PickResult } from "../world/picking";
@@ -483,6 +483,9 @@ export class WasmGPU {
         },
         point: (options?: { position?: [number, number, number]; color?: Color; intensity?: number; range?: number; }): PointLight => {
             return new PointLight(options);
+        },
+        spot: (options?: { position?: [number, number, number]; direction?: [number, number, number]; color?: Color; intensity?: number; range?: number; innerCone?: number; outerCone?: number; }): SpotLight => {
+            return new SpotLight(options);
         }
     };
 

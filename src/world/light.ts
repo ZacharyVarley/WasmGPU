@@ -6,7 +6,13 @@
 
 import { Color } from "../graphics/material";
 
-export type LightType = "directional" | "point" | "ambient";
+export type LightType = "directional" | "point" | "spot" | "ambient";
+
+const normalizeDirection = (value: [number, number, number]): [number, number, number] => {
+    const len = Math.sqrt(value[0] ** 2 + value[1] ** 2 + value[2] ** 2);
+    if (len <= 0) return [0, -1, 0];
+    return [value[0] / len, value[1] / len, value[2] / len];
+};
 
 export abstract class Light {
     readonly type: LightType;
@@ -77,10 +83,7 @@ export class DirectionalLight extends Light {
     }
 
     set direction(value: [number, number, number]) {
-        const len = Math.sqrt(value[0] ** 2 + value[1] ** 2 + value[2] ** 2);
-        if (len > 0) {
-            this._direction = [value[0] / len, value[1] / len, value[2] / len];
-        }
+        this._direction = normalizeDirection(value);
     }
 }
 
@@ -117,5 +120,76 @@ export class PointLight extends Light {
 
     set range(value: number) {
         this._range = value;
+    }
+}
+
+export type SpotLightDescriptor = {
+    position?: [number, number, number];
+    direction?: [number, number, number];
+    color?: Color;
+    intensity?: number;
+    range?: number;
+    innerCone?: number;
+    outerCone?: number;
+};
+
+export class SpotLight extends Light {
+    private _position: [number, number, number];
+    private _direction: [number, number, number];
+    private _range: number;
+    private _innerCone: number;
+    private _outerCone: number;
+
+    constructor(descriptor: SpotLightDescriptor = {}) {
+        super("spot");
+        this._position = descriptor.position ?? [0, 0, 0];
+        this._direction = normalizeDirection(descriptor.direction ?? [0, -1, 0]);
+        this._color = descriptor.color ?? [1, 1, 1];
+        this._intensity = descriptor.intensity ?? 1;
+        this._range = descriptor.range ?? 10;
+        this._innerCone = descriptor.innerCone ?? Math.PI / 8;
+        this._outerCone = descriptor.outerCone ?? Math.PI / 6;
+        if (this._innerCone > this._outerCone) this._innerCone = this._outerCone;
+    }
+
+    get position(): [number, number, number] {
+        return this._position;
+    }
+
+    set position(value: [number, number, number]) {
+        this._position = value;
+    }
+
+    get direction(): [number, number, number] {
+        return this._direction;
+    }
+
+    set direction(value: [number, number, number]) {
+        this._direction = normalizeDirection(value);
+    }
+
+    get range(): number {
+        return this._range;
+    }
+
+    set range(value: number) {
+        this._range = value;
+    }
+
+    get innerCone(): number {
+        return this._innerCone;
+    }
+
+    set innerCone(value: number) {
+        this._innerCone = Math.max(0, Math.min(value, this._outerCone));
+    }
+
+    get outerCone(): number {
+        return this._outerCone;
+    }
+
+    set outerCone(value: number) {
+        this._outerCone = Math.max(0, value);
+        if (this._innerCone > this._outerCone) this._innerCone = this._outerCone;
     }
 }

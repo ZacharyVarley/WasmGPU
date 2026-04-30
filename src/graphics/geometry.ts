@@ -185,6 +185,8 @@ export class Geometry {
     private _uvBuffer: GPUBuffer | null = null;
     private _indexBuffer: GPUBuffer | null = null;
     private _device: GPUDevice | null = null;
+    private _refCount: number = 1;
+    private _destroyed: boolean = false;
 
     constructor(descriptor: GeometryDescriptor) {
         this.positions = descriptor.positions;
@@ -240,7 +242,27 @@ export class Geometry {
         this._boundsRadius = bounds.sphereRadius;
     }
 
+    private assertAlive(action: string): void {
+        if (this._destroyed) throw new Error(`Geometry: cannot ${action}; resource has already been released.`);
+    }
+
+    retain(): this {
+        this.assertAlive("retain");
+        this._refCount++;
+        return this;
+    }
+
+    release(): void {
+        if (this._destroyed) throw new Error("Geometry: release() called after the resource was already released.");
+        if (this._refCount <= 0) throw new Error("Geometry: reference count underflow.");
+        this._refCount--;
+        if (this._refCount > 0) return;
+        this._destroyed = true;
+        this.disposeResources();
+    }
+
     upload(device: GPUDevice): void {
+        this.assertAlive("upload");
         if (this._device === device) return;
         this._device = device;
         this._positionBuffer = createBuffer(device, this.positions, GPUBufferUsage.VERTEX);
@@ -254,16 +276,19 @@ export class Geometry {
     }
 
     get positionBuffer(): GPUBuffer {
+        this.assertAlive("access positionBuffer");
         if (!this._positionBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
         return this._positionBuffer;
     }
 
     get normalBuffer(): GPUBuffer {
+        this.assertAlive("access normalBuffer");
         if (!this._normalBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
         return this._normalBuffer;
     }
 
     get uvBuffer(): GPUBuffer {
+        this.assertAlive("access uvBuffer");
         if (!this._uvBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
         return this._uvBuffer;
     }
@@ -317,6 +342,10 @@ export class Geometry {
     }
 
     destroy(): void {
+        this.release();
+    }
+
+    private disposeResources(): void {
         this._positionBuffer?.destroy();
         this._normalBuffer?.destroy();
         this._uvBuffer?.destroy();

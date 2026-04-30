@@ -55,6 +55,8 @@ export abstract class Material {
     uniformBuffer: GPUBuffer | null = null;
     protected _uniformDataCache: Float32Array | null = null;
     protected _dirty: boolean = true;
+    private _refCount: number = 1;
+    private _destroyed: boolean = false;
 
     constructor(descriptor: MaterialDescriptor = {}) {
         this.blendMode = descriptor.blendMode ?? BlendMode.Opaque;
@@ -67,11 +69,32 @@ export abstract class Material {
         return this._dirty;
     }
 
+    protected assertAlive(action: string): void {
+        if (this._destroyed) throw new Error(`Material: cannot ${action}; resource has already been released.`);
+    }
+
+    retain(): this {
+        this.assertAlive("retain");
+        this._refCount++;
+        return this;
+    }
+
+    release(): void {
+        if (this._destroyed) throw new Error("Material: release() called after the resource was already released.");
+        if (this._refCount <= 0) throw new Error("Material: reference count underflow.");
+        this._refCount--;
+        if (this._refCount > 0) return;
+        this._destroyed = true;
+        this.disposeResources();
+    }
+
     markClean(): void {
+        this.assertAlive("markClean");
         this._dirty = false;
     }
 
     protected getUniformDataCache(floatCount: number): Float32Array {
+        this.assertAlive("build uniform data");
         if (!this._uniformDataCache || this._uniformDataCache.length !== floatCount) this._uniformDataCache = new Float32Array(floatCount);
         return this._uniformDataCache;
     }
@@ -82,11 +105,17 @@ export abstract class Material {
     abstract createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout;
 
     destroy(): void {
+        this.release();
+    }
+
+    protected disposeResources(): void {
         this.uniformBuffer?.destroy();
         this.uniformBuffer = null;
         this.bindGroup = null;
         this.bindGroupKey = null;
         this.pipeline = null;
+        this._uniformDataCache = null;
+        this._dirty = true;
     }
 }
 
@@ -191,6 +220,146 @@ export class UnlitMaterial extends Material {
     }
 }
 
+export type StandardMaterialClearcoatExtensionDescriptor = {
+    factor?: number;
+    texture?: Texture2D | null;
+    roughness?: number;
+    roughnessTexture?: Texture2D | null;
+    normalTexture?: Texture2D | null;
+    normalScale?: number;
+};
+
+export type StandardMaterialTransmissionExtensionDescriptor = {
+    factor?: number;
+    texture?: Texture2D | null;
+};
+
+export type StandardMaterialVolumeExtensionDescriptor = {
+    thicknessFactor?: number;
+    thicknessTexture?: Texture2D | null;
+    attenuationDistance?: number;
+    attenuationColor?: Color;
+};
+
+export type StandardMaterialSpecularExtensionDescriptor = {
+    factor?: number;
+    texture?: Texture2D | null;
+    color?: Color;
+    colorTexture?: Texture2D | null;
+};
+
+export type StandardMaterialSheenExtensionDescriptor = {
+    color?: Color;
+    colorTexture?: Texture2D | null;
+    roughness?: number;
+    roughnessTexture?: Texture2D | null;
+};
+
+export type StandardMaterialIridescenceExtensionDescriptor = {
+    factor?: number;
+    texture?: Texture2D | null;
+    ior?: number;
+    thicknessMinimum?: number;
+    thicknessMaximum?: number;
+    thicknessTexture?: Texture2D | null;
+};
+
+export type StandardMaterialAnisotropyExtensionDescriptor = {
+    strength?: number;
+    rotation?: number;
+    texture?: Texture2D | null;
+};
+
+export type StandardMaterialIorExtensionDescriptor = {
+    ior?: number;
+};
+
+export type StandardMaterialEmissiveStrengthExtensionDescriptor = {
+    strength?: number;
+};
+
+export type StandardMaterialExtensionsDescriptor = {
+    clearcoat?: StandardMaterialClearcoatExtensionDescriptor | null;
+    transmission?: StandardMaterialTransmissionExtensionDescriptor | null;
+    volume?: StandardMaterialVolumeExtensionDescriptor | null;
+    specular?: StandardMaterialSpecularExtensionDescriptor | null;
+    sheen?: StandardMaterialSheenExtensionDescriptor | null;
+    iridescence?: StandardMaterialIridescenceExtensionDescriptor | null;
+    anisotropy?: StandardMaterialAnisotropyExtensionDescriptor | null;
+    ior?: StandardMaterialIorExtensionDescriptor | null;
+    emissiveStrength?: StandardMaterialEmissiveStrengthExtensionDescriptor | null;
+};
+
+export type StandardMaterialClearcoatExtension = Readonly<{
+    factor: number;
+    texture: Texture2D | null;
+    roughness: number;
+    roughnessTexture: Texture2D | null;
+    normalTexture: Texture2D | null;
+    normalScale: number;
+}>;
+
+export type StandardMaterialTransmissionExtension = Readonly<{
+    factor: number;
+    texture: Texture2D | null;
+}>;
+
+export type StandardMaterialVolumeExtension = Readonly<{
+    thicknessFactor: number;
+    thicknessTexture: Texture2D | null;
+    attenuationDistance: number;
+    attenuationColor: Color;
+}>;
+
+export type StandardMaterialSpecularExtension = Readonly<{
+    factor: number;
+    texture: Texture2D | null;
+    color: Color;
+    colorTexture: Texture2D | null;
+}>;
+
+export type StandardMaterialSheenExtension = Readonly<{
+    color: Color;
+    colorTexture: Texture2D | null;
+    roughness: number;
+    roughnessTexture: Texture2D | null;
+}>;
+
+export type StandardMaterialIridescenceExtension = Readonly<{
+    factor: number;
+    texture: Texture2D | null;
+    ior: number;
+    thicknessMinimum: number;
+    thicknessMaximum: number;
+    thicknessTexture: Texture2D | null;
+}>;
+
+export type StandardMaterialAnisotropyExtension = Readonly<{
+    strength: number;
+    rotation: number;
+    texture: Texture2D | null;
+}>;
+
+export type StandardMaterialIorExtension = Readonly<{
+    ior: number;
+}>;
+
+export type StandardMaterialEmissiveStrengthExtension = Readonly<{
+    strength: number;
+}>;
+
+export type StandardMaterialExtensions = Readonly<{
+    clearcoat: StandardMaterialClearcoatExtension | null;
+    transmission: StandardMaterialTransmissionExtension | null;
+    volume: StandardMaterialVolumeExtension | null;
+    specular: StandardMaterialSpecularExtension | null;
+    sheen: StandardMaterialSheenExtension | null;
+    iridescence: StandardMaterialIridescenceExtension | null;
+    anisotropy: StandardMaterialAnisotropyExtension | null;
+    ior: StandardMaterialIorExtension | null;
+    emissiveStrength: StandardMaterialEmissiveStrengthExtension | null;
+}>;
+
 export type StandardMaterialDescriptor = MaterialDescriptor & {
     color?: Color;
     opacity?: number;
@@ -206,6 +375,98 @@ export type StandardMaterialDescriptor = MaterialDescriptor & {
     normalScale?: number;
     occlusionStrength?: number;
     alphaCutoff?: number;
+    extensions?: StandardMaterialExtensionsDescriptor;
+};
+
+export const enum StandardMaterialFeatureFlag {
+    BaseColorTexture = 1 << 0,
+    MetallicRoughnessTexture = 1 << 1,
+    NormalTexture = 1 << 2,
+    OcclusionTexture = 1 << 3,
+    EmissiveTexture = 1 << 4,
+    Clearcoat = 1 << 5,
+    ClearcoatTexture = 1 << 6,
+    ClearcoatRoughnessTexture = 1 << 7,
+    ClearcoatNormalTexture = 1 << 8,
+    Transmission = 1 << 9,
+    TransmissionTexture = 1 << 10,
+    Volume = 1 << 11,
+    ThicknessTexture = 1 << 12,
+    Specular = 1 << 13,
+    SpecularTexture = 1 << 14,
+    SpecularColorTexture = 1 << 15,
+    Sheen = 1 << 16,
+    SheenColorTexture = 1 << 17,
+    SheenRoughnessTexture = 1 << 18,
+    Iridescence = 1 << 19,
+    IridescenceTexture = 1 << 20,
+    IridescenceThicknessTexture = 1 << 21,
+    Anisotropy = 1 << 22,
+    AnisotropyTexture = 1 << 23,
+    Ior = 1 << 24,
+    EmissiveStrength = 1 << 25
+}
+
+const cloneColor = (value: Color | undefined, fallback: Color): Color => {
+    return [value?.[0] ?? fallback[0], value?.[1] ?? fallback[1], value?.[2] ?? fallback[2]];
+};
+
+const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtensionsDescriptor): StandardMaterialExtensions => {
+    return {
+        clearcoat: descriptor?.clearcoat ? {
+            factor: descriptor.clearcoat.factor ?? 0,
+            texture: descriptor.clearcoat.texture ?? null,
+            roughness: descriptor.clearcoat.roughness ?? 0,
+            roughnessTexture: descriptor.clearcoat.roughnessTexture ?? null,
+            normalTexture: descriptor.clearcoat.normalTexture ?? null,
+            normalScale: descriptor.clearcoat.normalScale ?? 1
+        } : null,
+        transmission: descriptor?.transmission ? {
+            factor: descriptor.transmission.factor ?? 0,
+            texture: descriptor.transmission.texture ?? null
+        } : null,
+        volume: descriptor?.volume ? {
+            thicknessFactor: descriptor.volume.thicknessFactor ?? 0,
+            thicknessTexture: descriptor.volume.thicknessTexture ?? null,
+            attenuationDistance: descriptor.volume.attenuationDistance ?? 0,
+            attenuationColor: cloneColor(descriptor.volume.attenuationColor, [1, 1, 1])
+        } : null,
+        specular: descriptor?.specular ? {
+            factor: descriptor.specular.factor ?? 1,
+            texture: descriptor.specular.texture ?? null,
+            color: cloneColor(descriptor.specular.color, [1, 1, 1]),
+            colorTexture: descriptor.specular.colorTexture ?? null
+        } : null,
+        sheen: descriptor?.sheen ? {
+            color: cloneColor(descriptor.sheen.color, [0, 0, 0]),
+            colorTexture: descriptor.sheen.colorTexture ?? null,
+            roughness: descriptor.sheen.roughness ?? 0,
+            roughnessTexture: descriptor.sheen.roughnessTexture ?? null
+        } : null,
+        iridescence: descriptor?.iridescence ? {
+            factor: descriptor.iridescence.factor ?? 0,
+            texture: descriptor.iridescence.texture ?? null,
+            ior: descriptor.iridescence.ior ?? 1.3,
+            thicknessMinimum: descriptor.iridescence.thicknessMinimum ?? 100,
+            thicknessMaximum: descriptor.iridescence.thicknessMaximum ?? 400,
+            thicknessTexture: descriptor.iridescence.thicknessTexture ?? null
+        } : null,
+        anisotropy: descriptor?.anisotropy ? {
+            strength: descriptor.anisotropy.strength ?? 0,
+            rotation: descriptor.anisotropy.rotation ?? 0,
+            texture: descriptor.anisotropy.texture ?? null
+        } : null,
+        ior: descriptor?.ior ? {
+            ior: descriptor.ior.ior ?? 1.5
+        } : null,
+        emissiveStrength: descriptor?.emissiveStrength ? {
+            strength: descriptor.emissiveStrength.strength ?? 1
+        } : null
+    };
+};
+
+const cloneStandardMaterialExtensions = (extensions: StandardMaterialExtensions): StandardMaterialExtensions => {
+    return normalizeStandardMaterialExtensions(extensions);
 };
 
 export class StandardMaterial extends Material {
@@ -223,8 +484,11 @@ export class StandardMaterial extends Material {
     private _normalScale: number;
     private _occlusionStrength: number;
     private _alphaCutoff: number;
+    private _extensions: StandardMaterialExtensions;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
+    private static readonly UNIFORM_FLOAT_COUNT = 16;
+    private static readonly TEXTURE_BINDING_COUNT = 5;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
         super({
@@ -245,6 +509,12 @@ export class StandardMaterial extends Material {
         this._normalScale = descriptor.normalScale ?? 1;
         this._occlusionStrength = descriptor.occlusionStrength ?? 1;
         this._alphaCutoff = descriptor.alphaCutoff ?? 0;
+        this._extensions = normalizeStandardMaterialExtensions(descriptor.extensions);
+    }
+
+    private invalidateBindings(): void {
+        this.bindGroupKey = null;
+        this._dirty = true;
     }
 
     get color(): Color {
@@ -307,6 +577,7 @@ export class StandardMaterial extends Material {
 
     set baseColorTexture(value: Texture2D | null) {
         this._baseColorTexture = value;
+        this.invalidateBindings();
     }
 
     get metallicRoughnessTexture(): Texture2D | null {
@@ -315,6 +586,7 @@ export class StandardMaterial extends Material {
 
     set metallicRoughnessTexture(value: Texture2D | null) {
         this._metallicRoughnessTexture = value;
+        this.invalidateBindings();
     }
 
     get normalTexture(): Texture2D | null {
@@ -323,6 +595,7 @@ export class StandardMaterial extends Material {
 
     set normalTexture(value: Texture2D | null) {
         this._normalTexture = value;
+        this.invalidateBindings();
     }
 
     get occlusionTexture(): Texture2D | null {
@@ -331,6 +604,7 @@ export class StandardMaterial extends Material {
 
     set occlusionTexture(value: Texture2D | null) {
         this._occlusionTexture = value;
+        this.invalidateBindings();
     }
 
     get emissiveTexture(): Texture2D | null {
@@ -339,6 +613,7 @@ export class StandardMaterial extends Material {
 
     set emissiveTexture(value: Texture2D | null) {
         this._emissiveTexture = value;
+        this.invalidateBindings();
     }
 
     get normalScale(): number {
@@ -368,12 +643,74 @@ export class StandardMaterial extends Material {
         this._dirty = true;
     }
 
+    get extensions(): StandardMaterialExtensions {
+        return cloneStandardMaterialExtensions(this._extensions);
+    }
+
+    setExtensions(descriptor?: StandardMaterialExtensionsDescriptor): this {
+        this._extensions = normalizeStandardMaterialExtensions(descriptor);
+        return this;
+    }
+
+    getFeatureMask(): number {
+        let mask = 0;
+        if (this._baseColorTexture) mask |= StandardMaterialFeatureFlag.BaseColorTexture;
+        if (this._metallicRoughnessTexture) mask |= StandardMaterialFeatureFlag.MetallicRoughnessTexture;
+        if (this._normalTexture) mask |= StandardMaterialFeatureFlag.NormalTexture;
+        if (this._occlusionTexture) mask |= StandardMaterialFeatureFlag.OcclusionTexture;
+        if (this._emissiveTexture) mask |= StandardMaterialFeatureFlag.EmissiveTexture;
+        const clearcoat = this._extensions.clearcoat;
+        if (clearcoat) {
+            mask |= StandardMaterialFeatureFlag.Clearcoat;
+            if (clearcoat.texture) mask |= StandardMaterialFeatureFlag.ClearcoatTexture;
+            if (clearcoat.roughnessTexture) mask |= StandardMaterialFeatureFlag.ClearcoatRoughnessTexture;
+            if (clearcoat.normalTexture) mask |= StandardMaterialFeatureFlag.ClearcoatNormalTexture;
+        }
+        const transmission = this._extensions.transmission;
+        if (transmission) {
+            mask |= StandardMaterialFeatureFlag.Transmission;
+            if (transmission.texture) mask |= StandardMaterialFeatureFlag.TransmissionTexture;
+        }
+        const volume = this._extensions.volume;
+        if (volume) {
+            mask |= StandardMaterialFeatureFlag.Volume;
+            if (volume.thicknessTexture) mask |= StandardMaterialFeatureFlag.ThicknessTexture;
+        }
+        const specular = this._extensions.specular;
+        if (specular) {
+            mask |= StandardMaterialFeatureFlag.Specular;
+            if (specular.texture) mask |= StandardMaterialFeatureFlag.SpecularTexture;
+            if (specular.colorTexture) mask |= StandardMaterialFeatureFlag.SpecularColorTexture;
+        }
+        const sheen = this._extensions.sheen;
+        if (sheen) {
+            mask |= StandardMaterialFeatureFlag.Sheen;
+            if (sheen.colorTexture) mask |= StandardMaterialFeatureFlag.SheenColorTexture;
+            if (sheen.roughnessTexture) mask |= StandardMaterialFeatureFlag.SheenRoughnessTexture;
+        }
+        const iridescence = this._extensions.iridescence;
+        if (iridescence) {
+            mask |= StandardMaterialFeatureFlag.Iridescence;
+            if (iridescence.texture) mask |= StandardMaterialFeatureFlag.IridescenceTexture;
+            if (iridescence.thicknessTexture) mask |= StandardMaterialFeatureFlag.IridescenceThicknessTexture;
+        }
+        const anisotropy = this._extensions.anisotropy;
+        if (anisotropy) {
+            mask |= StandardMaterialFeatureFlag.Anisotropy;
+            if (anisotropy.texture) mask |= StandardMaterialFeatureFlag.AnisotropyTexture;
+        }
+        if (this._extensions.ior) mask |= StandardMaterialFeatureFlag.Ior;
+        if (this._extensions.emissiveStrength) mask |= StandardMaterialFeatureFlag.EmissiveStrength;
+        return mask >>> 0;
+    }
+
     getUniformBufferSize(): number {
-        return 64;
+        return StandardMaterial.UNIFORM_FLOAT_COUNT * 4;
     }
 
     getUniformData(): Float32Array {
-        const f = this.getUniformDataCache(16);
+        const f = this.getUniformDataCache(StandardMaterial.UNIFORM_FLOAT_COUNT);
+        f.fill(0);
         f[0] = this._color[0];
         f[1] = this._color[1];
         f[2] = this._color[2];
@@ -395,21 +732,13 @@ export class StandardMaterial extends Material {
 
     createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
         if (StandardMaterial._cachedBindGroupLayout && StandardMaterial._cachedLayoutDevice === device) return StandardMaterial._cachedBindGroupLayout;
-        const layout = device.createBindGroupLayout({
-            entries: [
-                { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-                { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-                { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-                { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-                { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-                { binding: 9, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-                { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }
-            ]
-        });
+        const entries: GPUBindGroupLayoutEntry[] = [ { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } } ];
+        for (let i = 0; i < StandardMaterial.TEXTURE_BINDING_COUNT; i++) {
+            const samplerBinding = 1 + (i * 2);
+            entries.push({ binding: samplerBinding, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } });
+            entries.push({ binding: samplerBinding + 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } });
+        }
+        const layout = device.createBindGroupLayout({ entries });
         StandardMaterial._cachedBindGroupLayout = layout;
         StandardMaterial._cachedLayoutDevice = device;
         return layout;
@@ -582,6 +911,7 @@ export class DataMaterial extends Material {
     }
 
     upload(device: GPUDevice, queue: GPUQueue): void {
+        this.assertAlive("upload");
         if (!this._dataDirty) return;
         if (this.dataBuffer && !this._CPUData) {
             this._dataDirty = false;
@@ -652,8 +982,8 @@ export class DataMaterial extends Material {
         }
     }
 
-    destroy(): void {
-        super.destroy();
+    protected disposeResources(): void {
+        super.disposeResources();
         if (this._ownsDataBuffer) this.dataBuffer?.destroy();
         this.dataBuffer = null;
         this._CPUData = null;

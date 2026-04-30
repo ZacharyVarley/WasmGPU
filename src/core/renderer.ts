@@ -6,7 +6,7 @@
 
 import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
-import { DirectionalLight, PointLight } from "../world/light";
+import { DirectionalLight, PointLight, SpotLight } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh, getMeshLocalBoundsSource, getMeshVertexBuffers, getMeshVertexSource, hasMeshMorphRuntime } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
@@ -15,6 +15,7 @@ import { NodeLink } from "../world/nodelink";
 import type { PickLassoPoint, PickQuery, PickRegionQuery } from "../world/picking";
 import { Geometry } from "../graphics/geometry";
 import { Material, BlendMode, CullMode, UnlitMaterial, StandardMaterial, DataMaterial } from "../graphics/material";
+import { Texture2D } from "../graphics/texture";
 import { animf, cullf, frameArena, frustumf, mat4, mat4f, transformf, wasm, wasmInterop, WasmPtr } from "../wasm";
 import smaaWGSL from "../wgsl/core/smaa.wgsl";
 import pointCloudWGSL from "../wgsl/world/pointcloud.wgsl";
@@ -274,6 +275,7 @@ export class Renderer {
     private pickIdReadbackCapacityBytes: number = 0;
     private pickDepthReadbackCapacityBytes: number = 0;
     private pickTail: Promise<unknown> = Promise.resolve();
+    private destroyed: boolean = false;
     private constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
     }
@@ -427,7 +429,7 @@ export class Renderer {
         if (!needRefresh) return;
         this._wasmBuffer = buf;
         this.cameraUniformStagingView = wasm.f32view(this.cameraUniformStagingPtr, 20);
-        this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 104);
+        this.lightingUniformStagingView = wasm.f32view(this.lightingUniformStagingPtr, 8 + (Scene.MAX_LIGHTS * 16));
         this.lightingCountView = wasm.u32view(this.lightingUniformStagingPtr + 16, 1);
         this.modelUniformStagingView = wasm.f32view(this.modelUniformStagingPtr, 32);
     }
@@ -506,7 +508,7 @@ export class Renderer {
         this.modelBufferIndex = 0;
         this.instanceBufferOffset = 0;
         this.cameraUniformStagingPtr = frameArena.allocF32(20);
-        this.lightingUniformStagingPtr = frameArena.allocF32(104);
+        this.lightingUniformStagingPtr = frameArena.allocF32(8 + (Scene.MAX_LIGHTS * 16));
         this.modelUniformStagingPtr = frameArena.allocF32(32);
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
         const swapTexture = this.context.getCurrentTexture();
@@ -753,7 +755,7 @@ export class Renderer {
         this.modelBufferIndex = 0;
         this.instanceBufferOffset = 0;
         this.cameraUniformStagingPtr = frameArena.allocF32(20);
-        this.lightingUniformStagingPtr = frameArena.allocF32(104);
+        this.lightingUniformStagingPtr = frameArena.allocF32(8 + (Scene.MAX_LIGHTS * 16));
         this.modelUniformStagingPtr = frameArena.allocF32(32);
         if ("aspect" in camera) (camera as { aspect: number }).aspect = this.aspectRatio;
         Transform.updateAll();
@@ -954,6 +956,8 @@ export class Renderer {
     }
 
     destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
         this.depthTexture?.destroy();
         this.smaaSceneColorTexture?.destroy();
         this.smaaEdgesTexture?.destroy();
@@ -1037,6 +1041,8 @@ export class Renderer {
         this.objectsById.clear();
         this.objectIds = new WeakMap();
         this.nextObjectId = 1;
+        try { this.context?.unconfigure?.(); } catch { /* ignore */ }
+        try { this.device?.destroy?.(); } catch { /* ignore */ }
     }
 
     private createGlobalBindGroupLayout(): void {
@@ -1055,7 +1061,7 @@ export class Renderer {
                 {
                     binding: 2,
                     visibility: GPUShaderStage.FRAGMENT,
-                    buffer: { type: "uniform", minBindingSize: 416 }
+                    buffer: { type: "uniform", minBindingSize: (8 + (Scene.MAX_LIGHTS * 16)) * 4 }
                 }
             ]
         });
@@ -1077,7 +1083,7 @@ export class Renderer {
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
         this.lightingUniformBuffer = this.device.createBuffer({
-            size: 416,
+            size: (8 + (Scene.MAX_LIGHTS * 16)) * 4,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
         this.modelUniformBuffers = [];
@@ -1481,6 +1487,7 @@ export class Renderer {
         const { ambient, lights } = scene.getLightingData();
         this.refreshWasmStagingViews();
         const data = this.lightingUniformStagingView;
+        data.fill(0);
         data[0] = ambient[0];
         data[1] = ambient[1];
         data[2] = ambient[2];
@@ -1499,15 +1506,29 @@ export class Renderer {
                 data[offset + 1] = light.position[1];
                 data[offset + 2] = light.position[2];
                 data[offset + 3] = 1;
+                data[offset + 12] = light.range;
+            } else if (light instanceof SpotLight) {
+                data[offset + 0] = light.position[0];
+                data[offset + 1] = light.position[1];
+                data[offset + 2] = light.position[2];
+                data[offset + 3] = 2;
+                data[offset + 8] = light.direction[0];
+                data[offset + 9] = light.direction[1];
+                data[offset + 10] = light.direction[2];
+                data[offset + 12] = light.range;
+                data[offset + 13] = Math.cos(light.innerCone);
+                data[offset + 14] = Math.cos(light.outerCone);
             }
             data[offset + 4] = light.color[0];
             data[offset + 5] = light.color[1];
             data[offset + 6] = light.color[2];
             data[offset + 7] = light.intensity;
-            if (light instanceof PointLight) {
-                data[offset + 8] = light.range;
+            if (light instanceof DirectionalLight) {
+                data[offset + 8] = light.direction[0];
+                data[offset + 9] = light.direction[1];
+                data[offset + 10] = light.direction[2];
             }
-            offset += 12;
+            offset += 16;
         }
         this.queue.writeBuffer(this.lightingUniformBuffer, 0, data);
     }
@@ -1519,6 +1540,7 @@ export class Renderer {
         const candidates = this.cullMeshScratch;
         candidates.length = 0;
         for (const mesh of scene.meshes) {
+            if (mesh.destroyed) continue;
             if (!mesh.visible) continue;
             candidates.push(mesh);
         }

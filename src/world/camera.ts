@@ -22,6 +22,10 @@ export abstract class Camera {
         this.transform = new Transform();
     }
 
+    get destroyed(): boolean {
+        return this.transform.disposed;
+    }
+
     abstract getProjectionMatrix(): number[];
 
     get viewMatrix(): number[] {
@@ -107,6 +111,10 @@ export abstract class Camera {
 
     protected markProjectionDirty(): void {
         this._projectionDirty = true;
+    }
+
+    destroy(): void {
+        this.transform.dispose();
     }
 }
 

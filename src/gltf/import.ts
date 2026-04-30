@@ -69,12 +69,69 @@ export type GltfImportMetadata = {
     cameras: GltfImportMetadataRecord[];
     skins: GltfImportMetadataRecord[];
     animations: GltfImportMetadataRecord[];
+    extensions: GltfImportExtensionsMetadata;
+    xmp: GltfImportXmpMetadata;
+    variants: GltfImportVariantsMetadata;
 };
+
+export type GltfImportExtensionSupportState = "supported" | "partial" | "deferred" | "unsupported";
+
+export type GltfImportExtensionsMetadata = {
+    used: string[];
+    required: string[];
+    support: Record<string, GltfImportExtensionSupportState>;
+};
+
+export type GltfImportXmpMetadata = {
+    packets: unknown[];
+    packet: unknown | null;
+};
+
+export type GltfImportVariantsMetadata = {
+    readonly names: string[];
+    readonly activeName: string | null;
+    setActive(name: string | null): void;
+    clear(): void;
+};
+
+export class GltfImportedNode {
+    readonly index: number;
+    name?: string;
+    readonly transform: Transform;
+    parentIndex: number | null;
+    children: number[];
+    meshes: Mesh[];
+    camera: Camera | null;
+    light: Light | null;
+    private _visible: boolean;
+
+    constructor(index: number, transform: Transform, source?: GltfNode) {
+        this.index = index;
+        this.name = source?.name;
+        this.transform = transform;
+        this.parentIndex = null;
+        this.children = [...(source?.children ?? [])];
+        this.meshes = [];
+        this.camera = null;
+        this.light = null;
+        this._visible = true;
+    }
+
+    get visible(): boolean {
+        return this._visible;
+    }
+
+    set visible(value: boolean) {
+        this._visible = value;
+        for (const mesh of this.meshes) mesh.visible = value;
+        if (this.light) this.light.enabled = value;
+    }
+}
 
 export type GltfImportResult = {
     scene: Scene;
     meshes: Mesh[];
-    nodeTransforms: Transform[];
+    nodes: GltfImportedNode[];
     lights: Light[];
     cameras: Camera[];
     skins: ImportedSkin[];
@@ -248,7 +305,100 @@ const buildMeshMetadata = (index: number, mesh: GltfMesh): GltfImportMeshMetadat
     };
 };
 
-const buildImportMetadata = (json: GltfRoot, sceneIndex: number): GltfImportMetadata => {
+type GltfVariantRegistration = {
+    mesh: Mesh;
+    baselineMaterial: Material;
+    variants: Map<string, Material>;
+    retainedMaterials: Material[];
+};
+
+type GltfVariantController = {
+    public: GltfImportVariantsMetadata;
+    register(mesh: Mesh, baselineMaterial: Material, variants?: Map<string, Material>): void;
+    destroy(): void;
+};
+
+const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportState> = {
+    KHR_lights_punctual: "partial",
+    KHR_materials_unlit: "supported",
+    KHR_materials_emissive_strength: "supported",
+    KHR_materials_pbrSpecularGlossiness: "partial",
+    KHR_materials_clearcoat: "deferred",
+    KHR_materials_transmission: "deferred",
+    KHR_materials_volume: "deferred",
+    KHR_materials_specular: "deferred",
+    KHR_materials_sheen: "deferred",
+    KHR_materials_iridescence: "deferred",
+    KHR_materials_anisotropy: "deferred",
+    KHR_materials_ior: "deferred",
+    KHR_materials_variants: "deferred",
+    KHR_node_visibility: "deferred",
+    KHR_animation_pointer: "deferred",
+    KHR_xmp_json_ld: "deferred",
+    KHR_draco_mesh_compression: "unsupported",
+    KHR_texture_transform: "unsupported"
+};
+
+const buildExtensionsMetadata = (json: GltfRoot): GltfImportExtensionsMetadata => {
+    const used = [...(json.extensionsUsed ?? [])];
+    const required = [...(json.extensionsRequired ?? [])];
+    const names = new Set<string>([...used, ...required]);
+    const support: Record<string, GltfImportExtensionSupportState> = {};
+    for (const name of names) support[name] = GLTF_EXTENSION_SUPPORT_STATES[name] ?? "unsupported";
+    return { used, required, support };
+};
+
+const buildXmpMetadata = (json: GltfRoot): GltfImportXmpMetadata => {
+    const rootExt = (json.extensions as Record<string, unknown> | undefined)?.["KHR_xmp_json_ld"] as { packets?: unknown[] } | undefined;
+    const packets = Array.isArray(rootExt?.packets) ? [...rootExt.packets] : [];
+    const assetPacketIndex = ((json.asset as Record<string, unknown> | undefined)?.extensions as Record<string, unknown> | undefined)?.["KHR_xmp_json_ld"] as { packet?: number } | undefined;
+    const packetIndex = assetPacketIndex?.packet;
+    const packet = typeof packetIndex === "number" && packetIndex >= 0 && packetIndex < packets.length ? packets[packetIndex] : null;
+    return { packets, packet };
+};
+
+const createVariantsController = (initialNames: string[] = []): GltfVariantController => {
+    const knownNames = [...initialNames];
+    const registrations: GltfVariantRegistration[] = [];
+    let activeName: string | null = null;
+    const ensureKnownName = (name: string): void => { if (!knownNames.includes(name)) knownNames.push(name); };
+    const applyVariant = (name: string | null): void => {
+        activeName = name;
+        for (const registration of registrations) {
+            const nextMaterial = name ? registration.variants.get(name) ?? registration.baselineMaterial : registration.baselineMaterial;
+            if (registration.mesh.material === nextMaterial) continue;
+            nextMaterial.retain();
+            registration.mesh.setMaterial(nextMaterial);
+        }
+    };
+    return {
+        public: {
+            get names(): string[] { return [...knownNames]; },
+            get activeName(): string | null { return activeName; },
+            setActive(name: string | null): void { if (name !== null && !knownNames.includes(name)) throw new Error(`glTF variants: unknown variant '${name}'.`); applyVariant(name); },
+            clear(): void { applyVariant(null); }
+        },
+        register(mesh: Mesh, baselineMaterial: Material, variants: Map<string, Material> = new Map()): void {
+            const retainedMaterials = Array.from(new Set([baselineMaterial, ...variants.values()]));
+            for (const material of retainedMaterials) material.retain();
+            registrations.push({ mesh, baselineMaterial, variants, retainedMaterials });
+            for (const name of variants.keys()) ensureKnownName(name);
+            if (activeName !== null) applyVariant(activeName);
+        },
+        destroy(): void {
+            for (const registration of registrations) for (const material of registration.retainedMaterials) material.release();
+            registrations.length = 0;
+        }
+    };
+};
+
+const getDeclaredVariantNames = (json: GltfRoot): string[] => {
+    const rootExt = (json.extensions as Record<string, unknown> | undefined)?.["KHR_materials_variants"] as { variants?: Array<{ name?: string }> } | undefined;
+    const variants = Array.isArray(rootExt?.variants) ? rootExt.variants : [];
+    return variants.map((variant, index) => variant?.name ?? `variant_${index}`);
+};
+
+const buildImportMetadata = (json: GltfRoot, sceneIndex: number, extensions: GltfImportExtensionsMetadata, xmp: GltfImportXmpMetadata, variants: GltfImportVariantsMetadata): GltfImportMetadata => {
     const scene = json.scenes?.[sceneIndex];
     return {
         asset: buildMetadataRecord(0, json.asset),
@@ -258,7 +408,8 @@ const buildImportMetadata = (json: GltfRoot, sceneIndex: number): GltfImportMeta
         materials: (json.materials ?? []).map((material, index) => buildMetadataRecord(index, material)),
         cameras: (json.cameras ?? []).map((camera, index) => buildMetadataRecord(index, camera)),
         skins: (json.skins ?? []).map((skin, index) => buildMetadataRecord(index, skin)),
-        animations: (json.animations ?? []).map((animation, index) => buildMetadataRecord(index, animation))
+        animations: (json.animations ?? []).map((animation, index) => buildMetadataRecord(index, animation)),
+        extensions, xmp, variants
     };
 };
 
@@ -363,7 +514,7 @@ const triangulateFan = (indices: Uint32Array): Uint32Array => {
 const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: number | undefined, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, opts?: ImportGltfOptions): Material => {
     if (materialIndex === undefined) return new StandardMaterial({});
     const existing = materialCache.get(materialIndex);
-    if (existing) return existing;
+    if (existing) return existing.retain();
     const mat = json.materials?.[materialIndex];
     if (!mat) {
         const created = new StandardMaterial({});
@@ -470,8 +621,69 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const normalScale = mat.normalTexture?.scale ?? 1;
     const occlusionStrength = mat.occlusionTexture?.strength ?? 1;
     const emissiveFactor = mat.emissiveFactor ?? [0, 0, 0];
-    const emissiveStrength = (mat.extensions as any)?.KHR_materials_emissive_strength?.emissiveStrength ?? 1;
+    const materialExtensions = (mat.extensions as any) ?? {};
+    const emissiveStrengthExt = materialExtensions.KHR_materials_emissive_strength as { emissiveStrength?: number } | undefined;
+    const emissiveStrength = emissiveStrengthExt?.emissiveStrength ?? 1;
     const emissiveIntensity = emissiveStrength;
+    const clearcoatExt = materialExtensions.KHR_materials_clearcoat as any;
+    const transmissionExt = materialExtensions.KHR_materials_transmission as any;
+    const volumeExt = materialExtensions.KHR_materials_volume as any;
+    const specularExt = materialExtensions.KHR_materials_specular as any;
+    const sheenExt = materialExtensions.KHR_materials_sheen as any;
+    const iridescenceExt = materialExtensions.KHR_materials_iridescence as any;
+    const anisotropyExt = materialExtensions.KHR_materials_anisotropy as any;
+    const iorExt = materialExtensions.KHR_materials_ior as any;
+    const standardMaterialExtensions = {
+        clearcoat: clearcoatExt ? {
+            factor: clearcoatExt.clearcoatFactor ?? 0,
+            texture: getTex(clearcoatExt.clearcoatTexture as any, "clearcoat"),
+            roughness: clearcoatExt.clearcoatRoughnessFactor ?? 0,
+            roughnessTexture: getTex(clearcoatExt.clearcoatRoughnessTexture as any, "clearcoatRoughness"),
+            normalTexture: getTex(clearcoatExt.clearcoatNormalTexture as any, "clearcoatNormal"),
+            normalScale: clearcoatExt.clearcoatNormalTexture?.scale ?? 1
+        } : null,
+        transmission: transmissionExt ? {
+            factor: transmissionExt.transmissionFactor ?? 0,
+            texture: getTex(transmissionExt.transmissionTexture as any, "transmission")
+        } : null,
+        volume: volumeExt ? {
+            thicknessFactor: volumeExt.thicknessFactor ?? 0,
+            thicknessTexture: getTex(volumeExt.thicknessTexture as any, "volumeThickness"),
+            attenuationDistance: volumeExt.attenuationDistance ?? 0,
+            attenuationColor: [volumeExt.attenuationColor?.[0] ?? 1, volumeExt.attenuationColor?.[1] ?? 1, volumeExt.attenuationColor?.[2] ?? 1] as Color
+        } : null,
+        specular: specularExt ? {
+            factor: specularExt.specularFactor ?? 1,
+            texture: getTex(specularExt.specularTexture as any, "specular"),
+            color: [specularExt.specularColorFactor?.[0] ?? 1, specularExt.specularColorFactor?.[1] ?? 1, specularExt.specularColorFactor?.[2] ?? 1] as Color,
+            colorTexture: getTex(specularExt.specularColorTexture as any, "specularColor")
+        } : null,
+        sheen: sheenExt ? {
+            color: [sheenExt.sheenColorFactor?.[0] ?? 0, sheenExt.sheenColorFactor?.[1] ?? 0, sheenExt.sheenColorFactor?.[2] ?? 0] as Color,
+            colorTexture: getTex(sheenExt.sheenColorTexture as any, "sheenColor"),
+            roughness: sheenExt.sheenRoughnessFactor ?? 0,
+            roughnessTexture: getTex(sheenExt.sheenRoughnessTexture as any, "sheenRoughness")
+        } : null,
+        iridescence: iridescenceExt ? {
+            factor: iridescenceExt.iridescenceFactor ?? 0,
+            texture: getTex(iridescenceExt.iridescenceTexture as any, "iridescence"),
+            ior: iridescenceExt.iridescenceIor ?? 1.3,
+            thicknessMinimum: iridescenceExt.iridescenceThicknessMinimum ?? 100,
+            thicknessMaximum: iridescenceExt.iridescenceThicknessMaximum ?? 400,
+            thicknessTexture: getTex(iridescenceExt.iridescenceThicknessTexture as any, "iridescenceThickness")
+        } : null,
+        anisotropy: anisotropyExt ? {
+            strength: anisotropyExt.anisotropyStrength ?? 0,
+            rotation: anisotropyExt.anisotropyRotation ?? 0,
+            texture: getTex(anisotropyExt.anisotropyTexture as any, "anisotropy")
+        } : null,
+        ior: iorExt ? {
+            ior: iorExt.ior ?? 1.5
+        } : null,
+        emissiveStrength: emissiveStrengthExt ? {
+            strength: emissiveStrength
+        } : null
+    };
     const isUnlit = isMaterialUnlit(mat);
     const depthWrite = blendMode === BlendMode.Opaque;
     let created: Material;
@@ -501,6 +713,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             normalScale,
             occlusionStrength,
             alphaCutoff,
+            extensions: standardMaterialExtensions,
             blendMode,
             cullMode,
             depthWrite
@@ -633,16 +846,18 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: numbe
             continue;
         }
         const cacheKey = `${node.mesh ?? -1}:${primIndex}`;
+        const hasCachedGeometry = geometryCache.has(cacheKey);
         let geom = geometryCache.get(cacheKey);
         const meshName = `${gltfMesh.name ?? `mesh_${node.mesh}`}_${primIndex}`;
         const matJson = prim.material !== undefined ? json.materials?.[prim.material] : undefined;
         const uvSet = pickPreferredUvSetForMaterial(matJson, opts, `Mesh '${gltfMesh.name ?? node.mesh}' primitive ${primIndex}`);
-        if (!geom) {
+        if (!hasCachedGeometry) {
             const built = buildGeometryFromPrimitive(doc, json, prim, computeMissingNormals, opts);
             geom = built;
             geometryCache.set(cacheKey, geom);
         }
         if (!geom) continue;
+        if (hasCachedGeometry) geom.retain();
         const mat = getOrCreateMaterial(doc, json, prim.material, materialCache, textureCache, opts);
         const mesh = new Mesh(geom, mat);
         mesh.name = node.name ?? gltfMesh.name ?? `gltf_mesh_${node.mesh}_${primIndex}`;
@@ -727,14 +942,14 @@ const instantiateLightNode = (light: KHRLightsPunctualLight, nodeT: Transform): 
     return null;
 };
 
-const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform[], opts: ImportGltfOptions): ImportedSkin[] => {
+const parseSkins = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedNode[], opts: ImportGltfOptions): ImportedSkin[] => {
     const skins = json.skins ?? [];
     const out: ImportedSkin[] = [];
     for (let i = 0; i < skins.length; i++) {
         const s: GltfSkin = skins[i]!;
         const joints: Transform[] = [];
         for (const j of s.joints) {
-            const t = nodeTransforms[j];
+            const t = nodes[j]?.transform;
             if (!t) {
                 warn(opts, `skin[${i}] joint node ${j} missing transform`);
                 continue;
@@ -743,7 +958,7 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform
         }
         let inverseBind: Float32Array | undefined;
         if (s.inverseBindMatrices !== undefined) inverseBind = readAccessorAsFloat32(doc, s.inverseBindMatrices);
-        const skel = s.skeleton !== undefined ? nodeTransforms[s.skeleton] : undefined;
+        const skel = s.skeleton !== undefined ? nodes[s.skeleton]?.transform : undefined;
         const runt = new Skin(s.name ?? `skin_${i}`, joints, inverseBind ?? null);
         out.push({
             name: s.name,
@@ -756,7 +971,7 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform
     return out;
 };
 
-const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Transform[], nodeMeshes: Mesh[][], opts: ImportGltfOptions): ImportedAnimation[] => {
+const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedNode[], opts: ImportGltfOptions): ImportedAnimation[] => {
     const anims = json.animations ?? [];
     const out: ImportedAnimation[] = [];
     const interpToCode = (interp: string): number => {
@@ -826,7 +1041,8 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
         for (let ci = 0; ci < a.channels.length; ci++) {
             const c: GltfAnimationChannel = a.channels[ci]!;
             const nodeIndex = c.target.node;
-            const t = nodeIndex !== undefined ? nodeTransforms[nodeIndex] ?? null : null;
+            const importedNode = nodeIndex !== undefined ? nodes[nodeIndex] ?? null : null;
+            const t = importedNode?.transform ?? null;
             const chan: ImportedAnimationChannel = {
                 sampler: c.sampler | 0,
                 targetNode: t,
@@ -841,7 +1057,7 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodeTransforms: Tran
                     pathCode,
                 });
             } else if (chan.path === "weights" && nodeIndex !== undefined) {
-                const meshes = (nodeMeshes[nodeIndex] ?? []).filter((mesh) => mesh.geometry.morphTargets.length > 0);
+                const meshes = (nodes[nodeIndex]?.meshes ?? []).filter((mesh) => mesh.geometry.morphTargets.length > 0);
                 if (meshes.length > 0) runtimeWeightChannels.push({ sampler: chan.sampler | 0, meshes });
             }
         }
@@ -895,10 +1111,10 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const scene = opts.targetScene ?? new Scene();
     const addToScene = opts.addToScene !== false;
     const sceneIndex = getSceneIndex(json, opts);
-    const nodes = json.nodes ?? [];
-    const nodeTransforms: Transform[] = new Array(nodes.length);
-    for (let i = 0; i < nodes.length; i++) {
-        const n: GltfNode = nodes[i]!;
+    const gltfNodes = json.nodes ?? [];
+    const nodes: GltfImportedNode[] = new Array(gltfNodes.length);
+    for (let i = 0; i < gltfNodes.length; i++) {
+        const n: GltfNode = gltfNodes[i]!;
         const t = new Transform();
         if (n.matrix && n.matrix.length >= 16) {
             applyNodeMatrixViaWasmDecompose(t, n.matrix);
@@ -910,33 +1126,40 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
             t.setRotation(ro[0], ro[1], ro[2], ro[3]);
             t.setScale(sc[0], sc[1], sc[2]);
         }
-        nodeTransforms[i] = t;
+        nodes[i] = new GltfImportedNode(i, t, n);
     }
-    for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i]!;
-        const parentT = nodeTransforms[i]!;
+    for (let i = 0; i < gltfNodes.length; i++) {
+        const n = gltfNodes[i]!;
+        const parentNode = nodes[i]!;
         for (const child of n.children ?? []) {
-            const childT = nodeTransforms[child];
-            if (childT) childT.setParent(parentT);
+            const childNode = nodes[child];
+            if (childNode) {
+                childNode.transform.setParent(parentNode.transform);
+                childNode.parentIndex = i;
+            }
             else warn(opts, `Node ${i} child ${child} missing transform`);
         }
     }
-    const skins = parseSkins(doc, json, nodeTransforms, opts);
+    const extensions = buildExtensionsMetadata(json);
+    const xmp = buildXmpMetadata(json);
+    const variantsController = createVariantsController(getDeclaredVariantNames(json));
+    const skins = parseSkins(doc, json, nodes, opts);
     const materialCache = new Map<number, Material>();
     const textureCache = new Map<number, Texture2D>();
     const geometryCache = new Map<string, Geometry | null>();
     const meshes: Mesh[] = [];
-    const nodeMeshes: Mesh[][] = Array.from({ length: nodes.length }, () => []);
     const cameras: Camera[] = [];
     const lights: Light[] = [];
     const khrLights = getKHRLightsFromRoot(json);
     const instantiateNodeRecursive = (nodeIndex: number, inheritedSkinIndex: number | undefined): void => {
-        const node = nodes[nodeIndex];
+        const node = gltfNodes[nodeIndex];
         if (!node) return;
-        const nodeT = nodeTransforms[nodeIndex]!;
-        if (!nodeT) return;
+        const importedNode = nodes[nodeIndex];
+        const nodeT = importedNode?.transform;
+        if (!importedNode || !nodeT) return;
         const createdMeshes = instantiateMeshNode(doc, json, nodeIndex, node, nodeT, materialCache, textureCache, geometryCache, opts);
-        nodeMeshes[nodeIndex] = createdMeshes;
+        importedNode.meshes = createdMeshes;
+        importedNode.visible = importedNode.visible;
         const skinIndex = node.skin !== undefined ? (node.skin | 0) : inheritedSkinIndex;
         if (skinIndex !== undefined) {
             const skinDef = skins[skinIndex];
@@ -954,26 +1177,29 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         }
         for (const m of createdMeshes) {
             meshes.push(m);
+            variantsController.register(m, m.material);
             if (addToScene) scene.add(m);
         }
         if (opts.importCameras) {
             const cam = instantiateCameraNode(json, node, nodeT, opts);
-            if (cam) cameras.push(cam);
+            if (cam) {
+                cameras.push(cam);
+                importedNode.camera = cam;
+            }
         }
         if (opts.importLights && khrLights) {
             const nodeLight = getNodeKHRLight(node);
             if (nodeLight) {
                 const lightDef = khrLights.lights[nodeLight.light];
-                if (!lightDef) {
-                    warn(opts, `KHR_lights_punctual node references missing light ${nodeLight.light}`);
-                } else {
+                if (!lightDef) warn(opts, `KHR_lights_punctual node references missing light ${nodeLight.light}`);
+                else {
                     const created = instantiateLightNode(lightDef, nodeT);
                     if (created) {
                         lights.push(created);
+                        importedNode.light = created;
+                        importedNode.visible = importedNode.visible;
                         if (addToScene) scene.addLight(created);
-                    } else {
-                        warn(opts, `Light '${node.name ?? `index ${nodeIndex}`}' has unsupported type '${lightDef.type}' and was skipped.`);
-                    }
+                    } else warn(opts, `Light '${node.name ?? `index ${nodeIndex}`}' has unsupported type '${lightDef.type}' and was skipped.`);
                 }
             }
         }
@@ -982,30 +1208,26 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const gltfScene: GltfScene | undefined = json.scenes?.[sceneIndex];
     const roots = gltfScene?.nodes ?? [];
     for (const root of roots) instantiateNodeRecursive(root, undefined);
-    const animations = parseAnimations(doc, json, nodeTransforms, nodeMeshes, opts);
+    const animations = parseAnimations(doc, json, nodes, opts);
     const clips = animations.map((a) => a.clip).filter((c): c is AnimationClip => c !== null);
-    const uniqueGeometries = Array.from(new Set(meshes.map((m) => m.geometry)));
-    const uniqueMaterials = Array.from(new Set(meshes.map((m) => m.material)));
-    const metadata = buildImportMetadata(json, sceneIndex);
+    const metadata = buildImportMetadata(json, sceneIndex, extensions, xmp, variantsController.public);
+    let destroyed = false;
     return {
-        scene,
-        meshes,
-        nodeTransforms,
-        lights,
-        cameras,
-        skins,
-        animations,
-        clips,
-        metadata,
+        scene, meshes, nodes, lights, cameras, skins, animations, clips, metadata,
         destroy(): void {
-            if (addToScene) for (const m of meshes) scene.remove(m);
+            if (destroyed) return;
+            destroyed = true;
+            if (addToScene) {
+                for (const m of meshes) scene.remove(m);
+                for (const light of lights) scene.removeLight(light);
+            }
             for (const m of meshes) m.destroy();
+            for (const camera of cameras) camera.destroy();
             for (const a of animations) a.clip?.dispose();
             for (const s of skins) s.runtime.dispose();
-            for (const g of uniqueGeometries) g.destroy();
+            variantsController.destroy();
             for (const tex of textureCache.values()) tex.destroy();
-            for (const mat of uniqueMaterials) mat.destroy();
-            for (const t of nodeTransforms) t.dispose();
+            for (const node of nodes) node.transform.dispose();
         },
     };
 };
