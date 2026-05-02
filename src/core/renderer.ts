@@ -6,7 +6,7 @@
 
 import { Transform, TransformStore } from "./transform";
 import { Scene } from "../world/scene";
-import { DirectionalLight, PointLight, SpotLight } from "../world/light";
+import { DirectionalLight, PointLight, SpotLight, resolveLightDirection, resolveLightPosition } from "../world/light";
 import { Camera } from "../world/camera";
 import { Mesh, getMeshLocalBoundsSource, getMeshVertexBuffers, getMeshVertexSource, hasMeshMorphRuntime } from "../world/mesh";
 import { PointCloud } from "../world/pointcloud";
@@ -1497,24 +1497,28 @@ export class Renderer {
         for (let i = 0; i < lights.length && i < Scene.MAX_LIGHTS; i++) {
             const light = lights[i];
             if (light instanceof DirectionalLight) {
-                data[offset + 0] = light.direction[0];
-                data[offset + 1] = light.direction[1];
-                data[offset + 2] = light.direction[2];
+                const direction = resolveLightDirection(light);
+                data[offset + 0] = direction[0];
+                data[offset + 1] = direction[1];
+                data[offset + 2] = direction[2];
                 data[offset + 3] = 0;
             } else if (light instanceof PointLight) {
-                data[offset + 0] = light.position[0];
-                data[offset + 1] = light.position[1];
-                data[offset + 2] = light.position[2];
+                const position = resolveLightPosition(light);
+                data[offset + 0] = position[0];
+                data[offset + 1] = position[1];
+                data[offset + 2] = position[2];
                 data[offset + 3] = 1;
                 data[offset + 12] = light.range;
             } else if (light instanceof SpotLight) {
-                data[offset + 0] = light.position[0];
-                data[offset + 1] = light.position[1];
-                data[offset + 2] = light.position[2];
+                const position = resolveLightPosition(light);
+                const direction = resolveLightDirection(light);
+                data[offset + 0] = position[0];
+                data[offset + 1] = position[1];
+                data[offset + 2] = position[2];
                 data[offset + 3] = 2;
-                data[offset + 8] = light.direction[0];
-                data[offset + 9] = light.direction[1];
-                data[offset + 10] = light.direction[2];
+                data[offset + 8] = direction[0];
+                data[offset + 9] = direction[1];
+                data[offset + 10] = direction[2];
                 data[offset + 12] = light.range;
                 data[offset + 13] = Math.cos(light.innerCone);
                 data[offset + 14] = Math.cos(light.outerCone);
@@ -1524,9 +1528,10 @@ export class Renderer {
             data[offset + 6] = light.color[2];
             data[offset + 7] = light.intensity;
             if (light instanceof DirectionalLight) {
-                data[offset + 8] = light.direction[0];
-                data[offset + 9] = light.direction[1];
-                data[offset + 10] = light.direction[2];
+                const direction = resolveLightDirection(light);
+                data[offset + 8] = direction[0];
+                data[offset + 9] = direction[1];
+                data[offset + 10] = direction[2];
             }
             offset += 16;
         }
@@ -1964,12 +1969,13 @@ export class Renderer {
                 pass.setVertexBuffer(0, buffers.positionBuffer);
                 pass.setVertexBuffer(1, buffers.normalBuffer);
                 pass.setVertexBuffer(2, geometry.uvBuffer);
+                pass.setVertexBuffer(3, geometry.uv1Buffer);
                 if (first.skinned) {
-                    pass.setVertexBuffer(3, geometry.jointsBuffer!);
-                    pass.setVertexBuffer(4, geometry.weightsBuffer!);
+                    pass.setVertexBuffer(4, geometry.jointsBuffer!);
+                    pass.setVertexBuffer(5, geometry.weightsBuffer!);
                     if (first.skinned8) {
-                        pass.setVertexBuffer(5, geometry.joints1Buffer!);
-                        pass.setVertexBuffer(6, geometry.weights1Buffer!);
+                        pass.setVertexBuffer(6, geometry.joints1Buffer!);
+                        pass.setVertexBuffer(7, geometry.weights1Buffer!);
                     }
                 }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
@@ -2244,12 +2250,13 @@ export class Renderer {
                     pass.setVertexBuffer(0, geometry.positionBuffer);
                     pass.setVertexBuffer(1, geometry.normalBuffer);
                     pass.setVertexBuffer(2, geometry.uvBuffer);
+                    pass.setVertexBuffer(3, geometry.uv1Buffer);
                     if (drawItem.skinned) {
-                        pass.setVertexBuffer(3, geometry.jointsBuffer!);
-                        pass.setVertexBuffer(4, geometry.weightsBuffer!);
+                        pass.setVertexBuffer(4, geometry.jointsBuffer!);
+                        pass.setVertexBuffer(5, geometry.weightsBuffer!);
                         if (drawItem.skinned8) {
-                            pass.setVertexBuffer(5, geometry.joints1Buffer!);
-                            pass.setVertexBuffer(6, geometry.weights1Buffer!);
+                            pass.setVertexBuffer(6, geometry.joints1Buffer!);
+                            pass.setVertexBuffer(7, geometry.weights1Buffer!);
                         }
                     }
                     if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
@@ -2673,7 +2680,7 @@ export class Renderer {
         const bytes = wasmInterop.bytes();
         this.queue.writeBuffer(this.instanceBuffer!, dstOffset, bytes, outPtr, outBytes);
         pass.setBindGroup(0, this.globalBindGroups[0]);
-        pass.setVertexBuffer(3, this.instanceBuffer!, dstOffset, outBytes);
+        pass.setVertexBuffer(4, this.instanceBuffer!, dstOffset, outBytes);
         if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);
         else pass.draw(geometry.vertexCount, count);
         this.instanceBufferOffset = dstEnd;
@@ -2701,6 +2708,7 @@ export class Renderer {
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
                 { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
                 {
                     arrayStride: this.INSTANCE_STRIDE_BYTES,
                     stepMode: "instance",
@@ -2721,6 +2729,7 @@ export class Renderer {
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
                 { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
                 { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 5, offset: 0, format: "uint16x4" }] },
@@ -2731,6 +2740,7 @@ export class Renderer {
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
                 { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
                 { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] }
             ];
@@ -2738,7 +2748,8 @@ export class Renderer {
             buffers = [
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
                 { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
-                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] }
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] }
             ];
         }
         pipeline = this.device.createRenderPipeline({

@@ -25,6 +25,54 @@ export type Color4 = [number, number, number, number];
 
 const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
+export type TextureCoordinateSet = 0 | 1;
+
+export type TextureTransformDescriptor = {
+    offset?: [number, number];
+    rotation?: number;
+    scale?: [number, number];
+    texCoord?: TextureCoordinateSet;
+};
+
+export type TextureTransform = Readonly<{
+    offset: [number, number];
+    rotation: number;
+    scale: [number, number];
+    texCoord: TextureCoordinateSet;
+}>;
+
+const normalizeTextureTransform = (descriptor?: TextureTransformDescriptor | null): TextureTransform => {
+    const texCoord = descriptor?.texCoord === 1 ? 1 : 0;
+    return {
+        offset: [descriptor?.offset?.[0] ?? 0, descriptor?.offset?.[1] ?? 0],
+        rotation: descriptor?.rotation ?? 0,
+        scale: [descriptor?.scale?.[0] ?? 1, descriptor?.scale?.[1] ?? 1],
+        texCoord
+    };
+};
+
+const cloneTextureTransform = (transform: TextureTransform): TextureTransform => {
+    return {
+        offset: [transform.offset[0], transform.offset[1]],
+        rotation: transform.rotation,
+        scale: [transform.scale[0], transform.scale[1]],
+        texCoord: transform.texCoord
+    };
+};
+
+const packTextureTransform = (f: Float32Array, offset: number, transform: TextureTransform): void => {
+    const cos = Math.cos(transform.rotation);
+    const sin = Math.sin(transform.rotation);
+    f[offset + 0] = transform.offset[0];
+    f[offset + 1] = transform.offset[1];
+    f[offset + 2] = cos;
+    f[offset + 3] = sin;
+    f[offset + 4] = transform.scale[0];
+    f[offset + 5] = transform.scale[1];
+    f[offset + 6] = transform.texCoord;
+    f[offset + 7] = 0;
+};
+
 export enum BlendMode {
     Opaque = "opaque",
     Transparent = "transparent",
@@ -123,6 +171,7 @@ export type UnlitMaterialDescriptor = MaterialDescriptor & {
     color?: Color;
     opacity?: number;
     baseColorTexture?: Texture2D | null;
+    baseColorTextureTransform?: TextureTransformDescriptor | null;
     alphaCutoff?: number;
 };
 
@@ -130,6 +179,7 @@ export class UnlitMaterial extends Material {
     private _color: Color;
     private _opacity: number;
     private _baseColorTexture: Texture2D | null;
+    private _baseColorTextureTransform: TextureTransform;
     private _alphaCutoff: number;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
@@ -142,6 +192,7 @@ export class UnlitMaterial extends Material {
         this._color = descriptor.color ?? [1, 1, 1];
         this._opacity = descriptor.opacity ?? 1;
         this._baseColorTexture = descriptor.baseColorTexture ?? null;
+        this._baseColorTextureTransform = normalizeTextureTransform(descriptor.baseColorTextureTransform);
         this._alphaCutoff = descriptor.alphaCutoff ?? 0;
     }
 
@@ -172,6 +223,15 @@ export class UnlitMaterial extends Material {
         this._dirty = true;
     }
 
+    get baseColorTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._baseColorTextureTransform);
+    }
+
+    set baseColorTextureTransform(value: TextureTransformDescriptor | null) {
+        this._baseColorTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
+    }
+
     get alphaCutoff(): number {
         return this._alphaCutoff;
     }
@@ -182,11 +242,11 @@ export class UnlitMaterial extends Material {
     }
 
     getUniformBufferSize(): number {
-        return 32;
+        return 64;
     }
 
     getUniformData(): Float32Array {
-        const f = this.getUniformDataCache(8);
+        const f = this.getUniformDataCache(16);
         f[0] = this._color[0];
         f[1] = this._color[1];
         f[2] = this._color[2];
@@ -195,6 +255,7 @@ export class UnlitMaterial extends Material {
         f[5] = 0;
         f[6] = 0;
         f[7] = 0;
+        packTextureTransform(f, 8, this._baseColorTextureTransform);
         return f;
     }
 
@@ -372,6 +433,11 @@ export type StandardMaterialDescriptor = MaterialDescriptor & {
     normalTexture?: Texture2D | null;
     occlusionTexture?: Texture2D | null;
     emissiveTexture?: Texture2D | null;
+    baseColorTextureTransform?: TextureTransformDescriptor | null;
+    metallicRoughnessTextureTransform?: TextureTransformDescriptor | null;
+    normalTextureTransform?: TextureTransformDescriptor | null;
+    occlusionTextureTransform?: TextureTransformDescriptor | null;
+    emissiveTextureTransform?: TextureTransformDescriptor | null;
     normalScale?: number;
     occlusionStrength?: number;
     alphaCutoff?: number;
@@ -481,13 +547,18 @@ export class StandardMaterial extends Material {
     private _normalTexture: Texture2D | null;
     private _occlusionTexture: Texture2D | null;
     private _emissiveTexture: Texture2D | null;
+    private _baseColorTextureTransform: TextureTransform;
+    private _metallicRoughnessTextureTransform: TextureTransform;
+    private _normalTextureTransform: TextureTransform;
+    private _occlusionTextureTransform: TextureTransform;
+    private _emissiveTextureTransform: TextureTransform;
     private _normalScale: number;
     private _occlusionStrength: number;
     private _alphaCutoff: number;
     private _extensions: StandardMaterialExtensions;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
-    private static readonly UNIFORM_FLOAT_COUNT = 16;
+    private static readonly UNIFORM_FLOAT_COUNT = 56;
     private static readonly TEXTURE_BINDING_COUNT = 5;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
@@ -506,6 +577,11 @@ export class StandardMaterial extends Material {
         this._normalTexture = descriptor.normalTexture ?? null;
         this._occlusionTexture = descriptor.occlusionTexture ?? null;
         this._emissiveTexture = descriptor.emissiveTexture ?? null;
+        this._baseColorTextureTransform = normalizeTextureTransform(descriptor.baseColorTextureTransform);
+        this._metallicRoughnessTextureTransform = normalizeTextureTransform(descriptor.metallicRoughnessTextureTransform);
+        this._normalTextureTransform = normalizeTextureTransform(descriptor.normalTextureTransform);
+        this._occlusionTextureTransform = normalizeTextureTransform(descriptor.occlusionTextureTransform);
+        this._emissiveTextureTransform = normalizeTextureTransform(descriptor.emissiveTextureTransform);
         this._normalScale = descriptor.normalScale ?? 1;
         this._occlusionStrength = descriptor.occlusionStrength ?? 1;
         this._alphaCutoff = descriptor.alphaCutoff ?? 0;
@@ -614,6 +690,51 @@ export class StandardMaterial extends Material {
     set emissiveTexture(value: Texture2D | null) {
         this._emissiveTexture = value;
         this.invalidateBindings();
+    }
+
+    get baseColorTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._baseColorTextureTransform);
+    }
+
+    set baseColorTextureTransform(value: TextureTransformDescriptor | null) {
+        this._baseColorTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
+    }
+
+    get metallicRoughnessTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._metallicRoughnessTextureTransform);
+    }
+
+    set metallicRoughnessTextureTransform(value: TextureTransformDescriptor | null) {
+        this._metallicRoughnessTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
+    }
+
+    get normalTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._normalTextureTransform);
+    }
+
+    set normalTextureTransform(value: TextureTransformDescriptor | null) {
+        this._normalTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
+    }
+
+    get occlusionTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._occlusionTextureTransform);
+    }
+
+    set occlusionTextureTransform(value: TextureTransformDescriptor | null) {
+        this._occlusionTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
+    }
+
+    get emissiveTextureTransform(): TextureTransform {
+        return cloneTextureTransform(this._emissiveTextureTransform);
+    }
+
+    set emissiveTextureTransform(value: TextureTransformDescriptor | null) {
+        this._emissiveTextureTransform = normalizeTextureTransform(value);
+        this._dirty = true;
     }
 
     get normalScale(): number {
@@ -727,6 +848,11 @@ export class StandardMaterial extends Material {
         f[13] = 0;
         f[14] = 0;
         f[15] = 0;
+        packTextureTransform(f, 16, this._baseColorTextureTransform);
+        packTextureTransform(f, 24, this._metallicRoughnessTextureTransform);
+        packTextureTransform(f, 32, this._normalTextureTransform);
+        packTextureTransform(f, 40, this._occlusionTextureTransform);
+        packTextureTransform(f, 48, this._emissiveTextureTransform);
         return f;
     }
 

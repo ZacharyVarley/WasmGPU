@@ -21,6 +21,7 @@ export type GeometryDescriptor = {
     positions: Float32Array;
     normals?: Float32Array;
     uvs?: Float32Array;
+    uvs1?: Float32Array;
     joints?: Uint16Array;
     weights?: Float32Array;
     joints1?: Uint16Array;
@@ -163,6 +164,7 @@ export class Geometry {
     readonly positions: Float32Array;
     readonly normals: Float32Array;
     readonly uvs: Float32Array;
+    readonly uvs1: Float32Array;
     readonly joints: Uint16Array | null;
     readonly weights: Float32Array | null;
     readonly joints1: Uint16Array | null;
@@ -183,6 +185,7 @@ export class Geometry {
     private _positionBuffer: GPUBuffer | null = null;
     private _normalBuffer: GPUBuffer | null = null;
     private _uvBuffer: GPUBuffer | null = null;
+    private _uv1Buffer: GPUBuffer | null = null;
     private _indexBuffer: GPUBuffer | null = null;
     private _device: GPUDevice | null = null;
     private _refCount: number = 1;
@@ -195,6 +198,12 @@ export class Geometry {
         this.normals = descriptor.normals ?? new Float32Array(this.vertexCount * 3).fill(0);
         if (!descriptor.normals) for (let i = 1; i < this.normals.length; i += 3) this.normals[i] = 1;
         this.uvs = descriptor.uvs ?? new Float32Array(this.vertexCount * 2);
+        let uvs1 = descriptor.uvs1 ?? new Float32Array(this.vertexCount * 2);
+        if (uvs1.length !== this.vertexCount * 2) {
+            console.warn(`[Geometry] uvs1 length mismatch (got ${uvs1.length}, expected ${this.vertexCount * 2}). TEXCOORD_1 disabled.`);
+            uvs1 = new Float32Array(this.vertexCount * 2);
+        }
+        this.uvs1 = uvs1;
         this.morphTargets = descriptor.morphTargets ?? [];
         let joints = descriptor.joints ?? null;
         let weights = descriptor.weights ?? null;
@@ -268,6 +277,7 @@ export class Geometry {
         this._positionBuffer = createBuffer(device, this.positions, GPUBufferUsage.VERTEX);
         this._normalBuffer = createBuffer(device, this.normals, GPUBufferUsage.VERTEX);
         this._uvBuffer = createBuffer(device, this.uvs, GPUBufferUsage.VERTEX);
+        this._uv1Buffer = createBuffer(device, this.uvs1, GPUBufferUsage.VERTEX);
         if (this.joints) this._jointsBuffer = createBuffer(device, this.joints, GPUBufferUsage.VERTEX);
         if (this.weights) this._weightsBuffer = createBuffer(device, this.weights, GPUBufferUsage.VERTEX);
         if (this.joints1) this._joints1Buffer = createBuffer(device, this.joints1, GPUBufferUsage.VERTEX);
@@ -291,6 +301,12 @@ export class Geometry {
         this.assertAlive("access uvBuffer");
         if (!this._uvBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
         return this._uvBuffer;
+    }
+
+    get uv1Buffer(): GPUBuffer {
+        this.assertAlive("access uv1Buffer");
+        if (!this._uv1Buffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
+        return this._uv1Buffer;
     }
 
     get jointsBuffer(): GPUBuffer | null {
@@ -349,6 +365,7 @@ export class Geometry {
         this._positionBuffer?.destroy();
         this._normalBuffer?.destroy();
         this._uvBuffer?.destroy();
+        this._uv1Buffer?.destroy();
         this._jointsBuffer?.destroy();
         this._weightsBuffer?.destroy();
         this._joints1Buffer?.destroy();
@@ -361,6 +378,7 @@ export class Geometry {
         this._positionBuffer = null;
         this._normalBuffer = null;
         this._uvBuffer = null;
+        this._uv1Buffer = null;
         this._indexBuffer = null;
         this._device = null;
     }
@@ -1577,6 +1595,7 @@ export class Geometry {
         const positions = descriptor.positions;
         const normals = descriptor.normals ?? new Float32Array((positions.length / 3) * 3);
         const uvs = descriptor.uvs ?? new Float32Array((positions.length / 3) * 2);
+        const uvs1 = descriptor.uvs1 ?? new Float32Array((positions.length / 3) * 2);
         const indices = descriptor.indices;
         if (!indices) return descriptor;
         const baseVertexCount = positions.length / 3;
@@ -1594,6 +1613,9 @@ export class Geometry {
         const outUvs = new Float32Array(uvs.length * 2);
         outUvs.set(uvs, 0);
         outUvs.set(uvs, uvs.length);
+        const outUvs1 = new Float32Array(uvs1.length * 2);
+        outUvs1.set(uvs1, 0);
+        outUvs1.set(uvs1, uvs1.length);
         const outIndices = new Uint32Array(indices.length * 2);
         outIndices.set(indices, 0);
         for (let i = 0; i < indices.length; i += 3) {
@@ -1610,6 +1632,7 @@ export class Geometry {
             positions: outPositions,
             normals: outNormals,
             uvs: outUvs,
+            uvs1: outUvs1,
             indices: outIndices
         };
     }

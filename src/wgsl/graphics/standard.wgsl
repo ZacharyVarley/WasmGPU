@@ -8,7 +8,17 @@ struct MaterialUniforms {
     color: vec4f,
     emissive: vec4f,
     params: vec4f,
-    params2: vec4f
+    params2: vec4f,
+    baseColorTransform0: vec4f,
+    baseColorTransform1: vec4f,
+    metallicRoughnessTransform0: vec4f,
+    metallicRoughnessTransform1: vec4f,
+    normalTransform0: vec4f,
+    normalTransform1: vec4f,
+    occlusionTransform0: vec4f,
+    occlusionTransform1: vec4f,
+    emissiveTransform0: vec4f,
+    emissiveTransform1: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -26,14 +36,16 @@ struct MaterialUniforms {
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
-    @location(2) uv: vec2f
+    @location(2) uv: vec2f,
+    @location(11) uv1: vec2f
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) worldPos: vec3f,
     @location(1) normal: vec3f,
-    @location(2) uv: vec2f
+    @location(2) uv: vec2f,
+    @location(3) uv1: vec2f
 };
 
 struct CameraUniforms {
@@ -76,7 +88,18 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.worldPos = worldPos4.xyz;
     out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);
     out.uv = in.uv;
+    out.uv1 = in.uv1;
     return out;
+}
+
+fn applyTextureTransform(uv0: vec2f, uv1: vec2f, transform0: vec4f, transform1: vec4f) -> vec2f {
+    let uv = select(uv0, uv1, transform1.z >= 0.5);
+    let scaled = uv * transform1.xy;
+    let rotated = vec2f(
+        transform0.z * scaled.x + transform0.w * scaled.y,
+        -transform0.w * scaled.x + transform0.z * scaled.y
+    );
+    return rotated + transform0.xy;
 }
 
 fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
@@ -110,15 +133,16 @@ fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, nor
     let dp2 = dpdy(worldPos);
     let duv1 = dpdx(uv);
     let duv2 = dpdy(uv);
-    let det = duv1.x * duv2.y - duv1.y * duv2.x;
-    if (abs(det) < 1e-6) {
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    let T = (dp2perp * duv1.x) + (dp1perp * duv2.x);
+    let B = (dp2perp * duv1.y) + (dp1perp * duv2.y);
+    let frameLength2 = max(dot(T, T), dot(B, B));
+    if (frameLength2 <= 1e-20) {
         return n;
     }
-    let r = 1.0 / det;
-    var T = (dp1 * duv2.y - dp2 * duv1.y) * r;
-    T = normalize(T - n * dot(n, T));
-    let B = normalize(cross(n, T)) * sign(det);
-    let tbn = mat3x3f(T, B, n);
+    let frameScale = 1.0 / sqrt(frameLength2);
+    let tbn = mat3x3f(T * frameScale, B * frameScale, n);
     var ns = normalSample * 2.0 - vec3f(1.0);
     ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
     return normalize(tbn * ns);
@@ -143,20 +167,25 @@ fn computeSpotFactor(L: vec3f, direction: vec3f, cosInner: f32, cosOuter: f32) -
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let baseSample = textureSample(baseColorTex, baseColorSampler, in.uv);
+    let baseUv = applyTextureTransform(in.uv, in.uv1, material.baseColorTransform0, material.baseColorTransform1);
+    let mrUv = applyTextureTransform(in.uv, in.uv1, material.metallicRoughnessTransform0, material.metallicRoughnessTransform1);
+    let normalUv = applyTextureTransform(in.uv, in.uv1, material.normalTransform0, material.normalTransform1);
+    let occlusionUv = applyTextureTransform(in.uv, in.uv1, material.occlusionTransform0, material.occlusionTransform1);
+    let emissiveUv = applyTextureTransform(in.uv, in.uv1, material.emissiveTransform0, material.emissiveTransform1);
+    let baseSample = textureSample(baseColorTex, baseColorSampler, baseUv);
     let baseColor = material.color * baseSample;
     let alphaCutoff = material.params2.x;
     if (alphaCutoff > 0.0 && baseColor.a < alphaCutoff) {
         discard;
     }
-    let mrSample = textureSample(metallicRoughnessTex, metallicRoughnessSampler, in.uv);
+    let mrSample = textureSample(metallicRoughnessTex, metallicRoughnessSampler, mrUv);
     let metallic = clamp(material.params.x * mrSample.b, 0.0, 1.0);
     let roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
-    let normalSample = textureSample(normalTex, normalSampler, in.uv).xyz;
-    let N = applyNormalMap(in.normal, in.worldPos, in.uv, normalSample, material.params.z);
-    let occlSample = textureSample(occlusionTex, occlusionSampler, in.uv).r;
+    let normalSample = textureSample(normalTex, normalSampler, normalUv).xyz;
+    let N = applyNormalMap(in.normal, in.worldPos, normalUv, normalSample, material.params.z);
+    let occlSample = textureSample(occlusionTex, occlusionSampler, occlusionUv).r;
     let ao = 1.0 + material.params.w * (occlSample - 1.0);
-    let emissiveSample = textureSample(emissiveTex, emissiveSampler, in.uv).rgb;
+    let emissiveSample = textureSample(emissiveTex, emissiveSampler, emissiveUv).rgb;
     let emissive = emissiveSample * material.emissive.rgb * material.emissive.a;
     let albedo = baseColor.rgb;
     let V = normalize(camera.position - in.worldPos);

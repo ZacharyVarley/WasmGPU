@@ -6,7 +6,9 @@
 
 struct MaterialUniforms {
     color: vec4f,
-    params: vec4f
+    params: vec4f,
+    baseColorTransform0: vec4f,
+    baseColorTransform1: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -17,6 +19,7 @@ struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
+    @location(11) uv1: vec2f,
     @location(3) m0: vec4f,
     @location(4) m1: vec4f,
     @location(5) m2: vec4f,
@@ -30,7 +33,8 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) normal: vec3f,
-    @location(1) uv: vec2f
+    @location(1) uv: vec2f,
+    @location(2) uv1: vec2f
 };
 
 struct CameraUniforms {
@@ -52,17 +56,28 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.position = camera.viewProjection * modelM * vec4f(in.position, 1.0);
     out.normal = (normalM * vec4f(in.normal, 0.0)).xyz;
     out.uv = in.uv;
+    out.uv1 = in.uv1;
     return out;
+}
+
+fn applyTextureTransform(uv0: vec2f, uv1: vec2f, transform0: vec4f, transform1: vec4f) -> vec2f {
+    let uv = select(uv0, uv1, transform1.z >= 0.5);
+    let scaled = uv * transform1.xy;
+    let rotated = vec2f(
+        transform0.z * scaled.x + transform0.w * scaled.y,
+        -transform0.w * scaled.x + transform0.z * scaled.y
+    );
+    return rotated + transform0.xy;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let texColor = textureSample(baseTex, baseSampler, in.uv);
+    let baseUv = applyTextureTransform(in.uv, in.uv1, material.baseColorTransform0, material.baseColorTransform1);
+    let texColor = textureSample(baseTex, baseSampler, baseUv);
     var outColor = material.color * texColor;
     let alphaCutoff = material.params.x;
     if (alphaCutoff > 0.0 && outColor.a < alphaCutoff) {
         discard;
     }
-    outColor.rgb = linearToSrgb(outColor.rgb);
-    return outColor;
+    return vec4f(linearToSrgb(outColor.rgb), outColor.a);
 }

@@ -5,6 +5,7 @@
  */
 
 import { Color } from "../graphics/material";
+import type { Transform } from "../core/transform";
 
 export type LightType = "directional" | "point" | "spot" | "ambient";
 
@@ -49,6 +50,36 @@ export abstract class Light {
     }
 }
 
+const lightTransforms = new WeakMap<Light, Transform>();
+
+export const bindLightToTransform = (light: Light, transform: Transform): void => { lightTransforms.set(light, transform); };
+
+export const unbindLightTransform = (light: Light): void => { lightTransforms.delete(light); };
+
+const getBoundTransform = (light: Light): Transform | null => {
+    const transform = lightTransforms.get(light);
+    if (!transform || transform.disposed) return null;
+    return transform;
+};
+
+const resolveBoundPosition = (light: Light, fallback: [number, number, number]): [number, number, number] => {
+    const transform = getBoundTransform(light);
+    if (!transform) return fallback;
+    const position = transform.worldPosition;
+    return [position[0] ?? 0, position[1] ?? 0, position[2] ?? 0];
+};
+
+const resolveBoundDirection = (light: Light, fallback: [number, number, number]): [number, number, number] => {
+    const transform = getBoundTransform(light);
+    if (!transform) return fallback;
+    const wm = transform.worldMatrix;
+    return normalizeDirection([-(wm[8] ?? 0), -(wm[9] ?? 0), -(wm[10] ?? -1)]);
+};
+
+export const resolveLightPosition = (light: PointLight | SpotLight): [number, number, number] => light.position;
+
+export const resolveLightDirection = (light: DirectionalLight | SpotLight): [number, number, number] => light.direction;
+
 export type AmbientLightDescriptor = {
     color?: Color;
     intensity?: number;
@@ -79,7 +110,7 @@ export class DirectionalLight extends Light {
     }
 
     get direction(): [number, number, number] {
-        return this._direction;
+        return resolveBoundDirection(this, this._direction);
     }
 
     set direction(value: [number, number, number]) {
@@ -107,7 +138,7 @@ export class PointLight extends Light {
     }
 
     get position(): [number, number, number] {
-        return this._position;
+        return resolveBoundPosition(this, this._position);
     }
 
     set position(value: [number, number, number]) {
@@ -153,7 +184,7 @@ export class SpotLight extends Light {
     }
 
     get position(): [number, number, number] {
-        return this._position;
+        return resolveBoundPosition(this, this._position);
     }
 
     set position(value: [number, number, number]) {
@@ -161,7 +192,7 @@ export class SpotLight extends Light {
     }
 
     get direction(): [number, number, number] {
-        return this._direction;
+        return resolveBoundDirection(this, this._direction);
     }
 
     set direction(value: [number, number, number]) {

@@ -6,15 +6,15 @@
 
 import { wasm, mat4f, WasmPtr } from "../wasm";
 import { Geometry, computeGeometryVertexNormals, type GeometryMorphTargetDescriptor } from "../graphics/geometry";
-import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color } from "../graphics/material";
+import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type Color, type TextureTransformDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
 import { AnimationClip, Skin } from "../graphics/animation";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
 import { Scene } from "../world/scene";
 import { Mesh, initializeMeshMorphRuntime } from "../world/mesh";
-import { DirectionalLight, PointLight, type Light } from "../world/light";
+import { DirectionalLight, PointLight, SpotLight, bindLightToTransform, type Light } from "../world/light";
 import { Transform } from "../core/transform";
-import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfAsset, GltfCamera, GltfExtensions, GltfExtras, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
+import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfAsset, GltfCamera, GltfExtensions, GltfExtras, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfPrimitiveAttributes, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
 import { decodeDataUri, isDataUri, resolveUri } from "./uri";
 import { readAccessor, readAccessorAsFloat32, readAccessorAsUint16, readIndicesAsUint32 } from "./accessors";
 
@@ -50,6 +50,7 @@ export type GltfImportMetadataRecord = {
     name?: string;
     extras?: GltfExtras;
     extensions?: GltfExtensions;
+    xmp?: unknown | null;
 };
 
 export type GltfImportMeshPrimitiveMetadata = GltfImportMetadataRecord & {
@@ -66,6 +67,8 @@ export type GltfImportMetadata = {
     nodes: GltfImportMetadataRecord[];
     meshes: GltfImportMeshMetadata[];
     materials: GltfImportMetadataRecord[];
+    textures: GltfImportMetadataRecord[];
+    images: GltfImportMetadataRecord[];
     cameras: GltfImportMetadataRecord[];
     skins: GltfImportMetadataRecord[];
     animations: GltfImportMetadataRecord[];
@@ -87,10 +90,15 @@ export type GltfImportXmpMetadata = {
     packet: unknown | null;
 };
 
+export type GltfImportVariantItem = GltfImportMetadataRecord;
+
 export type GltfImportVariantsMetadata = {
+    readonly items: GltfImportVariantItem[];
     readonly names: string[];
     readonly activeName: string | null;
+    readonly activeIndex: number | null;
     setActive(name: string | null): void;
+    setActiveIndex(index: number | null): void;
     clear(): void;
 };
 
@@ -155,34 +163,31 @@ const warn = (opts: ImportGltfOptions | undefined, msg: string): void => {
     opts?.onWarning?.(msg);
 };
 
-const pickPreferredUvSetForMaterial = (mat: GltfMaterial | undefined, opts: ImportGltfOptions | undefined, context: string): number => {
-    if (!mat) return 0;
-    const used = new Set<number>();
-    const addInfo = (info: any | undefined): void => {
+const getTextureInfoTexCoord = (info: any | undefined): number => {
+    const transform = info?.extensions?.KHR_texture_transform;
+    const texCoord = transform && typeof transform.texCoord === "number" ? transform.texCoord : info?.texCoord;
+    return (texCoord ?? 0) | 0;
+};
+
+const validateMaterialTextureCoordinates = (mat: GltfMaterial | undefined, attrs: GltfPrimitiveAttributes, opts: ImportGltfOptions | undefined, context: string): void => {
+    if (!mat) return;
+    const validateInfo = (info: any | undefined, usage: string): void => {
         if (!info) return;
-        const tc = (info.texCoord ?? 0) | 0;
-        used.add(tc);
+        const texCoord = getTextureInfoTexCoord(info);
+        if (texCoord < 0 || texCoord > 1) {
+            warn(opts, `${context}: texture usage '${usage}' references TEXCOORD_${texCoord}, but WasmGPU supports TEXCOORD_0 and TEXCOORD_1; using TEXCOORD_0.`);
+            return;
+        }
+        if (attrs[`TEXCOORD_${texCoord}`] === undefined) warn(opts, `${context}: texture usage '${usage}' references missing TEXCOORD_${texCoord}; sampling will use zero coordinates.`);
     };
-    addInfo(mat.pbrMetallicRoughness?.baseColorTexture as any);
-    addInfo(mat.pbrMetallicRoughness?.metallicRoughnessTexture as any);
-    addInfo(mat.normalTexture as any);
-    addInfo(mat.occlusionTexture as any);
-    addInfo(mat.emissiveTexture as any);
+    validateInfo(mat.pbrMetallicRoughness?.baseColorTexture as any, "baseColor");
+    validateInfo(mat.pbrMetallicRoughness?.metallicRoughnessTexture as any, "metallicRoughness");
+    validateInfo(mat.normalTexture as any, "normal");
+    validateInfo(mat.occlusionTexture as any, "occlusion");
+    validateInfo(mat.emissiveTexture as any, "emissive");
     const specGloss = (mat.extensions as any)?.KHR_materials_pbrSpecularGlossiness as any;
-    addInfo(specGloss?.diffuseTexture as any);
-    addInfo(specGloss?.specularGlossinessTexture as any);
-    const baseTc = ((mat.pbrMetallicRoughness?.baseColorTexture as any)?.texCoord ?? (specGloss?.diffuseTexture as any)?.texCoord);
-    let preferred = typeof baseTc === "number" ? (baseTc | 0) : 0;
-    if (typeof baseTc !== "number" && used.size > 0) preferred = Math.max(...Array.from(used.values()));
-    if (preferred < 0 || preferred > 1) {
-        warn(opts, `${context}: TEXCOORD_${preferred} requested by material, but WasmGPU only supports TEXCOORD_0 or TEXCOORD_1; using TEXCOORD_0.`);
-        preferred = 0;
-    }
-    if (used.size > 1) {
-        const list = Array.from(used.values()).sort((a, b) => a - b).join(", ");
-        warn(opts, `${context}: material references multiple texCoord sets (${list}). WasmGPU uses TEXCOORD_${preferred} for all textures on this primitive.`);
-    }
-    return preferred;
+    validateInfo(specGloss?.diffuseTexture as any, "diffuse");
+    validateInfo(specGloss?.specularGlossinessTexture as any, "specularGlossiness");
 };
 
 const GL_NEAREST = 9728;
@@ -286,20 +291,31 @@ type GltfMetadataSource = {
     extensions?: GltfExtensions;
 };
 
-const buildMetadataRecord = (index: number, source: GltfMetadataSource | undefined | null): GltfImportMetadataRecord => {
+const getXmpPacketIndex = (source: { extensions?: GltfExtensions } | undefined | null): number | null => {
+    const ext = source?.extensions?.["KHR_xmp_json_ld"] as { packet?: number } | undefined;
+    return typeof ext?.packet === "number" ? ext.packet : null;
+};
+
+const resolveXmpPacket = (packets: readonly unknown[], source: { extensions?: GltfExtensions } | undefined | null): unknown | null => {
+    const packetIndex = getXmpPacketIndex(source);
+    return packetIndex !== null && packetIndex >= 0 && packetIndex < packets.length ? packets[packetIndex] : null;
+};
+
+const buildMetadataRecord = (index: number, source: GltfMetadataSource | undefined | null, packets: readonly unknown[] = []): GltfImportMetadataRecord => {
     return {
         index,
         name: source?.name,
         extras: source?.extras,
-        extensions: source?.extensions
+        extensions: source?.extensions,
+        xmp: resolveXmpPacket(packets, source)
     };
 };
 
-const buildMeshMetadata = (index: number, mesh: GltfMesh): GltfImportMeshMetadata => {
+const buildMeshMetadata = (index: number, mesh: GltfMesh, packets: readonly unknown[]): GltfImportMeshMetadata => {
     return {
-        ...buildMetadataRecord(index, mesh),
+        ...buildMetadataRecord(index, mesh, packets),
         primitives: mesh.primitives.map((primitive, primitiveIndex) => ({
-            ...buildMetadataRecord(primitiveIndex, primitive),
+            ...buildMetadataRecord(primitiveIndex, primitive, packets),
             material: primitive.material
         }))
     };
@@ -308,18 +324,19 @@ const buildMeshMetadata = (index: number, mesh: GltfMesh): GltfImportMeshMetadat
 type GltfVariantRegistration = {
     mesh: Mesh;
     baselineMaterial: Material;
-    variants: Map<string, Material>;
+    variants: Map<number, Material>;
     retainedMaterials: Material[];
 };
 
 type GltfVariantController = {
     public: GltfImportVariantsMetadata;
-    register(mesh: Mesh, baselineMaterial: Material, variants?: Map<string, Material>): void;
+    register(mesh: Mesh, baselineMaterial: Material, variants?: Map<number, Material>): void;
     destroy(): void;
 };
 
 const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportState> = {
-    KHR_lights_punctual: "partial",
+    KHR_lights_punctual: "supported",
+    KHR_mesh_quantization: "supported",
     KHR_materials_unlit: "supported",
     KHR_materials_emissive_strength: "supported",
     KHR_materials_pbrSpecularGlossiness: "partial",
@@ -331,12 +348,12 @@ const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportSt
     KHR_materials_iridescence: "deferred",
     KHR_materials_anisotropy: "deferred",
     KHR_materials_ior: "deferred",
-    KHR_materials_variants: "deferred",
+    KHR_materials_variants: "supported",
     KHR_node_visibility: "deferred",
     KHR_animation_pointer: "deferred",
-    KHR_xmp_json_ld: "deferred",
+    KHR_xmp_json_ld: "supported",
     KHR_draco_mesh_compression: "unsupported",
-    KHR_texture_transform: "unsupported"
+    KHR_texture_transform: "supported"
 };
 
 const buildExtensionsMetadata = (json: GltfRoot): GltfImportExtensionsMetadata => {
@@ -351,21 +368,25 @@ const buildExtensionsMetadata = (json: GltfRoot): GltfImportExtensionsMetadata =
 const buildXmpMetadata = (json: GltfRoot): GltfImportXmpMetadata => {
     const rootExt = (json.extensions as Record<string, unknown> | undefined)?.["KHR_xmp_json_ld"] as { packets?: unknown[] } | undefined;
     const packets = Array.isArray(rootExt?.packets) ? [...rootExt.packets] : [];
-    const assetPacketIndex = ((json.asset as Record<string, unknown> | undefined)?.extensions as Record<string, unknown> | undefined)?.["KHR_xmp_json_ld"] as { packet?: number } | undefined;
-    const packetIndex = assetPacketIndex?.packet;
-    const packet = typeof packetIndex === "number" && packetIndex >= 0 && packetIndex < packets.length ? packets[packetIndex] : null;
+    const packet = resolveXmpPacket(packets, json.asset);
     return { packets, packet };
 };
 
-const createVariantsController = (initialNames: string[] = []): GltfVariantController => {
-    const knownNames = [...initialNames];
+const createVariantsController = (initialItems: GltfImportVariantItem[] = []): GltfVariantController => {
+    const items = [...initialItems];
     const registrations: GltfVariantRegistration[] = [];
-    let activeName: string | null = null;
-    const ensureKnownName = (name: string): void => { if (!knownNames.includes(name)) knownNames.push(name); };
-    const applyVariant = (name: string | null): void => {
-        activeName = name;
+    let activeIndex: number | null = null;
+    const ensureKnownItem = (index: number): void => {
+        if (items.some((item) => item.index === index)) return;
+        items.push({ index, name: `variant_${index}` });
+        items.sort((a, b) => a.index - b.index);
+    };
+    const findItemByName = (name: string): GltfImportVariantItem | undefined => items.find((item) => item.name === name);
+    const getActiveName = (): string | null => activeIndex === null ? null : items.find((item) => item.index === activeIndex)?.name ?? `variant_${activeIndex}`;
+    const applyVariant = (index: number | null): void => {
+        activeIndex = index;
         for (const registration of registrations) {
-            const nextMaterial = name ? registration.variants.get(name) ?? registration.baselineMaterial : registration.baselineMaterial;
+            const nextMaterial = index !== null ? registration.variants.get(index) ?? registration.baselineMaterial : registration.baselineMaterial;
             if (registration.mesh.material === nextMaterial) continue;
             nextMaterial.retain();
             registration.mesh.setMaterial(nextMaterial);
@@ -373,17 +394,35 @@ const createVariantsController = (initialNames: string[] = []): GltfVariantContr
     };
     return {
         public: {
-            get names(): string[] { return [...knownNames]; },
-            get activeName(): string | null { return activeName; },
-            setActive(name: string | null): void { if (name !== null && !knownNames.includes(name)) throw new Error(`glTF variants: unknown variant '${name}'.`); applyVariant(name); },
+            get items(): GltfImportVariantItem[] { return items.map((item) => ({ ...item })); },
+            get names(): string[] { return items.map((item) => item.name ?? `variant_${item.index}`); },
+            get activeName(): string | null { return getActiveName(); },
+            get activeIndex(): number | null { return activeIndex; },
+            setActive(name: string | null): void {
+                if (name === null) {
+                    applyVariant(null);
+                    return;
+                }
+                const item = findItemByName(name);
+                if (!item) throw new Error(`glTF variants: unknown variant '${name}'.`);
+                applyVariant(item.index);
+            },
+            setActiveIndex(index: number | null): void {
+                if (index === null) {
+                    applyVariant(null);
+                    return;
+                }
+                if (!items.some((item) => item.index === index)) throw new Error(`glTF variants: unknown variant index ${index}.`);
+                applyVariant(index);
+            },
             clear(): void { applyVariant(null); }
         },
-        register(mesh: Mesh, baselineMaterial: Material, variants: Map<string, Material> = new Map()): void {
+        register(mesh: Mesh, baselineMaterial: Material, variants: Map<number, Material> = new Map()): void {
             const retainedMaterials = Array.from(new Set([baselineMaterial, ...variants.values()]));
             for (const material of retainedMaterials) material.retain();
             registrations.push({ mesh, baselineMaterial, variants, retainedMaterials });
-            for (const name of variants.keys()) ensureKnownName(name);
-            if (activeName !== null) applyVariant(activeName);
+            for (const index of variants.keys()) ensureKnownItem(index);
+            if (activeIndex !== null) applyVariant(activeIndex);
         },
         destroy(): void {
             for (const registration of registrations) for (const material of registration.retainedMaterials) material.release();
@@ -392,23 +431,29 @@ const createVariantsController = (initialNames: string[] = []): GltfVariantContr
     };
 };
 
-const getDeclaredVariantNames = (json: GltfRoot): string[] => {
-    const rootExt = (json.extensions as Record<string, unknown> | undefined)?.["KHR_materials_variants"] as { variants?: Array<{ name?: string }> } | undefined;
+const getDeclaredVariants = (json: GltfRoot, packets: readonly unknown[]): GltfImportVariantItem[] => {
+    const rootExt = (json.extensions as Record<string, unknown> | undefined)?.["KHR_materials_variants"] as { variants?: Array<{ name?: string; extras?: GltfExtras; extensions?: GltfExtensions }> } | undefined;
     const variants = Array.isArray(rootExt?.variants) ? rootExt.variants : [];
-    return variants.map((variant, index) => variant?.name ?? `variant_${index}`);
+    return variants.map((variant, index) => ({
+        ...buildMetadataRecord(index, variant, packets),
+        name: variant?.name ?? `variant_${index}`
+    }));
 };
 
 const buildImportMetadata = (json: GltfRoot, sceneIndex: number, extensions: GltfImportExtensionsMetadata, xmp: GltfImportXmpMetadata, variants: GltfImportVariantsMetadata): GltfImportMetadata => {
     const scene = json.scenes?.[sceneIndex];
+    const packets = xmp.packets;
     return {
-        asset: buildMetadataRecord(0, json.asset),
-        scene: scene ? buildMetadataRecord(sceneIndex, scene) : null,
-        nodes: (json.nodes ?? []).map((node, index) => buildMetadataRecord(index, node)),
-        meshes: (json.meshes ?? []).map((mesh, index) => buildMeshMetadata(index, mesh)),
-        materials: (json.materials ?? []).map((material, index) => buildMetadataRecord(index, material)),
-        cameras: (json.cameras ?? []).map((camera, index) => buildMetadataRecord(index, camera)),
-        skins: (json.skins ?? []).map((skin, index) => buildMetadataRecord(index, skin)),
-        animations: (json.animations ?? []).map((animation, index) => buildMetadataRecord(index, animation)),
+        asset: buildMetadataRecord(0, json.asset, packets),
+        scene: scene ? buildMetadataRecord(sceneIndex, scene, packets) : null,
+        nodes: (json.nodes ?? []).map((node, index) => buildMetadataRecord(index, node, packets)),
+        meshes: (json.meshes ?? []).map((mesh, index) => buildMeshMetadata(index, mesh, packets)),
+        materials: (json.materials ?? []).map((material, index) => buildMetadataRecord(index, material, packets)),
+        textures: (json.textures ?? []).map((texture, index) => buildMetadataRecord(index, texture, packets)),
+        images: (json.images ?? []).map((image, index) => buildMetadataRecord(index, image, packets)),
+        cameras: (json.cameras ?? []).map((camera, index) => buildMetadataRecord(index, camera, packets)),
+        skins: (json.skins ?? []).map((skin, index) => buildMetadataRecord(index, skin, packets)),
+        animations: (json.animations ?? []).map((animation, index) => buildMetadataRecord(index, animation, packets)),
         extensions, xmp, variants
     };
 };
@@ -584,11 +629,24 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     };
     const getTex = (info: any | undefined, usage: string): Texture2D | null => {
         if (!info) return null;
-        const texCoord = (info.texCoord ?? 0) | 0;
-        if (texCoord > 1) warn(opts, `Texture texCoord=${texCoord} not supported yet (usage=${usage}); expected 0 or 1.`);
-        const ext = info.extensions as any;
-        if (ext?.KHR_texture_transform) warn(opts, `KHR_texture_transform not supported yet (usage=${usage}); ignoring.`);
+        const texCoord = getTextureInfoTexCoord(info);
+        if (texCoord < 0 || texCoord > 1) warn(opts, `Texture texCoord=${texCoord} is outside WasmGPU's supported TEXCOORD_0/TEXCOORD_1 range (usage=${usage}); using TEXCOORD_0.`);
         return getOrCreateTextureByIndex(info.index, usage);
+    };
+    const getTextureTransform = (info: any | undefined, usage: string): TextureTransformDescriptor | null => {
+        if (!info) return null;
+        const ext = info.extensions as any;
+        const transform = ext?.KHR_texture_transform as any;
+        const texCoord = getTextureInfoTexCoord(info);
+        const resolvedTexCoord = texCoord === 1 ? 1 : 0;
+        if (!transform) return texCoord === 1 ? { texCoord: 1 } : null;
+        if (texCoord < 0 || texCoord > 1) warn(opts, `KHR_texture_transform texCoord=${texCoord} is outside WasmGPU's supported TEXCOORD_0/TEXCOORD_1 range (usage=${usage}); using TEXCOORD_0.`);
+        return {
+            offset: [Number(transform.offset?.[0] ?? 0), Number(transform.offset?.[1] ?? 0)],
+            rotation: Number(transform.rotation ?? 0),
+            scale: [Number(transform.scale?.[0] ?? 1), Number(transform.scale?.[1] ?? 1)],
+            texCoord: resolvedTexCoord
+        };
     };
     const alphaMode = mat.alphaMode ?? "OPAQUE";
     const alphaCutoff = alphaMode === "MASK" ? (mat.alphaCutoff ?? 0.5) : 0;
@@ -601,7 +659,9 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
         if (specGloss.specularGlossinessTexture) warn(opts, `Material '${mat.name ?? materialIndex}' has specularGlossinessTexture; currently ignored (highlights/roughness may look off).`);
     }
     const baseColorFactor = (pbr?.baseColorFactor ?? specGloss?.diffuseFactor ?? [1, 1, 1, 1]) as number[];
-    const baseColorTexture = getTex((pbr?.baseColorTexture ?? specGloss?.diffuseTexture) as any, "baseColor");
+    const baseColorTextureInfo = (pbr?.baseColorTexture ?? specGloss?.diffuseTexture) as any;
+    const baseColorTexture = getTex(baseColorTextureInfo, "baseColor");
+    const baseColorTextureTransform = getTextureTransform(baseColorTextureInfo, "baseColor");
     let metallicFactor = 1;
     let roughnessFactor = 1;
     if (pbr) {
@@ -614,10 +674,18 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
         if (roughnessFactor < 0) roughnessFactor = 0;
         if (roughnessFactor > 1) roughnessFactor = 1;
     }
-    const metallicRoughnessTexture = pbr ? getTex(pbr.metallicRoughnessTexture as any, "metallicRoughness") : null;
-    const normalTexture = getTex(mat.normalTexture as any, "normal");
-    const occlusionTexture = getTex(mat.occlusionTexture as any, "occlusion");
-    const emissiveTexture = getTex(mat.emissiveTexture as any, "emissive");
+    const metallicRoughnessTextureInfo = pbr?.metallicRoughnessTexture as any;
+    const normalTextureInfo = mat.normalTexture as any;
+    const occlusionTextureInfo = mat.occlusionTexture as any;
+    const emissiveTextureInfo = mat.emissiveTexture as any;
+    const metallicRoughnessTexture = pbr ? getTex(metallicRoughnessTextureInfo, "metallicRoughness") : null;
+    const metallicRoughnessTextureTransform = pbr ? getTextureTransform(metallicRoughnessTextureInfo, "metallicRoughness") : null;
+    const normalTexture = getTex(normalTextureInfo, "normal");
+    const normalTextureTransform = getTextureTransform(normalTextureInfo, "normal");
+    const occlusionTexture = getTex(occlusionTextureInfo, "occlusion");
+    const occlusionTextureTransform = getTextureTransform(occlusionTextureInfo, "occlusion");
+    const emissiveTexture = getTex(emissiveTextureInfo, "emissive");
+    const emissiveTextureTransform = getTextureTransform(emissiveTextureInfo, "emissive");
     const normalScale = mat.normalTexture?.scale ?? 1;
     const occlusionStrength = mat.occlusionTexture?.strength ?? 1;
     const emissiveFactor = mat.emissiveFactor ?? [0, 0, 0];
@@ -692,6 +760,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             color: [baseColorFactor[0] ?? 1, baseColorFactor[1] ?? 1, baseColorFactor[2] ?? 1],
             opacity: baseColorFactor[3] ?? 1,
             baseColorTexture,
+            baseColorTextureTransform,
             alphaCutoff,
             blendMode,
             cullMode,
@@ -710,6 +779,11 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             normalTexture,
             occlusionTexture,
             emissiveTexture,
+            baseColorTextureTransform,
+            metallicRoughnessTextureTransform,
+            normalTextureTransform,
+            occlusionTextureTransform,
+            emissiveTextureTransform,
             normalScale,
             occlusionStrength,
             alphaCutoff,
@@ -721,6 +795,31 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     }
     materialCache.set(materialIndex, created);
     return created;
+};
+
+type PrimitiveVariantMaterials = {
+    variants: Map<number, Material>;
+    temporaryMaterials: Material[];
+};
+
+const getPrimitiveVariantMaterials = (doc: GltfDocument, json: GltfRoot, prim: GltfPrimitive, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, opts?: ImportGltfOptions): PrimitiveVariantMaterials => {
+    const ext = (prim.extensions as Record<string, unknown> | undefined)?.["KHR_materials_variants"] as { mappings?: Array<{ material?: number; variants?: number[] }> } | undefined;
+    const mappings = Array.isArray(ext?.mappings) ? ext.mappings : [];
+    const variants = new Map<number, Material>();
+    const materialByIndex = new Map<number, Material>();
+    for (const mapping of mappings) {
+        if (mapping.material === undefined || !Array.isArray(mapping.variants)) continue;
+        let material = materialByIndex.get(mapping.material);
+        if (!material) {
+            material = getOrCreateMaterial(doc, json, mapping.material, materialCache, textureCache, opts);
+            materialByIndex.set(mapping.material, material);
+        }
+        for (const variantIndex of mapping.variants) {
+            if (typeof variantIndex !== "number") continue;
+            variants.set(variantIndex | 0, material);
+        }
+    }
+    return { variants, temporaryMaterials: [...materialByIndex.values()] };
 };
 
 const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: GltfPrimitive, computeMissingNormals: boolean, opts: ImportGltfOptions): Geometry | null => {
@@ -737,6 +836,9 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     let uvs: Float32Array | null = null;
     const uvAcc = attrs["TEXCOORD_0"];
     if (uvAcc !== undefined) uvs = readAccessorAsFloat32(doc, uvAcc);
+    let uvs1: Float32Array | null = null;
+    const uv1Acc = attrs["TEXCOORD_1"];
+    if (uv1Acc !== undefined) uvs1 = readAccessorAsFloat32(doc, uv1Acc);
     let joints: Uint16Array | null = null;
     let weights: Float32Array | null = null;
     let joints1: Uint16Array | null = null;
@@ -820,6 +922,7 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
         positions,
         normals: normals ?? undefined,
         uvs: uvs ?? undefined,
+        uvs1: uvs1 ?? undefined,
         joints: joints ?? undefined,
         weights: weights ?? undefined,
         joints1: joints1 ?? undefined,
@@ -830,7 +933,7 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     });
 };
 
-const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: number, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, geometryCache: Map<string, Geometry | null>, opts: ImportGltfOptions): Mesh[] => {
+const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: number, node: GltfNode, nodeT: Transform, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, geometryCache: Map<string, Geometry | null>, variantsController: GltfVariantController, opts: ImportGltfOptions): Mesh[] => {
     if (node.mesh === undefined) return [];
     const gltfMesh: GltfMesh | undefined = json.meshes?.[node.mesh];
     if (!gltfMesh) {
@@ -850,7 +953,7 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: numbe
         let geom = geometryCache.get(cacheKey);
         const meshName = `${gltfMesh.name ?? `mesh_${node.mesh}`}_${primIndex}`;
         const matJson = prim.material !== undefined ? json.materials?.[prim.material] : undefined;
-        const uvSet = pickPreferredUvSetForMaterial(matJson, opts, `Mesh '${gltfMesh.name ?? node.mesh}' primitive ${primIndex}`);
+        validateMaterialTextureCoordinates(matJson, prim.attributes, opts, `Mesh '${gltfMesh.name ?? node.mesh}' primitive ${primIndex}`);
         if (!hasCachedGeometry) {
             const built = buildGeometryFromPrimitive(doc, json, prim, computeMissingNormals, opts);
             geom = built;
@@ -883,6 +986,9 @@ const instantiateMeshNode = (doc: GltfDocument, json: GltfRoot, nodeIndex: numbe
             }
         };
         out.push(mesh);
+        const variantMaterials = getPrimitiveVariantMaterials(doc, json, prim, materialCache, textureCache, opts);
+        variantsController.register(mesh, mesh.material, variantMaterials.variants);
+        for (const material of variantMaterials.temporaryMaterials) material.release();
     }
     return out;
 };
@@ -936,7 +1042,24 @@ const instantiateLightNode = (light: KHRLightsPunctualLight, nodeT: Transform): 
             position: [pos[0] ?? 0, pos[1] ?? 0, pos[2] ?? 0],
             color: [color[0] ?? 1, color[1] ?? 1, color[2] ?? 1],
             intensity,
-            range: light.range ?? 10,
+            range: light.range ?? 0,
+        });
+    }
+    if (light.type === "spot") {
+        const pos = nodeT.worldPosition;
+        const wm = nodeT.worldMatrix;
+        const dx = -(wm[8] ?? 0);
+        const dy = -(wm[9] ?? 0);
+        const dz = -(wm[10] ?? -1);
+        const inv = 1.0 / (Math.hypot(dx, dy, dz) || 1.0);
+        return new SpotLight({
+            position: [pos[0] ?? 0, pos[1] ?? 0, pos[2] ?? 0],
+            direction: [dx * inv, dy * inv, dz * inv],
+            color: [color[0] ?? 1, color[1] ?? 1, color[2] ?? 1],
+            intensity,
+            range: light.range ?? 0,
+            innerCone: light.spot?.innerConeAngle ?? 0,
+            outerCone: light.spot?.outerConeAngle ?? Math.PI / 4
         });
     }
     return null;
@@ -1142,7 +1265,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     }
     const extensions = buildExtensionsMetadata(json);
     const xmp = buildXmpMetadata(json);
-    const variantsController = createVariantsController(getDeclaredVariantNames(json));
+    const variantsController = createVariantsController(getDeclaredVariants(json, xmp.packets));
     const skins = parseSkins(doc, json, nodes, opts);
     const materialCache = new Map<number, Material>();
     const textureCache = new Map<number, Texture2D>();
@@ -1157,7 +1280,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         const importedNode = nodes[nodeIndex];
         const nodeT = importedNode?.transform;
         if (!importedNode || !nodeT) return;
-        const createdMeshes = instantiateMeshNode(doc, json, nodeIndex, node, nodeT, materialCache, textureCache, geometryCache, opts);
+        const createdMeshes = instantiateMeshNode(doc, json, nodeIndex, node, nodeT, materialCache, textureCache, geometryCache, variantsController, opts);
         importedNode.meshes = createdMeshes;
         importedNode.visible = importedNode.visible;
         const skinIndex = node.skin !== undefined ? (node.skin | 0) : inheritedSkinIndex;
@@ -1177,7 +1300,6 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         }
         for (const m of createdMeshes) {
             meshes.push(m);
-            variantsController.register(m, m.material);
             if (addToScene) scene.add(m);
         }
         if (opts.importCameras) {
@@ -1195,6 +1317,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
                 else {
                     const created = instantiateLightNode(lightDef, nodeT);
                     if (created) {
+                        bindLightToTransform(created, nodeT);
                         lights.push(created);
                         importedNode.light = created;
                         importedNode.visible = importedNode.visible;
