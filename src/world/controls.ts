@@ -870,13 +870,11 @@ export class NavigationControls {
     private relaxPerspectiveClipForZoom(): void {
         if (this.camera.type !== "perspective") return;
         const camera = this.camera as PerspectiveCamera;
-        const minNear = 1e-4;
-        const desiredNear = Math.max(minNear, this._radius * 0.02);
-        if (desiredNear < camera.near) {
-            const maxNear = Math.max(minNear, camera.far - 0.01);
-            const nextNear = clamp(desiredNear, minNear, maxNear);
-            if (nextNear < camera.near) camera.near = nextNear;
-        }
+        const minNear = 1e-5;
+        const desiredNear = Math.max(minNear, this._radius * 1e-3);
+        const maxNear = Math.max(minNear, camera.far - 0.01);
+        const nextNear = clamp(desiredNear, minNear, maxNear);
+        if (Math.abs(nextNear - camera.near) > Math.max(minNear, camera.near) * 1e-3) camera.near = nextNear;
         const desiredFar = Math.max(this._radius * 4, camera.near + 0.01);
         if (desiredFar > camera.far) camera.far = desiredFar;
     }
