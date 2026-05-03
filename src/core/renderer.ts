@@ -2186,6 +2186,7 @@ export class Renderer {
                 return (
                     (am.materialId - bm.materialId) ||
                     (am.geometryId - bm.geometryId) ||
+                    (am.vertexSourceId - bm.vertexSourceId) ||
                     ((am.skinned ? 1 : 0) - (bm.skinned ? 1 : 0)) ||
                     ((am.skinned8 ? 1 : 0) - (bm.skinned8 ? 1 : 0))
                 );
@@ -2217,6 +2218,7 @@ export class Renderer {
         let lastPipeline: GPURenderPipeline | null = null;
         let lastMaterial: Material | null = null;
         let lastGeometry: Geometry | null = null;
+        let lastVertexSourceId = -1;
         let lastSkinned: boolean = false;
         let lastSkinned8: boolean = false;
         let lastCloud: PointCloud | null = null;
@@ -2234,6 +2236,7 @@ export class Renderer {
                     lastPipeline = drawItem.pipeline;
                     lastMaterial = null;
                     lastGeometry = null;
+                    lastVertexSourceId = -1;
                     lastSkinned = false;
                     lastSkinned8 = false;
                     lastCloud = null;
@@ -2246,9 +2249,10 @@ export class Renderer {
                     pass.setBindGroup(1, material.bindGroup!);
                     lastMaterial = material;
                 }
-                if (geometry !== lastGeometry || drawItem.skinned !== lastSkinned || drawItem.skinned8 !== lastSkinned8) {
-                    pass.setVertexBuffer(0, geometry.positionBuffer);
-                    pass.setVertexBuffer(1, geometry.normalBuffer);
+                if (geometry !== lastGeometry || drawItem.vertexSourceId !== lastVertexSourceId || drawItem.skinned !== lastSkinned || drawItem.skinned8 !== lastSkinned8) {
+                    const buffers = getMeshVertexBuffers(mesh, this.device, this.queue);
+                    pass.setVertexBuffer(0, buffers.positionBuffer);
+                    pass.setVertexBuffer(1, buffers.normalBuffer);
                     pass.setVertexBuffer(2, geometry.uvBuffer);
                     pass.setVertexBuffer(3, geometry.uv1Buffer);
                     if (drawItem.skinned) {
@@ -2261,6 +2265,7 @@ export class Renderer {
                     }
                     if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
                     lastGeometry = geometry;
+                    lastVertexSourceId = drawItem.vertexSourceId;
                     lastSkinned = drawItem.skinned;
                     lastSkinned8 = drawItem.skinned8;
                 }
@@ -2311,6 +2316,7 @@ export class Renderer {
                     lastPipeline = drawItem.pipeline;
                     lastMaterial = null;
                     lastGeometry = null;
+                    lastVertexSourceId = -1;
                     lastSkinned = false;
                     lastSkinned8 = false;
                     lastCloud = null;
@@ -2358,6 +2364,7 @@ export class Renderer {
                     lastPipeline = drawItem.pipeline;
                     lastMaterial = null;
                     lastGeometry = null;
+                    lastVertexSourceId = -1;
                     lastSkinned = false;
                     lastSkinned8 = false;
                     lastCloud = null;
@@ -2396,6 +2403,7 @@ export class Renderer {
                     lastPipeline = drawItem.pipeline;
                     lastMaterial = null;
                     lastGeometry = null;
+                    lastVertexSourceId = -1;
                     lastSkinned = false;
                     lastSkinned8 = false;
                     lastCloud = null;

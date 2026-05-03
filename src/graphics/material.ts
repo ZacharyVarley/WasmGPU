@@ -831,7 +831,6 @@ export class StandardMaterial extends Material {
 
     getUniformData(): Float32Array {
         const f = this.getUniformDataCache(StandardMaterial.UNIFORM_FLOAT_COUNT);
-        f.fill(0);
         f[0] = this._color[0];
         f[1] = this._color[1];
         f[2] = this._color[2];

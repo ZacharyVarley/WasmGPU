@@ -153,7 +153,7 @@ export class AnimationClip {
     sample(timeSeconds: number): void {
         if (this.channelCount > 0) {
             const store = TransformStore.global();
-            const soa = { posPtr: store.posPtr as WasmPtr, rotPtr: store.rotPtr as WasmPtr, sclPtr: store.sclPtr as WasmPtr }
+            const soa = { posPtr: store.posPtr as WasmPtr, rotPtr: store.rotPtr as WasmPtr, sclPtr: store.sclPtr as WasmPtr };
             animf.sampleClipTRS(soa.posPtr, soa.rotPtr, soa.sclPtr, store.count | 0, this.samplersPtr, this.samplerCount, this.channelsPtr, this.channelCount, timeSeconds);
             store.markDirty();
         }

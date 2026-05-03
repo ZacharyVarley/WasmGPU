@@ -193,15 +193,32 @@ export class Geometry {
 
     constructor(descriptor: GeometryDescriptor) {
         this.positions = descriptor.positions;
-        this.vertexCount = this.positions.length / 3;
-        this.authoredNormals = descriptor.authoredNormals ?? !!descriptor.normals;
-        this.normals = descriptor.normals ?? new Float32Array(this.vertexCount * 3).fill(0);
-        if (!descriptor.normals) for (let i = 1; i < this.normals.length; i += 3) this.normals[i] = 1;
-        this.uvs = descriptor.uvs ?? new Float32Array(this.vertexCount * 2);
-        let uvs1 = descriptor.uvs1 ?? new Float32Array(this.vertexCount * 2);
-        if (uvs1.length !== this.vertexCount * 2) {
-            console.warn(`[Geometry] uvs1 length mismatch (got ${uvs1.length}, expected ${this.vertexCount * 2}). TEXCOORD_1 disabled.`);
-            uvs1 = new Float32Array(this.vertexCount * 2);
+        this.vertexCount = Math.floor(this.positions.length / 3);
+        if (this.positions.length !== this.vertexCount * 3) console.warn(`[Geometry] positions length ${this.positions.length} is not divisible by 3; trailing components ignored.`);
+        const expectedNormalLength = this.vertexCount * 3;
+        let authoredNormals = descriptor.normals ? (descriptor.authoredNormals ?? true) : false;
+        let normals = descriptor.normals ?? new Float32Array(expectedNormalLength);
+        let fallbackNormals = !descriptor.normals;
+        if (normals.length !== expectedNormalLength) {
+            console.warn(`[Geometry] normals length mismatch (got ${normals.length}, expected ${expectedNormalLength}). Using fallback normals.`);
+            normals = new Float32Array(expectedNormalLength);
+            authoredNormals = false;
+            fallbackNormals = true;
+        }
+        if (fallbackNormals) for (let i = 1; i < normals.length; i += 3) normals[i] = 1;
+        this.authoredNormals = authoredNormals;
+        this.normals = normals;
+        const expectedUvLength = this.vertexCount * 2;
+        let uvs = descriptor.uvs ?? new Float32Array(expectedUvLength);
+        if (uvs.length !== expectedUvLength) {
+            console.warn(`[Geometry] uvs length mismatch (got ${uvs.length}, expected ${expectedUvLength}). TEXCOORD_0 disabled.`);
+            uvs = new Float32Array(expectedUvLength);
+        }
+        this.uvs = uvs;
+        let uvs1 = descriptor.uvs1 ?? new Float32Array(expectedUvLength);
+        if (uvs1.length !== expectedUvLength) {
+            console.warn(`[Geometry] uvs1 length mismatch (got ${uvs1.length}, expected ${expectedUvLength}). TEXCOORD_1 disabled.`);
+            uvs1 = new Float32Array(expectedUvLength);
         }
         this.uvs1 = uvs1;
         this.morphTargets = descriptor.morphTargets ?? [];
