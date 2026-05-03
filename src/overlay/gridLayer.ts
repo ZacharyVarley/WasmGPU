@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { clamp } from "../utils";
 import { DOMNodePool } from "./pool";
 import { projectWorldToScreen, type ProjectedPoint } from "./projection";
 import type { GridLayerDescriptor, GridPlane, OverlayLayer, OverlayUpdateContext } from "./types";
@@ -12,8 +13,6 @@ type GridAxes = {
     u: [number, number, number];
     v: [number, number, number];
 };
-
-const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
 
 const formatTick = (value: number): string => {
     if (!Number.isFinite(value)) return "nan";

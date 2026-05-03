@@ -4,15 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../utils";
+import { assert, clamp, clamp01, finiteOr, intOr } from "../utils";
 import type { ScaleClampMode, ScaleMode, ScaleTransform, ScaleTransformDescriptor, ScaleValueMode } from "./types";
 
 export const SCALE_UNIFORM_FLOAT_COUNT = 20;
-
-const clamp = (x: number, lo: number, hi: number): number => x < lo ? lo : x > hi ? hi : x;
-const clamp01 = (x: number): number => clamp(x, 0, 1);
-const finiteOr = (x: number | undefined, fallback: number): number => (typeof x === "number" && Number.isFinite(x)) ? x : fallback;
-const intOr = (x: number | undefined, fallback: number): number => (typeof x === "number" && Number.isInteger(x)) ? x : fallback;
 
 const modeToIdMap: Record<ScaleMode, number> = {
     linear: 0,

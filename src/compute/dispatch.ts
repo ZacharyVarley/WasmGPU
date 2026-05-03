@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../utils";
+import { assert, isNonNegativeInt } from "../utils";
 import type { WorkgroupCounts } from "./workgroups";
 import { ComputePipeline } from "./pipeline";
 
@@ -16,8 +16,6 @@ export type ComputeDispatchCommand = {
     workgroups: DispatchWorkgroups;
     label?: string;
 };
-
-const isNonNegativeInt = (n: number): boolean => Number.isInteger(n) && n >= 0;
 
 export const normalizeWorkgroups = (w: DispatchWorkgroups): { x: number; y: number; z: number } => {
     if (Array.isArray(w)) {

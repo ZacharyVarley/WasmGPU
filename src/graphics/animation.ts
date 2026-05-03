@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { clamp01 } from "../utils";
 import { animf, WasmPtr, wasm } from "../wasm";
 import { Transform, TransformStore } from "../core/transform";
 import type { Mesh } from "../world/mesh";
@@ -37,12 +38,6 @@ type AnimationWeightChannel = {
 type AnimationClipInternalDescriptor = AnimationClipDescriptor & {
     weightSamplers?: ReadonlyArray<AnimationWeightSampler>;
     weightChannels?: ReadonlyArray<AnimationWeightChannel>;
-};
-
-const clamp01 = (x: number): number => {
-    if (x < 0) return 0;
-    if (x > 1) return 1;
-    return x;
 };
 
 const findKeyframe = (times: Float32Array, time: number): { i0: number; i1: number; alpha: number; dt: number } => {

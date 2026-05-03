@@ -4,12 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { assert, clamp01, createBuffer, linearIndexToNdIndex, normalizeColorStops, normalizePositiveIntShape, resolveGPUBuffer } from "../utils";
 import { Transform } from "../core/transform";
 import { BlendMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform, SCALE_UNIFORM_FLOAT_COUNT } from "../scaling";
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
-import { assert, createBuffer } from "../utils";
 import { boundsf, wasm } from "../wasm";
 import { Bounds3, boundsFromBox, boundsFromBoxAndSphere, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
@@ -47,48 +47,6 @@ const UNIFORM_FLOAT_COUNT = 4 + SCALE_UNIFORM_FLOAT_COUNT + 4 + (8 * 4);
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
 type BoundsSourceMode = "none" | "explicit" | "computed";
-
-const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-
-const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
-    if (!shape) return null;
-    const out: number[] = [];
-    for (let i = 0; i < shape.length; i++) {
-        const d = shape[i] as number;
-        assert(Number.isInteger(d) && d > 0, `PointCloud: ndShape[${i}] must be an integer > 0.`);
-        out.push(d | 0);
-    }
-    return out.length > 0 ? out : null;
-};
-
-const linearIndexToNdIndex = (shape: ReadonlyArray<number> | null, index: number): number[] | null => {
-    if (!shape || shape.length === 0) return null;
-    if (!Number.isInteger(index) || index < 0) return null;
-    let remaining = index | 0;
-    const out = new Array(shape.length);
-    for (let i = shape.length - 1; i >= 0; i--) {
-        const dim = shape[i]!;
-        out[i] = remaining % dim;
-        remaining = Math.floor(remaining / dim);
-    }
-    return remaining === 0 ? out : null;
-};
-
-const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
-    if (!stops || stops.length === 0) {
-        return [
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0]
-        ];
-    }
-    const out: Color4[] = [];
-    const n = Math.min(8, stops.length);
-    for (let i = 0; i < n; i++) {
-        const c = stops[i];
-        out.push([c[0], c[1], c[2], c[3]]);
-    }
-    return out;
-};
 
 const normalizePointCloudScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform): ScaleTransform => {
     return normalizeScaleTransform({
@@ -147,7 +105,7 @@ export class PointCloud {
         if (desc.sizeAttenuation !== undefined) this._sizeAttenuation = desc.sizeAttenuation;
         if (desc.opacity !== undefined) this._opacity = desc.opacity;
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
-        if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
+        if (desc.colormapStops !== undefined) this._colormapStops = normalizeColorStops(desc.colormapStops);
         if (desc.softness !== undefined) this._softness = desc.softness;
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
         if (desc.ndShape !== undefined) this.ndShape = desc.ndShape;
@@ -155,7 +113,7 @@ export class PointCloud {
         if (desc.data) {
             this.setData(desc.data, { keepCPUData: this._keepCPUData });
         } else if (desc.pointsBuffer) {
-            const buf = (desc.pointsBuffer as { buffer?: GPUBuffer }).buffer ? (desc.pointsBuffer as { buffer: GPUBuffer }).buffer : (desc.pointsBuffer as GPUBuffer);
+            const buf = resolveGPUBuffer(desc.pointsBuffer);
             const count = desc.pointCount ?? 0;
             assert(count > 0, "PointCloud: pointCount is required when using pointsBuffer.");
             this.setPointsBuffer(buf, count);
@@ -206,7 +164,7 @@ export class PointCloud {
     }
 
     set ndShape(shape: ReadonlyArray<number> | null) {
-        this._ndShape = normalizeNdShape(shape);
+        this._ndShape = normalizePositiveIntShape(shape, "PointCloud: ndShape");
     }
 
     get scaleTransform(): ScaleTransform {
@@ -317,7 +275,7 @@ export class PointCloud {
     }
 
     set colormapStops(stops: ReadonlyArray<Color4>) {
-        this._colormapStops = normalizeStops(stops);
+        this._colormapStops = normalizeColorStops(stops);
         this._uniformDirty = true;
         this.emitVisualChange("colormap");
     }

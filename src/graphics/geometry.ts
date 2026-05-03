@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { createBuffer } from "../utils";
+import { createBuffer, nextPow2 } from "../utils";
 import { boundsf, meshf, wasm } from "../wasm";
 
 export type GeometryAttribute = {
@@ -102,18 +102,6 @@ let _normIdxPtr = 0;
 let _normIdxCap = 0;
 let _normOutPtr = 0;
 let _normOutCap = 0;
-
-const nextPow2 = (x: number): number => {
-    let v = Math.max(1, x | 0);
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v++;
-    return v;
-};
 
 const ensureBoundsScratch = (posLenF32: number): void => {
     if (_boundsPosCap < posLenF32) { _boundsPosCap = nextPow2(posLenF32); _boundsPosPtr = wasm.allocF32(_boundsPosCap); }

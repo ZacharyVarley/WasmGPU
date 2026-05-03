@@ -4,19 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../utils";
+import { assert, ceilDiv, isNonNegativeInt, isPositiveInt } from "../utils";
 
 export type WorkgroupSize = readonly [number, number, number];
 export type WorkgroupCounts = readonly [number, number, number];
 
-const isPositiveInt = (n: number): boolean => Number.isInteger(n) && n > 0;
-const isNonNegativeInt = (n: number): boolean => Number.isInteger(n) && n >= 0;
-
-export const ceilDiv = (n: number, d: number): number => {
-    assert(Number.isFinite(n) && Number.isFinite(d), "ceilDiv expects finite numbers");
-    assert(d !== 0, "ceilDiv divisor must be non-zero");
-    return Math.floor((n + d - 1) / d);
-};
+export { ceilDiv } from "../utils";
 
 export const makeWorkgroupSize = (x: number, y: number = 1, z: number = 1): WorkgroupSize => {
     assert(isPositiveInt(x), `workgroupSize.x must be a positive integer (got ${x})`);

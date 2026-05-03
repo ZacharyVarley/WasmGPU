@@ -4,13 +4,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { assert, clamp01, createBuffer, linearIndexToNdIndex, normalizeColorStops, normalizePositiveIntShape, resolveGPUBuffer } from "../utils";
 import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from "../scaling";
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
 import { Geometry } from "../graphics/geometry";
-import { assert } from "../utils";
 import { boundsf, wasm, wasmInterop, type WasmPtr } from "../wasm";
 import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
@@ -62,48 +62,6 @@ export type GlyphFieldDescriptor = {
 const UNIFORM_FLOAT_COUNT = (5 * 4) + 4 + 4 + (8 * 4);
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
-const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-
-const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
-    if (!shape) return null;
-    const out: number[] = [];
-    for (let i = 0; i < shape.length; i++) {
-        const d = shape[i] as number;
-        assert(Number.isInteger(d) && d > 0, `GlyphField: ndShape[${i}] must be an integer > 0.`);
-        out.push(d | 0);
-    }
-    return out.length > 0 ? out : null;
-};
-
-const linearIndexToNdIndex = (shape: ReadonlyArray<number> | null, index: number): number[] | null => {
-    if (!shape || shape.length === 0) return null;
-    if (!Number.isInteger(index) || index < 0) return null;
-    let remaining = index | 0;
-    const out = new Array(shape.length);
-    for (let i = shape.length - 1; i >= 0; i--) {
-        const dim = shape[i]!;
-        out[i] = remaining % dim;
-        remaining = Math.floor(remaining / dim);
-    }
-    return remaining === 0 ? out : null;
-};
-
-const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
-    if (!stops || stops.length === 0) {
-        return [
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0]
-        ];
-    }
-    const out: Color4[] = [];
-    const n = Math.min(8, stops.length);
-    for (let i = 0; i < n; i++) {
-        const c = stops[i];
-        out.push([c[0], c[1], c[2], c[3]]);
-    }
-    return out;
-};
-
 const normalizeGlyphScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform): ScaleTransform => {
     return normalizeScaleTransform({
         componentCount: 4,
@@ -119,11 +77,6 @@ const colorModeId = (mode: GlyphColorMode): number => {
         case "scalar": return 1;
         case "solid": return 2;
     }
-};
-
-const resolveBufferHandle = (x: GPUBuffer | { buffer: GPUBuffer } | undefined | null): GPUBuffer | null => {
-    if (!x) return null;
-    return (x as any).buffer ? ((x as any).buffer as GPUBuffer) : (x as GPUBuffer);
 };
 
 const createUvEllipsoidGeometry = (latSegments: number = 8, lonSegments: number = 12): Geometry => {
@@ -374,16 +327,16 @@ export class GlyphField {
         if (desc.depthTest !== undefined) this.depthTest = !!desc.depthTest;
         if (desc.colorMode !== undefined) this._colorMode = desc.colorMode;
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
-        if (desc.colormapStops !== undefined) this._colormapStops = normalizeStops(desc.colormapStops);
+        if (desc.colormapStops !== undefined) this._colormapStops = normalizeColorStops(desc.colormapStops);
         if (desc.opacity !== undefined) this._opacity = desc.opacity;
         if (desc.lit !== undefined) this._lit = !!desc.lit;
         if (desc.solidColor !== undefined) this._solidColor = [desc.solidColor[0], desc.solidColor[1], desc.solidColor[2], desc.solidColor[3]];
         if (desc.keepCPUData !== undefined) this._keepCPUData = !!desc.keepCPUData;
         if (desc.ndShape !== undefined) this.ndShape = desc.ndShape;
-        const positionsBuffer = resolveBufferHandle(desc.positionsBuffer);
-        const rotationsBuffer = resolveBufferHandle(desc.rotationsBuffer);
-        const scalesBuffer = resolveBufferHandle(desc.scalesBuffer);
-        const attributesBuffer = resolveBufferHandle(desc.attributesBuffer);
+        const positionsBuffer = desc.positionsBuffer ? resolveGPUBuffer(desc.positionsBuffer) : null;
+        const rotationsBuffer = desc.rotationsBuffer ? resolveGPUBuffer(desc.rotationsBuffer) : null;
+        const scalesBuffer = desc.scalesBuffer ? resolveGPUBuffer(desc.scalesBuffer) : null;
+        const attributesBuffer = desc.attributesBuffer ? resolveGPUBuffer(desc.attributesBuffer) : null;
         if (positionsBuffer || rotationsBuffer || scalesBuffer || attributesBuffer) {
             assert(!!positionsBuffer && !!rotationsBuffer && !!scalesBuffer, "GlyphField: positionsBuffer, rotationsBuffer, and scalesBuffer are required when using external buffers.");
             const count = desc.instanceCount ?? 0;
@@ -443,7 +396,7 @@ export class GlyphField {
     }
 
     set ndShape(shape: ReadonlyArray<number> | null) {
-        this._ndShape = normalizeNdShape(shape);
+        this._ndShape = normalizePositiveIntShape(shape, "GlyphField: ndShape");
     }
     get scaleTransform(): ScaleTransform {
         return cloneScaleTransform(this._scaleTransform);
@@ -522,7 +475,7 @@ export class GlyphField {
     }
 
     set colormapStops(v: Color4[]) {
-        this._colormapStops = normalizeStops(v);
+        this._colormapStops = normalizeColorStops(v);
         this._uniformDirty = true;
         this.emitVisualChange("colormap");
     }
@@ -728,15 +681,13 @@ export class GlyphField {
             if (!cpu && !ptr) return buf;
             const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
             const byteLength = requiredBytes;
-            if (!buf) buf = device.createBuffer({ size: byteLength, usage, label });
+            const source = cpu ?? new Uint8Array(bytes.buffer, ptr >>> 0, byteLength);
+            if (!buf) return createBuffer(device, source, usage, label);
             try {
-                if (cpu) queue.writeBuffer(buf, 0, cpu.buffer, cpu.byteOffset, Math.min(cpu.byteLength, byteLength));
-                else queue.writeBuffer(buf, 0, bytes, ptr >>> 0, byteLength);
+                queue.writeBuffer(buf, 0, source.buffer, source.byteOffset, Math.min(source.byteLength, byteLength));
             } catch {
                 buf.destroy();
-                buf = device.createBuffer({ size: byteLength, usage, label });
-                if (cpu) queue.writeBuffer(buf, 0, cpu.buffer, cpu.byteOffset, Math.min(cpu.byteLength, byteLength));
-                else queue.writeBuffer(buf, 0, bytes, ptr >>> 0, byteLength);
+                return createBuffer(device, source, usage, label);
             }
             return buf;
         };

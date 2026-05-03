@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../utils";
+import { assert, isGPUBuffer, resolveGPUBuffer } from "../utils";
 import { StorageBuffer, UniformBuffer } from "./buffer";
 
 export type StorageBufferBindingLayout = {
@@ -65,25 +65,14 @@ export type BufferBindingResource = BufferResource | { buffer: BufferResource; o
 
 export type ComputeBindGroupResources = Record<number, BufferBindingResource> | Array<{ binding: number; resource: BufferBindingResource }>;
 
-const isGpuBuffer = (r: BufferResource | { buffer: BufferResource }): r is GPUBuffer => {
-    return (r as GPUBuffer).mapState !== undefined;
-};
-
-const resolveBuffer = (res: BufferResource): GPUBuffer => {
-    if (isGpuBuffer(res)) return res;
-    return res.buffer;
-};
-
 const resolveBufferBinding = (resource: BufferBindingResource): GPUBufferBinding => {
-    if (isGpuBuffer(resource)) return { buffer: resource };
+    if (isGPUBuffer(resource)) return { buffer: resource };
     if ((resource as StorageBuffer).buffer !== undefined && (resource as StorageBuffer).device !== undefined) {
-        const buf = resolveBuffer(resource as BufferResource);
-        return { buffer: buf };
+        return { buffer: resolveGPUBuffer(resource as BufferResource) };
     }
     const bb = resource as { buffer: BufferResource; offset?: number; size?: number };
-    const buf = resolveBuffer(bb.buffer);
     return {
-        buffer: buf,
+        buffer: resolveGPUBuffer(bb.buffer),
         offset: bb.offset,
         size: bb.size
     };

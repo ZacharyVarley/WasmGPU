@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { clampInt } from "../../utils";
 import { AnnotationAngleUnit, type AnnotationUnitsDescriptor } from "./types";
 
 type MetricPrefix = {
@@ -45,14 +46,6 @@ export type AnnotationAngleFormatResult = {
     value: number;
     unitSymbol: string;
     text: string;
-};
-
-const clampInt = (value: number, min: number, max: number): number => {
-    if (!Number.isFinite(value)) return min;
-    const v = Math.round(value);
-    if (v < min) return min;
-    if (v > max) return max;
-    return v;
 };
 
 const trimFixed = (text: string): string => {

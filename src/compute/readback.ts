@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { alignTo, assert } from "../utils";
+import { alignTo, assert, isNonNegativeInt, resolveGPUBuffer } from "../utils";
 import { StorageBuffer, type TypedArrayConstructor } from "./buffer";
 
 export type ReadbackSource = GPUBuffer | StorageBuffer;
@@ -18,12 +18,6 @@ type ReadbackSlot = {
     buffer: GPUBuffer;
     capacityBytes: number;
     tail: Promise<void>;
-};
-
-const isNonNegativeInt = (n: number): boolean => Number.isInteger(n) && n >= 0;
-
-const resolveSourceBuffer = (src: ReadbackSource): GPUBuffer => {
-    return (src instanceof StorageBuffer) ? src.buffer : src;
 };
 
 const resolveLogicalByteLength = (src: ReadbackSource): number => {
@@ -105,7 +99,7 @@ export class ReadbackRing {
                 slot.buffer = newSlot.buffer;
                 slot.capacityBytes = newSlot.capacityBytes; 
             }
-            const srcBuf = resolveSourceBuffer(src);
+            const srcBuf = resolveGPUBuffer(src);
             const encoder = this.device.createCommandEncoder({ label: opts.label ? `${opts.label}:copyToStaging` : `${this.labelPrefix}:copyToStaging` });
             encoder.copyBufferToBuffer(srcBuf, srcOffsetBytes, slot.buffer, 0, alignedSize);
             this.queue.submit([encoder.finish()]);

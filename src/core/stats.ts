@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { clamp, nowMs } from "../utils";
 import { frameArena, wasm } from "../wasm";
 
 export type PerformanceStatsPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -60,8 +61,6 @@ class RollingAverage {
         return this.count > 0 ? (this.total / this.count) : 0;
     }
 }
-
-const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
 
 const formatNumber = (x: number, decimals: number): string => {
     if (!Number.isFinite(x)) return "n/a";
@@ -189,9 +188,9 @@ export class PerformanceStats {
         this.history[this.historyCursor] = fps;
         this.historyCursor = (this.historyCursor + 1) % this.history.length;
         this.drawGraph();
-        const nowMs = (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
-        if (this.updateIntervalMs === 0 || (nowMs - this.lastTextUpdateMs) >= this.updateIntervalMs) {
-            this.lastTextUpdateMs = nowMs;
+        const time = nowMs();
+        if (this.updateIntervalMs === 0 || (time - this.lastTextUpdateMs) >= this.updateIntervalMs) {
+            this.lastTextUpdateMs = time;
             this.refreshText();
         }
     }

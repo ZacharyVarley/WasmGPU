@@ -4,12 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { assert, clamp01, createBuffer, linearIndexToNdIndex, normalizeColorStops, normalizePositiveIntShape, resolveGPUBuffer } from "../utils";
 import { Transform } from "../core/transform";
 import { BlendMode, CullMode, type Color4 } from "../graphics/material";
 import { Colormap, type BuiltinColormapName } from "../graphics/colormap";
 import { cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from "../scaling";
 import type { ScaleSourceDescriptor, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor } from "../scaling";
-import { assert, createBuffer } from "../utils";
 import { Bounds3, boundsFromBox, boundsFromSphere, emptyBounds, transformBounds } from "./bounds";
 
 export type NodeLinkNodeGeometryMode = "points" | "spheres" | "ellipsoids" | "cubes";
@@ -78,51 +78,12 @@ type PendingWrite = { target: PendingWriteTarget; byteOffset: number; bytes: Uin
 const UNIFORM_FLOAT_COUNT = 128;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * 4;
 
-const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-
-const normalizeStops = (stops: ReadonlyArray<Color4> | undefined | null): Color4[] => {
-    if (!stops || stops.length === 0) return [[0, 0, 0, 1], [1, 1, 1, 1]];
-    const out: Color4[] = [];
-    const n = Math.min(8, stops.length);
-    for (let i = 0; i < n; i++) out.push([stops[i][0], stops[i][1], stops[i][2], stops[i][3]]);
-    return out;
-};
-
 const normalizeNodeScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform | undefined): ScaleTransform => {
     return normalizeScaleTransform({ componentCount: 1, componentIndex: 0, stride: 1, offset: 0, mode: "linear", clampMode: "range", domainMin: 0, domainMax: 1, clampMin: 0, clampMax: 1, gamma: 1, invert: false, ...(transform ?? {}) });
 };
 
 const normalizeEdgeScaleTransform = (transform: ScaleTransformDescriptor | ScaleTransform | undefined): ScaleTransform => {
     return normalizeScaleTransform({ componentCount: 1, componentIndex: 0, stride: 1, offset: 0, mode: "linear", clampMode: "range", domainMin: 0, domainMax: 1, clampMin: 0, clampMax: 1, gamma: 1, invert: false, ...(transform ?? {}) });
-};
-
-const normalizeNdShape = (shape: ReadonlyArray<number> | null | undefined): number[] | null => {
-    if (!shape) return null;
-    const out: number[] = [];
-    for (let i = 0; i < shape.length; i++) {
-        const d = shape[i] as number;
-        assert(Number.isInteger(d) && d > 0, `NodeLink: ndShape[${i}] must be an integer > 0.`);
-        out.push(d | 0);
-    }
-    return out.length > 0 ? out : null;
-};
-
-const linearIndexToNdIndex = (shape: ReadonlyArray<number> | null, index: number): number[] | null => {
-    if (!shape || shape.length === 0) return null;
-    if (!Number.isInteger(index) || index < 0) return null;
-    let remaining = index | 0;
-    const out = new Array(shape.length);
-    for (let i = shape.length - 1; i >= 0; i--) {
-        const dim = shape[i]!;
-        out[i] = remaining % dim;
-        remaining = Math.floor(remaining / dim);
-    }
-    return remaining === 0 ? out : null;
-};
-
-const resolveBufferHandle = (x: GPUBuffer | { buffer: GPUBuffer } | undefined | null): GPUBuffer | null => {
-    if (!x) return null;
-    return (x as { buffer?: GPUBuffer }).buffer ? (x as { buffer: GPUBuffer }).buffer : (x as GPUBuffer);
 };
 
 const colorModeId = (mode: NodeLinkColorMode): number => mode === "rgba" ? 0 : mode === "scalar" ? 1 : 2;
@@ -229,8 +190,8 @@ export class NodeLink {
         if (desc.edgeColorMode !== undefined) this._edgeColorMode = desc.edgeColorMode;
         if (desc.nodeColormap !== undefined) this._nodeColormap = desc.nodeColormap;
         if (desc.edgeColormap !== undefined) this._edgeColormap = desc.edgeColormap;
-        if (desc.nodeColormapStops !== undefined) this._nodeColormapStops = normalizeStops(desc.nodeColormapStops);
-        if (desc.edgeColormapStops !== undefined) this._edgeColormapStops = normalizeStops(desc.edgeColormapStops);
+        if (desc.nodeColormapStops !== undefined) this._nodeColormapStops = normalizeColorStops(desc.nodeColormapStops);
+        if (desc.edgeColormapStops !== undefined) this._edgeColormapStops = normalizeColorStops(desc.edgeColormapStops);
         if (desc.nodeSolidColor !== undefined) this._nodeSolidColor = [desc.nodeSolidColor[0], desc.nodeSolidColor[1], desc.nodeSolidColor[2], desc.nodeSolidColor[3]];
         if (desc.edgeSolidColor !== undefined) this._edgeSolidColor = [desc.edgeSolidColor[0], desc.edgeSolidColor[1], desc.edgeSolidColor[2], desc.edgeSolidColor[3]];
         if (desc.nodeSize !== undefined) this._nodeSize = Math.max(0, desc.nodeSize);
@@ -242,21 +203,21 @@ export class NodeLink {
         if (desc.lit !== undefined) this._lit = !!desc.lit;
         this.applyExplicitBounds(desc);
         if (desc.nodePositions) this.setNodePositions(desc.nodePositions, { stride: desc.nodePositionsStride ?? 3, keepCPUData: this._keepCPUData });
-        else if (desc.nodePositionsBuffer) this.setNodePositionsBuffer(resolveBufferHandle(desc.nodePositionsBuffer)!, desc.nodeCount ?? 0);
+        else if (desc.nodePositionsBuffer) this.setNodePositionsBuffer(resolveGPUBuffer(desc.nodePositionsBuffer), desc.nodeCount ?? 0);
         else if (desc.nodeCount !== undefined) this._nodeCount = Math.max(0, desc.nodeCount | 0);
         if (desc.edges) this.setEdges(desc.edges, { keepCPUData: this._keepCPUData });
-        else if (desc.edgesBuffer) this.setEdgesBuffer(resolveBufferHandle(desc.edgesBuffer)!, desc.edgeCount ?? 0);
+        else if (desc.edgesBuffer) this.setEdgesBuffer(resolveGPUBuffer(desc.edgesBuffer), desc.edgeCount ?? 0);
         else if (desc.edgeCount !== undefined) this._edgeCount = Math.max(0, desc.edgeCount | 0);
         if (desc.nodeScalars) this.setNodeScalars(desc.nodeScalars, { keepCPUData: this._keepCPUData });
-        else if (desc.nodeScalarsBuffer) this.setNodeScalarsBuffer(resolveBufferHandle(desc.nodeScalarsBuffer));
+        else if (desc.nodeScalarsBuffer) this.setNodeScalarsBuffer(resolveGPUBuffer(desc.nodeScalarsBuffer));
         if (desc.nodeColors) this.setNodeColors(desc.nodeColors, { keepCPUData: this._keepCPUData });
-        else if (desc.nodeColorsBuffer) this.setNodeColorsBuffer(resolveBufferHandle(desc.nodeColorsBuffer));
+        else if (desc.nodeColorsBuffer) this.setNodeColorsBuffer(resolveGPUBuffer(desc.nodeColorsBuffer));
         if (desc.nodeRadii) this.setNodeRadii(desc.nodeRadii, { stride: desc.nodeRadiiStride ?? 3, keepCPUData: this._keepCPUData });
-        else if (desc.nodeRadiiBuffer) this.setNodeRadiiBuffer(resolveBufferHandle(desc.nodeRadiiBuffer));
+        else if (desc.nodeRadiiBuffer) this.setNodeRadiiBuffer(resolveGPUBuffer(desc.nodeRadiiBuffer));
         if (desc.edgeScalars) this.setEdgeScalars(desc.edgeScalars, { keepCPUData: this._keepCPUData });
-        else if (desc.edgeScalarsBuffer) this.setEdgeScalarsBuffer(resolveBufferHandle(desc.edgeScalarsBuffer));
+        else if (desc.edgeScalarsBuffer) this.setEdgeScalarsBuffer(resolveGPUBuffer(desc.edgeScalarsBuffer));
         if (desc.edgeColors) this.setEdgeColors(desc.edgeColors, { keepCPUData: this._keepCPUData });
-        else if (desc.edgeColorsBuffer) this.setEdgeColorsBuffer(resolveBufferHandle(desc.edgeColorsBuffer));
+        else if (desc.edgeColorsBuffer) this.setEdgeColorsBuffer(resolveGPUBuffer(desc.edgeColorsBuffer));
     }
 
     private applyExplicitBounds(desc: NodeLinkDescriptor): void {
@@ -341,7 +302,7 @@ export class NodeLink {
     }
 
     set ndShape(shape: ReadonlyArray<number> | null) {
-        this._ndShape = normalizeNdShape(shape);
+        this._ndShape = normalizePositiveIntShape(shape, "NodeLink: ndShape");
     }
 
     get nodeGeometryMode(): NodeLinkNodeGeometryMode {
@@ -488,7 +449,7 @@ export class NodeLink {
     }
 
     set nodeColormapStops(v: Color4[]) {
-        this._nodeColormapStops = normalizeStops(v);
+        this._nodeColormapStops = normalizeColorStops(v);
         this._uniformDirty = true;
         this.emitVisualChange("colormap");
     }
@@ -498,7 +459,7 @@ export class NodeLink {
     }
 
     set edgeColormapStops(v: Color4[]) {
-        this._edgeColormapStops = normalizeStops(v);
+        this._edgeColormapStops = normalizeColorStops(v);
         this._uniformDirty = true;
         this.emitVisualChange("colormap");
     }

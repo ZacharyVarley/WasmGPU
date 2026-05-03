@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../../utils";
+import { assert, clamp, nowMs } from "../../utils";
 import type { AnnotationAnglePatch, AnnotationAngleRecord, AnnotationAnchor, AnnotationColor, AnnotationDistancePatch, AnnotationDistanceRecord, AnnotationKind, AnnotationMarkerPatch, AnnotationMarkerRecord, AnnotationRecord, AnnotationVec3 } from "./types";
 import { cloneAnnotationAnchor, cloneAnnotationColor, cloneAnnotationVec3 } from "./types";
 
@@ -26,10 +26,6 @@ const DEFAULT_COLORS: Record<AnnotationKind, AnnotationColor> = {
     distance: [0.2, 0.8, 1.0, 1.0],
     angle: [1.0, 0.5, 0.2, 1.0]
 };
-
-const nowDefault = (): number => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
-
-const clamp = (x: number, lo: number, hi: number): number => x < lo ? lo : x > hi ? hi : x;
 
 const vecSub = (a: readonly number[], b: readonly number[]): AnnotationVec3 => [(a[0] ?? 0) - (b[0] ?? 0), (a[1] ?? 0) - (b[1] ?? 0), (a[2] ?? 0) - (b[2] ?? 0)];
 
@@ -87,7 +83,7 @@ export class AnnotationStore {
     private _revision: number = 0;
 
     constructor(desc: AnnotationStoreDescriptor = {}) {
-        this.nowMs = desc.nowMs ?? nowDefault;
+        this.nowMs = desc.nowMs ?? nowMs;
         this.idPrefix = `${desc.idPrefix ?? "ann"}`.trim();
     }
 

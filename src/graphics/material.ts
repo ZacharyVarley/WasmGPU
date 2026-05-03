@@ -4,9 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { assert, clamp01, createBuffer, resolveGPUBuffer } from "../utils";
 import { Texture2D } from "./texture";
 import { Colormap, type BuiltinColormapName } from "./colormap";
-import { assert, createBuffer } from "../utils";
 import unlitWGSL from "../wgsl/graphics/unlit.wgsl";
 import unlitInstancedWGSL from "../wgsl/graphics/unlit-instanced.wgsl";
 import unlitSkinnedWGSL from "../wgsl/graphics/unlit-skinned.wgsl";
@@ -22,8 +22,6 @@ import type { ScaleSourceDescriptor, ScaleTransform, ScaleTransformDescriptor } 
 
 export type Color = [number, number, number];
 export type Color4 = [number, number, number, number];
-
-const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
 
 export type TextureCoordinateSet = 0 | 1;
 
@@ -918,8 +916,7 @@ export class DataMaterial extends Material {
         if (desc.colormap !== undefined) this._colormap = desc.colormap;
         if (desc.data) this.setData(desc.data, { keepCPUData: this._keepCPUData });
         if (desc.dataBuffer !== undefined && desc.dataBuffer !== null) {
-            const b = (desc.dataBuffer as { buffer?: GPUBuffer }).buffer ? (desc.dataBuffer as { buffer: GPUBuffer }).buffer : (desc.dataBuffer as GPUBuffer);
-            this.setDataBuffer(b);
+            this.setDataBuffer(resolveGPUBuffer(desc.dataBuffer));
         }
     }
 

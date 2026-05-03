@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { alignTo, assert } from "../utils";
-import { StorageBuffer } from "./buffer";
+import { alignTo, assert, isNonNegativeInt, resolveGPUBuffer } from "../utils";
+import type { StorageBuffer } from "./buffer";
 import blitRGBA8WGSL from "../wgsl/compute/blitRGBA8.wgsl";
 
 export type RGBA8BufferSource = GPUBuffer | StorageBuffer;
@@ -37,17 +37,11 @@ type CanvasState = {
     configured: boolean;
 };
 
-const isNonNegativeInt = (n: number): boolean => Number.isInteger(n) && n >= 0;
-
 const getDefaultCanvasFormat = (): GPUTextureFormat => {
     const nav = (typeof navigator !== "undefined") ? navigator : null;
     const gpu = (nav && (nav as any).gpu) ? (nav as any).gpu : null;
     if (gpu && typeof gpu.getPreferredCanvasFormat === "function") return gpu.getPreferredCanvasFormat();
     throw new Error("blitRGBA8BufferToCanvas: opts.format must be provided when navigator.gpu is unavailable.");
-};
-
-const resolveSrcBuffer = (src: RGBA8BufferSource): GPUBuffer => {
-    return (src instanceof StorageBuffer) ? src.buffer : src;
 };
 
 export class RGBA8BufferCanvasBlitter {
@@ -107,7 +101,7 @@ export class RGBA8BufferCanvasBlitter {
         const uniformOffset = this.allocParamsChunk();
         this.queue.writeBuffer(this.paramsBuffer, uniformOffset, this.paramsF32.buffer as ArrayBuffer, this.paramsF32.byteOffset, this.paramsF32.byteLength);
         const pipelineState = this.getPipeline(format);
-        const srcBuffer = resolveSrcBuffer(src);
+        const srcBuffer = resolveGPUBuffer(src);
         let bindGroup = pipelineState.bindGroups.get(srcBuffer);
         if (!bindGroup) {
             bindGroup = this.device.createBindGroup({

@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { assert } from "../utils";
+import { assert, clamp, isGPUBuffer } from "../utils";
 import type { Compute } from "../compute";
 import { normalizeScaleTransform } from "./transform";
 import type { ScaleBufferSource, ScaleSourceDescriptor, ScaleStatsRequest, ScaleStatsResult, ScaleTransform, ScaleTransformDescriptor, ScaleValueMode } from "./types";
@@ -24,18 +24,12 @@ type CacheEntry = {
     promise: Promise<ScaleStatsResult>;
 };
 
-const clamp = (x: number, lo: number, hi: number): number => x < lo ? lo : x > hi ? hi : x;
-
-const isGpuBuffer = (x: ScaleBufferSource): x is GPUBuffer => {
-    return (x as GPUBuffer).mapState !== undefined;
-};
-
 const unwrapSourceBuffer = (source: ScaleBufferSource): GPUBuffer => {
-    return isGpuBuffer(source) ? source : source.buffer;
+    return isGPUBuffer(source) ? source : source.buffer;
 };
 
 const resolveByteLength = (source: ScaleBufferSource): number | null => {
-    if (isGpuBuffer(source)) return Number(source.size);
+    if (isGPUBuffer(source)) return Number(source.size);
     return (typeof source.byteLength === "number") ? source.byteLength : null;
 };
 

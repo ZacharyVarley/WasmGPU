@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { alignTo, assert, clamp01, lerp } from "../utils";
 import type { Color4 } from "./material";
-import { alignTo, assert } from "../utils";
 
 export type BuiltinColormapName = "grayscale" | "turbo" | "viridis" | "magma" | "plasma" | "inferno";
 
@@ -146,10 +146,6 @@ const BUILTIN_RGBA8_BASE64: Record<BuiltinColormapName, string> = {
             + "/P6k/w=="
 };
 
-const clamp01 = (x: number): number => {
-    return x < 0 ? 0 : x > 1 ? 1 : x;
-};
-
 const srgbToLinearChannel = (c: number): number => {
     if (c <= 0.04045) return c / 12.92;
     return Math.pow((c + 0.055) / 1.055, 2.4);
@@ -192,10 +188,6 @@ const normalizeStops = (stops: ReadonlyArray<ColormapStop>): Array<{ t: number; 
     const last = out.length - 1;
     if (out[last].t < 1) out.push({ t: 1, color: out[last].color });
     return out;
-};
-
-const lerp = (a: number, b: number, t: number): number => {
-    return a + (b - a) * t;
 };
 
 const sampleStopsLinear = (stops: ReadonlyArray<{ t: number; color: Color4 }>, t: number): Color4 => {

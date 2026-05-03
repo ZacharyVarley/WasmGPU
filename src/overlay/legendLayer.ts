@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { clamp01, sampleColorStops } from "../utils";
 import { Colormap } from "../graphics/colormap";
 import { DataMaterial, type Color4 } from "../graphics/material";
 import { invertScaleTransformCPU, normalizeScaleTransform, type ScaleTransform } from "../scaling";
@@ -20,9 +21,6 @@ type LegendResolvedSource = {
     sample: (t: number) => Color4;
 };
 
-const clamp01 = (x: number): number => x < 0 ? 0 : x > 1 ? 1 : x;
-const lerp = (a: number, b: number, t: number): number => a + ((b - a) * t);
-
 const formatDefault = (value: number): string => {
     if (!Number.isFinite(value)) return "nan";
     const abs = Math.abs(value);
@@ -32,23 +30,7 @@ const formatDefault = (value: number): string => {
 };
 
 const sampleCustomStops = (tIn: number, stopsIn: ReadonlyArray<Color4>): Color4 => {
-    const count = Math.min(8, Math.max(2, stopsIn.length));
-    const stops: Color4[] = new Array(count);
-    for (let i = 0; i < count; i++) {
-        const src = stopsIn[Math.min(i, stopsIn.length - 1)] ?? [0, 0, 0, 1];
-        stops[i] = [src[0], src[1], src[2], src[3]];
-    }
-    const x = clamp01(tIn) * (count - 1);
-    const i0 = Math.floor(x);
-    const i1 = Math.min(count - 1, i0 + 1);
-    const f = x - i0;
-    if (i0 >= count - 1) return stops[count - 1];
-    return [
-        lerp(stops[i0][0], stops[i1][0], f),
-        lerp(stops[i0][1], stops[i1][1], f),
-        lerp(stops[i0][2], stops[i1][2], f),
-        lerp(stops[i0][3], stops[i1][3], f)
-    ];
+    return sampleColorStops(tIn, stopsIn);
 };
 
 const serializeTransform = (transform: ScaleTransform): string => {

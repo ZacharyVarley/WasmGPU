@@ -4,10 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import { nowMs } from "../utils";
 import { cameraSignatureEquals, writeCameraSignature } from "./projection";
 import type { OverlayInvalidationReason, OverlayLayer, OverlaySystemDescriptor, OverlaySystemLike, OverlayUpdateRequest } from "./types";
-
-const nowMs = (): number => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
 
 const addReasons = (set: Set<OverlayInvalidationReason>, reasons: OverlayUpdateRequest["reasons"]): void => {
     if (!reasons) return;

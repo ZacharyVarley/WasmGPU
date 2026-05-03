@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { alignTo, assert } from "../utils";
+import { alignTo, assert, resolveGPUBuffer } from "../utils";
 import { StorageBuffer } from "./buffer";
 import { ComputePipeline, storageBufferLayout, uniformBufferLayout, type BufferResource } from "./pipeline";
 import type { ComputeDispatchCommand } from "./dispatch";
@@ -121,15 +121,6 @@ export type CompactResult = {
 
 type ReduceType = "u32" | "f32";
 
-const isGpuBuffer = (r: BufferResource): r is GPUBuffer => {
-    return (r as GPUBuffer).mapState !== undefined;
-};
-
-const resolveGpuBuffer = (r: BufferResource): GPUBuffer => {
-    if (isGpuBuffer(r)) return r;
-    return r.buffer;
-};
-
 const bytesPerElement = (type: ReduceType): number => {
     return 4;
 };
@@ -212,25 +203,25 @@ export class ComputeKernels {
     }
 
     private writeScalarU32(dst: BufferResource, value: number): void {
-        const buf = resolveGpuBuffer(dst);
+        const buf = resolveGPUBuffer(dst);
         const tmp = new Uint32Array([value >>> 0]);
         this.queue.writeBuffer(buf, 0, tmp);
     }
 
     private writeScalarF32(dst: BufferResource, value: number): void {
-        const buf = resolveGpuBuffer(dst);
+        const buf = resolveGPUBuffer(dst);
         const tmp = new Float32Array([value]);
         this.queue.writeBuffer(buf, 0, tmp);
     }
 
     private writeScalarF32Bits(dst: BufferResource, bits: number): void {
-        const buf = resolveGpuBuffer(dst);
+        const buf = resolveGPUBuffer(dst);
         const tmp = new Uint32Array([bits >>> 0]);
         this.queue.writeBuffer(buf, 0, tmp);
     }
 
     private writeArgPairBits(dst: BufferResource, valueBits: number, index: number): void {
-        const buf = resolveGpuBuffer(dst);
+        const buf = resolveGPUBuffer(dst);
         const tmp = new Uint32Array([valueBits >>> 0, index >>> 0]);
         this.queue.writeBuffer(buf, 0, tmp);
     }
@@ -755,7 +746,7 @@ export class ComputeKernels {
         const valueMode = opts.valueMode ?? "component";
         assert(valueMode === "component" || valueMode === "magnitude", `extractScaleValuesF32: invalid valueMode ${String(valueMode)}`);
         const requiredSourceFloats = count > 0 ? (offset + ((count - 1) * stride) + componentCount) : 0;
-        const srcByteLength = src instanceof StorageBuffer ? src.byteLength : resolveGpuBuffer(src).size;
+        const srcByteLength = src instanceof StorageBuffer ? src.byteLength : resolveGPUBuffer(src).size;
         assert((requiredSourceFloats * 4) <= srcByteLength, `extractScaleValuesF32: source range exceeds source buffer capacity (required ${requiredSourceFloats} f32, capacity ${Math.floor(srcByteLength / 4)} f32)`);
         const values = opts.values ?? new StorageBuffer(this.device, this.queue, {
             label: "scale:extract:values",
