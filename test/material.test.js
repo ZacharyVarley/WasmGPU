@@ -5,16 +5,77 @@
  */
 
 import assert from "assert";
-import * as WasmGPU from "../dist/WasmGPU.js";
 import { create, globals } from "webgpu";
+import { UnlitMaterial, StandardMaterial, CustomMaterial, DataMaterial, Colormap, Texture2D, BlendMode, CullMode, SCALE_UNIFORM_FLOAT_COUNT } from "../dist/WasmGPU.js";
 
 Object.assign(globalThis, globals);
 const navigator = { gpu: create([]) };
 
-const numberApproxEqual = (a, b, tol = 1e-6, msg = "Numbers differ") => {
-    assert.ok(Number.isFinite(a) && Number.isFinite(b), "Expected finite numbers");
-    assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`);
+const approxEqual = (actual, expected, tol = 1e-6, msg = "Numbers differ") => {
+    assert.ok(Number.isFinite(actual) && Number.isFinite(expected), `${msg}: expected finite numbers`);
+    assert.ok(Math.abs(actual - expected) <= tol, `${msg}: ${actual} vs ${expected}`);
 };
+
+const approxArray = (actual, expected, tol = 1e-6, msg = "Arrays differ") => {
+    assert.equal(actual.length, expected.length, `${msg}: length ${actual.length} vs ${expected.length}`);
+    for (let i = 0; i < actual.length; i++) approxEqual(actual[i], expected[i], tol, `${msg} at index ${i}`);
+};
+
+const expectPackedTextureTransform = (uniforms, offset, expected, msg) => {
+    approxEqual(uniforms[offset + 0], expected.offset[0], 1e-6, `${msg}.offset.x`);
+    approxEqual(uniforms[offset + 1], expected.offset[1], 1e-6, `${msg}.offset.y`);
+    approxEqual(uniforms[offset + 2], Math.cos(expected.rotation), 1e-6, `${msg}.cos`);
+    approxEqual(uniforms[offset + 3], Math.sin(expected.rotation), 1e-6, `${msg}.sin`);
+    approxEqual(uniforms[offset + 4], expected.scale[0], 1e-6, `${msg}.scale.x`);
+    approxEqual(uniforms[offset + 5], expected.scale[1], 1e-6, `${msg}.scale.y`);
+    approxEqual(uniforms[offset + 6], expected.texCoord, 1e-6, `${msg}.texCoord`);
+    approxEqual(uniforms[offset + 7], 0, 1e-6, `${msg}.pad`);
+};
+
+const createTextureViews = (device, queue, rgba, wantSrgbView) => {
+    const texture = device.createTexture({ size: { width: 1, height: 1 }, format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, viewFormats: ["rgba8unorm-srgb"] });
+    const data = new Uint8Array(256);
+    data[0] = rgba[0];
+    data[1] = rgba[1];
+    data[2] = rgba[2];
+    data[3] = rgba[3];
+    queue.writeTexture({ texture }, data, { bytesPerRow: 256, rowsPerImage: 1 }, { width: 1, height: 1 });
+    const linear = texture.createView({ format: "rgba8unorm" });
+    const srgb = wantSrgbView ? texture.createView({ format: "rgba8unorm-srgb" }) : linear;
+    return { texture, linear, srgb };
+};
+
+const createUniformBuffer = (device, queue, data) => {
+    const buffer = device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+    return buffer;
+};
+
+const createSceneLayout = (device, withLighting) => {
+    const entries = [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }];
+    if (withLighting) entries.push({ binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } });
+    return device.createBindGroupLayout({ entries });
+};
+
+const createPipeline = (device, shaderCode, bindGroupLayouts, vertexBuffers) => {
+    const module = device.createShaderModule({ code: shaderCode });
+    return device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts }),
+        vertex: { module, entryPoint: "vs_main", buffers: vertexBuffers },
+        fragment: { module, entryPoint: "fs_main", targets: [{ format: "rgba8unorm" }] },
+        primitive: { topology: "triangle-list", cullMode: "back" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
+    });
+};
+
+const vertexBuffersWithUv1 = [
+    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+    { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+    { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] }
+];
+
+const vertexBuffersWithUv0 = vertexBuffersWithUv1.slice(0, 3);
 
 const gpu = navigator.gpu;
 assert.ok(gpu, "WebGPU not available. Ensure the dev dependency 'webgpu' is installed.");
@@ -22,228 +83,410 @@ const adapter = await gpu.requestAdapter();
 assert.ok(adapter, "Failed to acquire a WebGPU adapter");
 const device = await adapter.requestDevice();
 assert.ok(device, "Failed to acquire a WebGPU device");
-device.addEventListener("uncapturederror", (e) => {
-    throw new Error(`Uncaptured WebGPU error: ${e.error ? e.error.message : String(e)}`);
-});
+device.addEventListener("uncapturederror", (e) => { throw new Error(`Uncaptured WebGPU error: ${e.error ? e.error.message : String(e)}`); });
 
-const { UnlitMaterial, StandardMaterial, CustomMaterial, DataMaterial, Colormap } = WasmGPU;
+const fallbackSampler = device.createSampler({ addressModeU: "repeat", addressModeV: "repeat", magFilter: "linear", minFilter: "linear", mipmapFilter: "linear" });
+const white = createTextureViews(device, device.queue, [255, 255, 255, 255], true);
+const normal = createTextureViews(device, device.queue, [128, 128, 255, 255], false);
+const metallicRoughness = createTextureViews(device, device.queue, [0, 255, 255, 255], false);
+const occlusion = createTextureViews(device, device.queue, [255, 0, 0, 255], false);
 
-assert.ok(UnlitMaterial, "Missing export: UnlitMaterial");
-assert.ok(StandardMaterial, "Missing export: StandardMaterial");
-assert.ok(CustomMaterial, "Missing export: CustomMaterial");
-assert.ok(DataMaterial, "Missing export: DataMaterial");
-assert.ok(Colormap, "Missing export: Colormap");
-
-const create1x1 = (queue, rgba, wantSrgbView) => {
-    const tex = device.createTexture({
-        size: { width: 1, height: 1 },
-        format: "rgba8unorm",
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        viewFormats: ["rgba8unorm-srgb"]
-    });
-    const data = new Uint8Array(256);
-    data[0] = rgba[0];
-    data[1] = rgba[1];
-    data[2] = rgba[2];
-    data[3] = rgba[3];
-    queue.writeTexture(
-        { texture: tex },
-        data,
-        { bytesPerRow: 256, rowsPerImage: 1 },
-        { width: 1, height: 1 }
-    );
-    const linear = tex.createView({ format: "rgba8unorm" });
-    const srgb = wantSrgbView ? tex.createView({ format: "rgba8unorm-srgb" }) : linear;
-    return { tex, linear, srgb };
-};
-const fallbackSampler = device.createSampler({
-    addressModeU: "repeat",
-    addressModeV: "repeat",
-    magFilter: "linear",
-    minFilter: "linear",
-    mipmapFilter: "linear"
-});
-const white = create1x1(device.queue, [255, 255, 255, 255], true);
-const normal = create1x1(device.queue, [128, 128, 255, 255], false);
-const mr = create1x1(device.queue, [0, 255, 255, 255], false);
-const occ = create1x1(device.queue, [255, 0, 0, 255], false);
-
-// UnlitMaterial
+// 1) Material defaults, dirty state, explicit render-state overrides, and retain/release behavior.
 {
-    const m = new UnlitMaterial({
+    const defaultMaterial = new UnlitMaterial();
+    assert.equal(defaultMaterial.blendMode, BlendMode.Opaque);
+    assert.equal(defaultMaterial.cullMode, CullMode.Back);
+    assert.equal(defaultMaterial.depthWrite, true);
+    assert.equal(defaultMaterial.depthTest, true);
+    assert.equal(defaultMaterial.dirty, true);
+    defaultMaterial.markClean();
+    assert.equal(defaultMaterial.dirty, false);
+    defaultMaterial.color = [0.25, 0.5, 0.75];
+    assert.equal(defaultMaterial.dirty, true);
+    defaultMaterial.destroy();
+
+    const transparent = new StandardMaterial({ opacity: 0.4 });
+    assert.equal(transparent.blendMode, BlendMode.Transparent);
+    transparent.destroy();
+
+    const explicit = new StandardMaterial({
+        opacity: 0.4,
+        blendMode: BlendMode.Additive,
+        cullMode: CullMode.None,
+        depthWrite: false,
+        depthTest: false
+    });
+    assert.equal(explicit.blendMode, BlendMode.Additive);
+    assert.equal(explicit.cullMode, CullMode.None);
+    assert.equal(explicit.depthWrite, false);
+    assert.equal(explicit.depthTest, false);
+    explicit.retain();
+    explicit.release();
+    assert.doesNotThrow(() => explicit.getUniformData());
+    explicit.release();
+    assert.throws(() => explicit.getUniformData(), /already been released/);
+    assert.throws(() => explicit.retain(), /already been released/);
+}
+
+// 2) Unlit materials pack color, alpha, texture-transform state, and reusable GPU binding layouts.
+{
+    const transform = {
+        offset: [0.2, 0.3],
+        rotation: Math.PI / 2,
+        scale: [2, 3],
+        texCoord: 1
+    };
+    const material = new UnlitMaterial({
         color: [0.25, 0.5, 0.75],
         opacity: 0.8,
+        baseColorTextureTransform: transform,
         alphaCutoff: 0.1
     });
 
-    assert.strictEqual(m.getUniformBufferSize(), 32, "UnlitMaterial uniform buffer size should be 32 bytes");
-    const u = m.getUniformData();
-    assert.strictEqual(u.length, 8, "UnlitMaterial uniform data should have 8 floats");
-    numberApproxEqual(u[0], 0.25, 1e-6, "unlit.color.r");
-    numberApproxEqual(u[1], 0.5, 1e-6, "unlit.color.g");
-    numberApproxEqual(u[2], 0.75, 1e-6, "unlit.color.b");
-    numberApproxEqual(u[3], 0.8, 1e-6, "unlit.opacity");
-    numberApproxEqual(u[4], 0.1, 1e-6, "unlit.alphaCutoff");
+    assert.equal(material.getUniformBufferSize(), 64);
+    const uniforms = material.getUniformData();
+    assert.equal(uniforms.length, 16);
+    approxArray(Array.from(uniforms.slice(0, 5)), [0.25, 0.5, 0.75, 0.8, 0.1]);
+    expectPackedTextureTransform(uniforms, 8, transform, "unlit.baseColorTextureTransform");
 
-    const ub = device.createBuffer({
-        size: m.getUniformBufferSize(),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(ub, 0, u.buffer, u.byteOffset, u.byteLength);
+    const copy = material.baseColorTextureTransform;
+    copy.offset[0] = 99;
+    expectPackedTextureTransform(material.getUniformData(), 8, transform, "unlit.transform.clone");
+    material.baseColorTextureTransform = null;
+    expectPackedTextureTransform(material.getUniformData(), 8, { offset: [0, 0], rotation: 0, scale: [1, 1], texCoord: 0 }, "unlit.defaultTransform");
 
-    const layout = m.createBindGroupLayout(device);
-    const bg = device.createBindGroup({
-        layout,
+    const layoutA = material.createBindGroupLayout(device);
+    const layoutB = new UnlitMaterial().createBindGroupLayout(device);
+    assert.equal(layoutA, layoutB);
+
+    const uniformBuffer = createUniformBuffer(device, device.queue, material.getUniformData());
+    const bindGroup = device.createBindGroup({
+        layout: layoutA,
         entries: [
-            { binding: 0, resource: { buffer: ub } },
+            { binding: 0, resource: { buffer: uniformBuffer } },
             { binding: 1, resource: fallbackSampler },
             { binding: 2, resource: white.srgb }
         ]
     });
-    assert.ok(bg, "Expected UnlitMaterial bind group to be created");
+    assert.ok(bindGroup);
+    material.destroy();
 }
 
-// StandardMaterial
+// 3) Standard materials pack PBR state, texture transforms, extension descriptors, and feature masks.
 {
-    const m = new StandardMaterial({
-        color: [1, 0, 0],
-        opacity: 1,
-        metallic: 0.2,
-        roughness: 0.7,
-        emissive: [0, 0, 1],
-        emissiveIntensity: 0.5,
-        normalScale: 1.25,
-        occlusionStrength: 0.9,
-        alphaCutoff: 0
-    });
-
-    assert.strictEqual(m.getUniformBufferSize(), 64, "StandardMaterial uniform buffer size should be 64 bytes");
-    const u = m.getUniformData();
-    assert.strictEqual(u.length, 16, "StandardMaterial uniform data should have 16 floats");
-
-    numberApproxEqual(u[0], 1, 1e-6, "standard.color.r");
-    numberApproxEqual(u[1], 0, 1e-6, "standard.color.g");
-    numberApproxEqual(u[2], 0, 1e-6, "standard.color.b");
-    numberApproxEqual(u[3], 1, 1e-6, "standard.opacity");
-    numberApproxEqual(u[8], 0.2, 1e-6, "standard.metallic");
-    numberApproxEqual(u[9], 0.7, 1e-6, "standard.roughness");
-    numberApproxEqual(u[10], 1.25, 1e-6, "standard.normalScale");
-    numberApproxEqual(u[11], 0.9, 1e-6, "standard.occlusionStrength");
-    numberApproxEqual(u[12], 0, 1e-6, "standard.alphaCutoff");
-
-    const ub = device.createBuffer({
-        size: m.getUniformBufferSize(),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(ub, 0, u.buffer, u.byteOffset, u.byteLength);
-
-    const layout = m.createBindGroupLayout(device);
-    const bg = device.createBindGroup({
-        layout,
-        entries: [
-            { binding: 0, resource: { buffer: ub } },
-            { binding: 1, resource: fallbackSampler },
-            { binding: 2, resource: white.srgb },
-            { binding: 3, resource: fallbackSampler },
-            { binding: 4, resource: mr.linear },
-            { binding: 5, resource: fallbackSampler },
-            { binding: 6, resource: normal.linear },
-            { binding: 7, resource: fallbackSampler },
-            { binding: 8, resource: occ.linear },
-            { binding: 9, resource: fallbackSampler },
-            { binding: 10, resource: white.srgb }
-        ]
-    });
-    assert.ok(bg, "Expected StandardMaterial bind group to be created");
-}
-
-// DataMaterial
-{
-    const m = new DataMaterial({
-        scaleTransform: {
-            componentCount: 1,
-            componentIndex: 0,
-            stride: 1,
-            offset: 0,
-            mode: "linear",
-            clampMode: "none"
+    const baseTransform = { offset: [0.1, 0.2], rotation: 0, scale: [0.5, 0.75], texCoord: 1 };
+    const mrTransform = { offset: [0.3, 0.4], rotation: Math.PI / 4, scale: [1.5, 2], texCoord: 0 };
+    const normalTransform = { offset: [0, 0], rotation: Math.PI, scale: [1, 1], texCoord: 1 };
+    const occlusionTransform = { offset: [0.5, 0.25], rotation: 0.25, scale: [0.9, 0.8], texCoord: 1 };
+    const emissiveTransform = { offset: [0.75, 0.5], rotation: -0.5, scale: [1.25, 1.5], texCoord: 0 };
+    const texture = new Texture2D({ source: { kind: "bytes", bytes: new Uint8Array([255, 255, 255, 255]).buffer }, mipmaps: false });
+    const material = new StandardMaterial({
+        color: [1, 0, 0], opacity: 0.9,
+        metallic: 0.2, roughness: 0.7,
+        emissive: [0, 0, 1], emissiveIntensity: 0.5,
+        baseColorTexture: texture,
+        metallicRoughnessTexture: texture,
+        normalTexture: texture,
+        occlusionTexture: texture,
+        emissiveTexture: texture,
+        baseColorTextureTransform: baseTransform,
+        metallicRoughnessTextureTransform: mrTransform,
+        normalTextureTransform: normalTransform,
+        occlusionTextureTransform: occlusionTransform,
+        emissiveTextureTransform: emissiveTransform,
+        normalScale: 1.25, occlusionStrength: 0.9, alphaCutoff: 0.35,
+        extensions: {
+            clearcoat: { factor: 0.4, texture, roughness: 0.2, roughnessTexture: texture, normalTexture: texture, normalScale: 0.8 },
+            transmission: { factor: 0.3, texture },
+            volume: { thicknessFactor: 0.6, thicknessTexture: texture, attenuationDistance: 10, attenuationColor: [0.8, 0.7, 0.6] },
+            specular: { factor: 0.9, texture, color: [0.5, 0.6, 0.7], colorTexture: texture },
+            sheen: { color: [0.2, 0.3, 0.4], colorTexture: texture, roughness: 0.25, roughnessTexture: texture },
+            iridescence: { factor: 0.45, texture, ior: 1.4, thicknessMinimum: 120, thicknessMaximum: 420, thicknessTexture: texture },
+            anisotropy: { strength: 0.5, rotation: 0.7, texture },
+            ior: { ior: 1.55 },
+            emissiveStrength: { strength: 2 }
         }
     });
-    assert.ok(typeof m.getUniformBufferSize === "function", "DataMaterial should implement getUniformBufferSize()");
-    assert.ok(typeof m.getUniformData === "function", "DataMaterial should implement getUniformData()");
-    assert.ok(typeof m.createBindGroupLayout === "function", "DataMaterial should implement createBindGroupLayout()");
-    assert.ok(typeof m.getShaderCode === "function", "DataMaterial should implement getShaderCode()");
 
-    if (typeof m.upload === "function") {
-        m.upload(device, device.queue);
-    }
+    assert.equal(material.getUniformBufferSize(), 224);
+    const uniforms = material.getUniformData();
+    assert.equal(uniforms.length, 56);
+    approxArray(Array.from(uniforms.slice(0, 13)), [1, 0, 0, 0.9, 0, 0, 1, 0.5, 0.2, 0.7, 1.25, 0.9, 0.35]);
+    expectPackedTextureTransform(uniforms, 16, baseTransform, "standard.baseColorTextureTransform");
+    expectPackedTextureTransform(uniforms, 24, mrTransform, "standard.metallicRoughnessTextureTransform");
+    expectPackedTextureTransform(uniforms, 32, normalTransform, "standard.normalTextureTransform");
+    expectPackedTextureTransform(uniforms, 40, occlusionTransform, "standard.occlusionTextureTransform");
+    expectPackedTextureTransform(uniforms, 48, emissiveTransform, "standard.emissiveTextureTransform");
 
-    const ub = device.createBuffer({
-        size: m.getUniformBufferSize(),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    });
-    const u = m.getUniformData();
-    device.queue.writeBuffer(ub, 0, u.buffer, u.byteOffset, u.byteLength);
+    material.metallic = 2;
+    material.roughness = -1;
+    approxEqual(material.getUniformData()[8], 1);
+    approxEqual(material.getUniformData()[9], 0);
+    material.bindGroupKey = "cached";
+    material.markClean();
+    material.baseColorTexture = null;
+    assert.equal(material.bindGroupKey, null);
+    assert.equal(material.dirty, true);
+    material.baseColorTexture = texture;
 
-    const dummyDataBuffer = device.createBuffer({
-        size: 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(dummyDataBuffer, 0, new Uint8Array(4));
+    const extensions = material.extensions;
+    assert.equal(extensions.clearcoat.factor, 0.4);
+    assert.equal(extensions.volume.attenuationColor[2], 0.6);
+    extensions.clearcoat.factor = 99;
+    assert.equal(material.extensions.clearcoat.factor, 0.4);
+    assert.equal(material.getFeatureMask() & 0b11111, 0b11111);
+    assert.ok(material.getFeatureMask() > 0b11111);
+    material.setExtensions({ emissiveStrength: { strength: 3 } });
+    assert.equal(material.extensions.emissiveStrength.strength, 3);
+    assert.equal(material.extensions.clearcoat, null);
 
-    const cmap = (typeof m.getColormapForBinding === "function")
-        ? m.getColormapForBinding()
-        : Colormap.builtin("viridis");
-    const cmapRes = cmap.getGPUResources(device, device.queue);
-
-    const layout = m.createBindGroupLayout(device);
-    const bg = device.createBindGroup({
-        layout,
-        entries: [
-            { binding: 0, resource: { buffer: ub } },
-            { binding: 1, resource: { buffer: m.dataBuffer ?? dummyDataBuffer } },
-            { binding: 2, resource: cmapRes.sampler },
-            { binding: 3, resource: cmapRes.view }
-        ]
-    });
-    assert.ok(bg, "Expected DataMaterial bind group to be created");
+    texture.destroy();
+    material.destroy();
 }
 
-// CustomMaterial
+// 4) Material GPU layouts and shader code create bind groups and render pipelines through the public API.
 {
-    const m = new CustomMaterial({
+    const unlit = new UnlitMaterial();
+    const standard = new StandardMaterial();
+    const data = new DataMaterial({
+        data: new Float32Array([0, 1, 2, 3]),
+        scaleTransform: {
+            componentCount: 1, componentIndex: 0,
+            stride: 1, offset: 0,
+            mode: "linear", clampMode: "range",
+            domainMin: 0, domainMax: 3,
+            clampMin: 0, clampMax: 3
+        }
+    });
+    const custom = new CustomMaterial({
         fragmentShader: `
             @fragment
             fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-                return vec4f(custom.myValue, 0.0, 0.0, 1.0);
+                return vec4f(custom.gain, in.uv.x, 0.0, 1.0);
+            }
+        `,
+        uniforms: { gain: { type: "f32", value: 0.5 } }
+    });
+    data.upload(device, device.queue);
+
+    const unlitBuffer = createUniformBuffer(device, device.queue, unlit.getUniformData());
+    const standardBuffer = createUniformBuffer(device, device.queue, standard.getUniformData());
+    const dataBuffer = createUniformBuffer(device, device.queue, data.getUniformData());
+    const customBuffer = createUniformBuffer(device, device.queue, custom.getUniformData());
+    const dataColormap = data.getColormapForBinding().getGPUResources(device, device.queue);
+
+    assert.ok(device.createBindGroup({
+        layout: unlit.createBindGroupLayout(device),
+        entries: [
+            { binding: 0, resource: { buffer: unlitBuffer } },
+            { binding: 1, resource: fallbackSampler },
+            { binding: 2, resource: white.srgb }
+        ]
+    }));
+    assert.ok(device.createBindGroup({
+        layout: standard.createBindGroupLayout(device),
+        entries: [
+            { binding: 0, resource: { buffer: standardBuffer } },
+            { binding: 1, resource: fallbackSampler },
+            { binding: 2, resource: white.srgb },
+            { binding: 3, resource: fallbackSampler },
+            { binding: 4, resource: metallicRoughness.linear },
+            { binding: 5, resource: fallbackSampler },
+            { binding: 6, resource: normal.linear },
+            { binding: 7, resource: fallbackSampler },
+            { binding: 8, resource: occlusion.linear },
+            { binding: 9, resource: fallbackSampler },
+            { binding: 10, resource: white.srgb }
+        ]
+    }));
+    assert.ok(device.createBindGroup({
+        layout: data.createBindGroupLayout(device),
+        entries: [
+            { binding: 0, resource: { buffer: dataBuffer } },
+            { binding: 1, resource: { buffer: data.dataBuffer } },
+            { binding: 2, resource: dataColormap.sampler },
+            { binding: 3, resource: dataColormap.view }
+        ]
+    }));
+    assert.ok(device.createBindGroup({ layout: custom.createBindGroupLayout(device), entries: [{ binding: 0, resource: { buffer: customBuffer } }] }));
+
+    const sceneLayout = createSceneLayout(device, true);
+    const unlitSceneLayout = createSceneLayout(device, false);
+    assert.ok(createPipeline(device, unlit.getShaderCode(), [unlitSceneLayout, unlit.createBindGroupLayout(device)], vertexBuffersWithUv1));
+    assert.ok(createPipeline(device, standard.getShaderCode(), [sceneLayout, standard.createBindGroupLayout(device)], vertexBuffersWithUv1));
+    assert.ok(createPipeline(device, data.getShaderCode(), [sceneLayout, data.createBindGroupLayout(device)], vertexBuffersWithUv0));
+    assert.ok(createPipeline(device, custom.getShaderCode(), [unlitSceneLayout, custom.createBindGroupLayout(device)], vertexBuffersWithUv0));
+    assert.ok(unlit.getShaderCode({ instanced: true }).includes("@location(3)"));
+    assert.ok(standard.getShaderCode({ skinned: true }).includes("@group(2) @binding(0)"));
+    assert.ok(standard.getShaderCode({ skinned8: true }).includes("joints1"));
+
+    unlit.destroy();
+    standard.destroy();
+    data.destroy();
+    custom.destroy();
+}
+
+// 5) DataMaterial uploads data, exposes scale-source state, emits visual changes, and binds colormaps.
+{
+    const colormap = Colormap.fromPalette([[0, 0, 0, 1], [1, 0, 0, 1], [1, 1, 0, 1]], { filter: "nearest", colorSpace: "linear" });
+    const changes = [];
+    const material = new DataMaterial({
+        data: new Float32Array([0, 1, 2, 3, 4, 5, 6, 7]), keepCPUData: false,
+        opacity: 1.5, shading: -1, colormap,
+        scaleTransform: {
+            componentCount: 2, componentIndex: 1,
+            stride: 2, offset: 0,
+            valueMode: "component", mode: "linear", lampMode: "range",
+            domainMin: 0, domainMax: 7,
+            clampMin: 0, clampMax: 7
+        }
+    });
+    const unsubscribe = material.onVisualChange((kind) => changes.push(kind));
+    material.upload(device, device.queue);
+
+    assert.ok(material.dataBuffer);
+    assert.equal(material.getUniformBufferSize(), (SCALE_UNIFORM_FLOAT_COUNT + 4) * 4);
+    const uniforms = material.getUniformData();
+    assert.equal(uniforms.length, SCALE_UNIFORM_FLOAT_COUNT + 4);
+    approxEqual(uniforms[SCALE_UNIFORM_FLOAT_COUNT + 0], 1);
+    approxEqual(uniforms[SCALE_UNIFORM_FLOAT_COUNT + 1], 0);
+    const scaleSource = material.getScaleSourceDescriptor(77);
+    assert.equal(scaleSource.count, 4);
+    assert.equal(scaleSource.componentCount, 2);
+    assert.equal(scaleSource.componentIndex, 1);
+    assert.equal(scaleSource.stride, 2);
+    assert.equal(scaleSource.offset, 0);
+    assert.equal(scaleSource.revision, 77);
+    assert.equal(material.getColormapForBinding(), colormap);
+    assert.equal(material.getColormapKey(), `cm:${colormap.id}`);
+
+    material.setScaleTransform({
+        componentCount: 3, componentIndex: 2,
+        stride: 4, offset: 1,
+        valueMode: "magnitude", mode: "symlog", clampMode: "none",
+        domainMin: -10, domainMax: 10,
+        symlogLinThresh: 0.5, gamma: 0.8, invert: true
+    });
+    material.colormap = "magma";
+    assert.deepEqual(changes, ["scale", "colormap"]);
+    assert.equal(material.getColormapKey(), "cm:magma");
+    assert.equal(material.getColormapForBinding(), Colormap.builtin("magma"));
+
+    const externalBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    material.setDataBuffer(externalBuffer);
+    const externalSource = material.getScaleSourceDescriptor();
+    assert.equal(externalSource.buffer, externalBuffer);
+    assert.equal(externalSource.count, 1);
+    assert.throws(() => material.setData(new Float32Array()), /non-empty/);
+    unsubscribe();
+    material.setScaleTransform({ componentCount: 1, stride: 1, offset: 0 });
+    assert.deepEqual(changes, ["scale", "colormap"]);
+    material.destroy();
+}
+
+// 6) Colormaps support builtins, CPU sampling, GPU-resource caching, and external GPU views.
+{
+    const builtin = Colormap.builtin("viridis");
+    assert.equal(builtin.width, 256);
+    assert.equal(builtin.filter, "linear");
+    assert.equal(builtin.canSampleCPU, true);
+    assert.equal(builtin.getRGBA8LinearLUT().length, builtin.width * 4);
+    assert.equal(builtin.toUniformStops(99).length, 8);
+
+    const stops = Colormap.fromStops([{ t: 0, color: [0, 0, 0, 1] }, { t: 0.5, color: [0.5, 0.5, 0, 1] }, { t: 1, color: [1, 1, 1, 1] }], { resolution: 3, filter: "linear", colorSpace: "linear" });
+    approxArray(stops.sampleCPU(0.5), [128 / 255, 128 / 255, 0, 1], 1 / 255);
+    const resourcesA = stops.getGPUResources(device, device.queue);
+    const resourcesB = stops.getGPUResources(device, device.queue);
+    assert.equal(resourcesA.texture, resourcesB.texture);
+    assert.equal(resourcesA.view, resourcesB.view);
+    assert.equal(resourcesA.width, 3);
+
+    const palette = Colormap.fromPalette([[0, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]], { filter: "nearest", colorSpace: "linear" });
+    approxArray(palette.sampleCPU(0.9), [0, 0, 1, 1]);
+    assert.equal(palette.toUniformStops(3, "linear").length, 3);
+
+    const externalTexture = device.createTexture({ size: { width: 2, height: 1, depthOrArrayLayers: 1 }, dimension: "1d", format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING });
+    const externalView = externalTexture.createView({ dimension: "1d" });
+    const externalSampler = device.createSampler({ magFilter: "nearest", minFilter: "nearest" });
+    const external = Colormap.fromGPUTextureView(device, externalView, externalSampler, 2, "nearest");
+    assert.equal(external.canSampleCPU, false);
+    assert.throws(() => external.sampleCPU(0.5), /CPU sampling/);
+    const externalResources = external.getGPUResources(device, device.queue);
+    assert.equal(externalResources.texture, null);
+    assert.equal(externalResources.view, externalView);
+    assert.equal(externalResources.sampler, externalSampler);
+    externalTexture.destroy();
+}
+
+// 7) CustomMaterial aligns uniform data, updates named uniforms, and composes custom shaders.
+{
+    const material = new CustomMaterial({
+        fragmentShader: `
+            @fragment
+            fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+                return vec4f(custom.gain + in.uv.x, custom.axis.y, custom.tint.z, 1.0);
             }
         `,
         uniforms: {
-            myValue: { type: "f32", value: 0.5 }
+            gain: { type: "f32", value: 0.5 },
+            axis: { type: "vec3f", value: [1, 2, 3] },
+            tint: { type: "vec4f", value: [0.2, 0.4, 0.6, 0.8] }
         }
     });
 
-    const size = m.getUniformBufferSize();
-    assert.ok(Number.isInteger(size) && size >= 16, "CustomMaterial uniform buffer size should be >= 16 bytes");
-    const u = m.getUniformData();
-    assert.ok(u.length * 4 === size, "CustomMaterial uniform data length should match buffer size");
+    assert.equal(material.getUniformBufferSize(), 48);
+    const uniforms = material.getUniformData();
+    approxEqual(uniforms[0], 0.5);
+    approxArray(Array.from(uniforms.slice(4, 7)), [1, 2, 3]);
+    approxArray(Array.from(uniforms.slice(8, 12)), [0.2, 0.4, 0.6, 0.8]);
+    assert.deepEqual(material.getUniform("axis"), [1, 2, 3]);
+    material.markClean();
+    material.setUniform("gain", 0.75);
+    material.setUniform("missing", 1);
+    assert.equal(material.dirty, true);
+    approxEqual(material.getUniformData()[0], 0.75);
 
-    m.setUniform("myValue", 0.75);
-    const u2 = m.getUniformData();
-    numberApproxEqual(u2[0], 0.75, 1e-6, "custom.myValue");
+    const shaderCode = material.getShaderCode();
+    assert.ok(shaderCode.includes("struct CustomUniforms"));
+    assert.ok(shaderCode.includes("gain: f32"));
+    assert.ok(shaderCode.includes("axis: vec3f"));
+    assert.ok(shaderCode.includes("@fragment"));
+    const layoutA = material.createBindGroupLayout(device);
+    const layoutB = material.createBindGroupLayout(device);
+    assert.equal(layoutA, layoutB);
 
-    const ub = device.createBuffer({
-        size: m.getUniformBufferSize(),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    });
-    device.queue.writeBuffer(ub, 0, u2.buffer, u2.byteOffset, u2.byteLength);
-
-    const layout = m.createBindGroupLayout(device);
-    const bg = device.createBindGroup({
-        layout,
-        entries: [{ binding: 0, resource: { buffer: ub } }]
-    });
-    assert.ok(bg, "Expected CustomMaterial bind group to be created");
+    const uniformBuffer = createUniformBuffer(device, device.queue, material.getUniformData());
+    assert.ok(device.createBindGroup({ layout: layoutA, entries: [{ binding: 0, resource: { buffer: uniformBuffer } }] }));
+    material.destroy();
 }
 
+// 8) Cleanup releases material-owned runtime state and invalidates released material use.
+{
+    const standard = new StandardMaterial();
+    standard.uniformBuffer = device.createBuffer({ size: standard.getUniformBufferSize(), usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    standard.bindGroupKey = "cached-standard";
+    standard.pipeline = createPipeline(device, standard.getShaderCode(), [createSceneLayout(device, true), standard.createBindGroupLayout(device)], vertexBuffersWithUv1);
+    standard.destroy();
+    assert.equal(standard.uniformBuffer, null);
+    assert.equal(standard.bindGroup, null);
+    assert.equal(standard.bindGroupKey, null);
+    assert.equal(standard.pipeline, null);
+    assert.throws(() => standard.getUniformData(), /already been released/);
+
+    const data = new DataMaterial({
+        data: new Float32Array([1, 2, 3, 4]),
+        scaleTransform: { componentCount: 1, stride: 1, offset: 0 }
+    });
+    data.upload(device, device.queue);
+    assert.ok(data.dataBuffer);
+    data.destroy();
+    assert.equal(data.dataBuffer, null);
+    assert.equal(data.getScaleSourceDescriptor(), null);
+    assert.throws(() => data.upload(device, device.queue), /already been released/);
+}
+
+white.texture.destroy();
+normal.texture.destroy();
+metallicRoughness.texture.destroy();
+occlusion.texture.destroy();
 device.destroy();
