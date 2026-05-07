@@ -253,6 +253,8 @@ export class Renderer {
     private fallbackMRViewLinear!: GPUTextureView;
     private fallbackOcclusionTex!: GPUTexture;
     private fallbackOcclusionViewLinear!: GPUTextureView;
+    private fallbackAnisotropyTexture!: GPUTexture;
+    private fallbackAnisotropyViewLinear!: GPUTextureView;
     private gpuTimingSupported: boolean = false;
     private gpuTimingEnabled: boolean = false;
     private gpuQuerySet: GPUQuerySet | null = null;
@@ -986,6 +988,7 @@ export class Renderer {
         this.fallbackNormalTexture?.destroy();
         this.fallbackMRTex?.destroy();
         this.fallbackOcclusionTex?.destroy();
+        this.fallbackAnisotropyTexture?.destroy();
         this.cameraUniformBuffer?.destroy();
         for (const buffer of this.modelUniformBuffers) buffer.destroy();
         for (const buffer of this.pickUniformBuffers) buffer.destroy();
@@ -1206,6 +1209,9 @@ export class Renderer {
         const occ = create1x1([255, 0, 0, 255], false);
         this.fallbackOcclusionTex = occ.tex;
         this.fallbackOcclusionViewLinear = occ.linear;
+        const anisotropy = create1x1([255, 128, 255, 255], false);
+        this.fallbackAnisotropyTexture = anisotropy.tex;
+        this.fallbackAnisotropyViewLinear = anisotropy.linear;
     }
 
     private createSmaaResources(): void {
@@ -3131,12 +3137,20 @@ export class Renderer {
             const extensions = material.extensions;
             const cc = extensions.clearcoat;
             const sp = extensions.specular;
+            const sh = extensions.sheen;
+            const ir = extensions.iridescence;
+            const an = extensions.anisotropy;
             const ccTex = cc?.texture ?? null;
             const ccRough = cc?.roughnessTexture ?? null;
             const ccNormal = cc?.normalTexture ?? null;
             const spTex = sp?.texture ?? null;
             const spColor = sp?.colorTexture ?? null;
-            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}:${ccTex?.id ?? 0}:${ccTex?.revision ?? 0}:${ccRough?.id ?? 0}:${ccRough?.revision ?? 0}:${ccNormal?.id ?? 0}:${ccNormal?.revision ?? 0}:${spTex?.id ?? 0}:${spTex?.revision ?? 0}:${spColor?.id ?? 0}:${spColor?.revision ?? 0}`;
+            const shColor = sh?.colorTexture ?? null;
+            const shRough = sh?.roughnessTexture ?? null;
+            const irTex = ir?.texture ?? null;
+            const irThick = ir?.thicknessTexture ?? null;
+            const anTex = an?.texture ?? null;
+            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}:${ccTex?.id ?? 0}:${ccTex?.revision ?? 0}:${ccRough?.id ?? 0}:${ccRough?.revision ?? 0}:${ccNormal?.id ?? 0}:${ccNormal?.revision ?? 0}:${spTex?.id ?? 0}:${spTex?.revision ?? 0}:${spColor?.id ?? 0}:${spColor?.revision ?? 0}:${shColor?.id ?? 0}:${shColor?.revision ?? 0}:${shRough?.id ?? 0}:${shRough?.revision ?? 0}:${irTex?.id ?? 0}:${irTex?.revision ?? 0}:${irThick?.id ?? 0}:${irThick?.revision ?? 0}:${anTex?.id ?? 0}:${anTex?.revision ?? 0}`;
         }
         if (material instanceof DataMaterial) {
             const bufId = material.dataBuffer ? this.getObjectId(material.dataBuffer) : 0;
@@ -3187,11 +3201,19 @@ export class Renderer {
             const extensions = material.extensions;
             const cc = extensions.clearcoat;
             const sp = extensions.specular;
+            const sh = extensions.sheen;
+            const ir = extensions.iridescence;
+            const an = extensions.anisotropy;
             const ccTex = cc?.texture ?? null;
             const ccRough = cc?.roughnessTexture ?? null;
             const ccNormal = cc?.normalTexture ?? null;
             const spTex = sp?.texture ?? null;
             const spColor = sp?.colorTexture ?? null;
+            const shColor = sh?.colorTexture ?? null;
+            const shRough = sh?.roughnessTexture ?? null;
+            const irTex = ir?.texture ?? null;
+            const irThick = ir?.thicknessTexture ?? null;
+            const anTex = an?.texture ?? null;
             material.bindGroup = this.device.createBindGroup({
                 layout,
                 entries: [
@@ -3215,7 +3237,17 @@ export class Renderer {
                     { binding: 17, resource: spTex ? spTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
                     { binding: 18, resource: spTex ? spTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
                     { binding: 19, resource: spColor ? spColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 20, resource: spColor ? spColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb }
+                    { binding: 20, resource: spColor ? spColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                    { binding: 21, resource: shColor ? shColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 22, resource: shColor ? shColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                    { binding: 23, resource: shRough ? shRough.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 24, resource: shRough ? shRough.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 25, resource: irTex ? irTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 26, resource: irTex ? irTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 27, resource: irThick ? irThick.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 28, resource: irThick ? irThick.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 29, resource: anTex ? anTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 30, resource: anTex ? anTex.getView(this.device, this.queue, "linear", this.fallbackAnisotropyViewLinear) : this.fallbackAnisotropyViewLinear }
                 ]
             });
             material.bindGroupKey = key;

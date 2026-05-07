@@ -31,7 +31,20 @@ struct MaterialUniforms {
     specularTransform0: vec4f,
     specularTransform1: vec4f,
     specularColorTransform0: vec4f,
-    specularColorTransform1: vec4f
+    specularColorTransform1: vec4f,
+    sheenParams: vec4f,
+    iridescenceParams: vec4f,
+    anisotropyParams: vec4f,
+    sheenColorTransform0: vec4f,
+    sheenColorTransform1: vec4f,
+    sheenRoughnessTransform0: vec4f,
+    sheenRoughnessTransform1: vec4f,
+    iridescenceTransform0: vec4f,
+    iridescenceTransform1: vec4f,
+    iridescenceThicknessTransform0: vec4f,
+    iridescenceThicknessTransform1: vec4f,
+    anisotropyTransform0: vec4f,
+    anisotropyTransform1: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -55,6 +68,16 @@ struct MaterialUniforms {
 @group(1) @binding(18) var specularTex: texture_2d<f32>;
 @group(1) @binding(19) var specularColorSampler: sampler;
 @group(1) @binding(20) var specularColorTex: texture_2d<f32>;
+@group(1) @binding(21) var sheenColorSampler: sampler;
+@group(1) @binding(22) var sheenColorTex: texture_2d<f32>;
+@group(1) @binding(23) var sheenRoughnessSampler: sampler;
+@group(1) @binding(24) var sheenRoughnessTex: texture_2d<f32>;
+@group(1) @binding(25) var iridescenceSampler: sampler;
+@group(1) @binding(26) var iridescenceTex: texture_2d<f32>;
+@group(1) @binding(27) var iridescenceThicknessSampler: sampler;
+@group(1) @binding(28) var iridescenceThicknessTex: texture_2d<f32>;
+@group(1) @binding(29) var anisotropySampler: sampler;
+@group(1) @binding(30) var anisotropyTex: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3f,
@@ -137,7 +160,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.position = camera.viewProjection * worldPos4;
     out.worldPos = worldPos4.xyz;
     out.normal = normalize((model.normalMatrix * vec4f(localNormal, 0.0)).xyz);
-    out.tangent = vec4f(normalize((model.normalMatrix * vec4f(localTangent, 0.0)).xyz), in.tangent.w);
+    out.tangent = vec4f((model.normalMatrix * vec4f(localTangent, 0.0)).xyz, in.tangent.w);
     out.uv = in.uv;
     out.uv1 = in.uv1;
     return out;
@@ -155,6 +178,10 @@ fn applyTextureTransform(uv0: vec2f, uv1: vec2f, transform0: vec4f, transform1: 
 
 fn fresnelSchlick(cosTheta: f32, F0: vec3f, F90: vec3f) -> vec3f {
     return F0 + (F90 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+fn maxComponent(v: vec3f) -> f32 {
+    return max(max(v.x, v.y), v.z);
 }
 
 fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
@@ -178,7 +205,21 @@ fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
     return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
 }
 
-fn applyDerivativeNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+struct TangentFrame {
+    t: vec3f,
+    b: vec3f,
+    n: vec3f
+};
+
+fn fallbackTangentFrame(N: vec3f) -> TangentFrame {
+    let n = normalize(N);
+    let axis = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.x) < 0.9);
+    let t = normalize(cross(axis, n));
+    let b = cross(n, t);
+    return TangentFrame(t, b, n);
+}
+
+fn derivativeTangentFrame(N: vec3f, worldPos: vec3f, uv: vec2f) -> TangentFrame {
     let n = normalize(N);
     let dp1 = dpdx(worldPos);
     let dp2 = dpdy(worldPos);
@@ -190,30 +231,164 @@ fn applyDerivativeNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: 
     let B = (dp2perp * duv1.y) + (dp1perp * duv2.y);
     let frameLength2 = max(dot(T, T), dot(B, B));
     if (frameLength2 <= 1e-20) {
-        return n;
+        return fallbackTangentFrame(n);
     }
     let frameScale = 1.0 / sqrt(frameLength2);
-    let tbn = mat3x3f(T * frameScale, B * frameScale, n);
-    var ns = normalSample * 2.0 - vec3f(1.0);
-    ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
-    return normalize(tbn * ns);
+    return TangentFrame(T * frameScale, B * frameScale, n);
+}
+
+fn buildTangentFrame(N: vec3f, tangent: vec4f, worldPos: vec3f, uv: vec2f) -> TangentFrame {
+    let n = normalize(N);
+    let derivativeFrame = derivativeTangentFrame(n, worldPos, uv);
+    var t = tangent.xyz - n * dot(n, tangent.xyz);
+    let tLen2 = dot(t, t);
+    if (tLen2 <= 1e-20) {
+        return derivativeFrame;
+    }
+    t = t * inverseSqrt(tLen2);
+    let b = normalize(cross(n, t)) * select(-1.0, 1.0, tangent.w >= 0.0);
+    return TangentFrame(t, b, n);
 }
 
 fn applyNormalMap(N: vec3f, tangent: vec4f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
-    let n = normalize(N);
-    let derivativeNormal = applyDerivativeNormalMap(n, worldPos, uv, normalSample, normalScale);
-    var t = tangent.xyz - n * dot(n, tangent.xyz);
-    let tLen2 = dot(t, t);
-    t = t * inverseSqrt(max(tLen2, 1e-20));
-    let b = cross(n, t) * select(-1.0, 1.0, tangent.w >= 0.0);
+    let frame = buildTangentFrame(N, tangent, worldPos, uv);
     var ns = normalSample * 2.0 - vec3f(1.0);
     ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
-    let tangentNormal = normalize(t * ns.x + b * ns.y + n * ns.z);
-    return select(derivativeNormal, tangentNormal, tLen2 > 1e-20);
+    return normalize(frame.t * ns.x + frame.b * ns.y + frame.n * ns.z);
 }
 
-fn maxComponent(v: vec3f) -> f32 {
-    return max(max(v.x, v.y), v.z);
+fn sqr(v: f32) -> f32 {
+    return v * v;
+}
+
+fn iorToFresnel0(transmittedIor: f32, incidentIor: f32) -> f32 {
+    let r = (transmittedIor - incidentIor) / (transmittedIor + incidentIor);
+    return r * r;
+}
+
+fn iorToFresnel0Vec(transmittedIor: vec3f, incidentIor: f32) -> vec3f {
+    let r = (transmittedIor - vec3f(incidentIor)) / (transmittedIor + vec3f(incidentIor));
+    return r * r;
+}
+
+fn fresnel0ToIor(F0: vec3f) -> vec3f {
+    let sqrtF0 = sqrt(clamp(F0, vec3f(0.0), vec3f(0.9999)));
+    return (vec3f(1.0) + sqrtF0) / max(vec3f(1.0) - sqrtF0, vec3f(1e-4));
+}
+
+fn fresnelSchlickScalar(cosTheta: f32, F0: f32) -> f32 {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+fn sanitizeReflectance(value: vec3f, fallback: vec3f) -> vec3f {
+    var result = clamp(fallback, vec3f(0.0), vec3f(1.0));
+    if (value.x == value.x && abs(value.x) < 1.0e6) {
+        result.x = clamp(value.x, 0.0, 1.0);
+    }
+    if (value.y == value.y && abs(value.y) < 1.0e6) {
+        result.y = clamp(value.y, 0.0, 1.0);
+    }
+    if (value.z == value.z && abs(value.z) < 1.0e6) {
+        result.z = clamp(value.z, 0.0, 1.0);
+    }
+    return result;
+}
+
+fn evalIridescenceSensitivity(OPD: f32, shift: vec3f) -> vec3f {
+    let phase = 2.0 * PI * OPD * 1.0e-9;
+    let phase2 = phase * phase;
+    let val = vec3f(5.4856e-13, 4.4201e-13, 5.2481e-13);
+    let pos = vec3f(1.6810e+06, 1.7953e+06, 2.2084e+06);
+    let variance = vec3f(4.3278e+09, 9.3046e+09, 6.6121e+09);
+    var xyz = val * sqrt(2.0 * PI * variance) * cos(pos * phase + shift) * exp(-phase2 * variance);
+    xyz.x += 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09) * cos(2.2399e+06 * phase + shift.x) * exp(-4.5282e+09 * phase2);
+    xyz /= 1.0685e-7;
+    return vec3f(
+        3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
+        -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
+        0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z
+    );
+}
+
+fn iridescentFresnel(outsideIor: f32, iridescenceIor: f32, baseF0: vec3f, thickness: f32, cosTheta1: f32) -> vec3f {
+    let safeCosTheta1 = clamp(cosTheta1, 0.0, 1.0);
+    let thinFilmIor = mix(outsideIor, iridescenceIor, smoothstep(0.0, 0.03, thickness));
+    let R0 = iorToFresnel0(thinFilmIor, outsideIor);
+    let R12 = fresnelSchlickScalar(safeCosTheta1, R0);
+    let T121 = 1.0 - R12;
+    let baseIor = fresnel0ToIor(baseF0);
+    let R1 = iorToFresnel0Vec(baseIor, thinFilmIor);
+    let eta = outsideIor / thinFilmIor;
+    let sinTheta2Sq = eta * eta * (1.0 - safeCosTheta1 * safeCosTheta1);
+    let cosTheta2Sq = 1.0 - sinTheta2Sq;
+    if (cosTheta2Sq < 0.0) {
+        return vec3f(1.0);
+    }
+    let cosTheta2 = sqrt(cosTheta2Sq);
+    let R23 = fresnelSchlick(cosTheta2, R1, vec3f(1.0));
+    let phi12 = select(0.0, PI, thinFilmIor < outsideIor);
+    let phi21 = PI - phi12;
+    let phi23 = vec3f(
+        select(0.0, PI, baseIor.x < thinFilmIor),
+        select(0.0, PI, baseIor.y < thinFilmIor),
+        select(0.0, PI, baseIor.z < thinFilmIor)
+    );
+    let phi = vec3f(phi21) + phi23;
+    let OPD = 2.0 * thinFilmIor * thickness * cosTheta2;
+    let R123 = clamp(vec3f(R12) * R23, vec3f(1e-5), vec3f(0.9999));
+    let r123 = sqrt(R123);
+    let Rs = sqr(T121) * R23 / (vec3f(1.0) - R123);
+    var I = vec3f(R12) + Rs;
+    var Cm = Rs - vec3f(T121);
+    Cm *= r123;
+    I += Cm * 2.0 * evalIridescenceSensitivity(OPD, phi);
+    Cm *= r123;
+    I += Cm * 2.0 * evalIridescenceSensitivity(2.0 * OPD, 2.0 * phi);
+    return sanitizeReflectance(I, baseF0);
+}
+
+fn distributionGGXAnisotropic(NdotH: f32, TdotH: f32, BdotH: f32, at: f32, ab: f32) -> f32 {
+    let a2 = at * ab;
+    let f = vec3f(ab * TdotH, at * BdotH, a2 * NdotH);
+    let w2 = a2 / max(dot(f, f), 1e-8);
+    return a2 * w2 * w2 / PI;
+}
+
+fn visibilityGGXAnisotropic(NdotL: f32, NdotV: f32, BdotV: f32, TdotV: f32, TdotL: f32, BdotL: f32, at: f32, ab: f32) -> f32 {
+    let GGXV = NdotL * length(vec3f(at * TdotV, ab * BdotV, NdotV));
+    let GGXL = NdotV * length(vec3f(at * TdotL, ab * BdotL, NdotL));
+    return clamp(0.5 / max(GGXV + GGXL, 1e-8), 0.0, 1.0);
+}
+
+fn sheenDistribution(NdotH: f32, sheenRoughness: f32) -> f32 {
+    let alphaG = max(sheenRoughness * sheenRoughness, 1e-4);
+    let invR = 1.0 / alphaG;
+    let sin2h = max(1.0 - NdotH * NdotH, 0.0);
+    return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * PI);
+}
+
+fn sheenL(cosTheta: f32, alphaG: f32) -> f32 {
+    let oneMinusAlphaSq = sqr(1.0 - alphaG);
+    let a = mix(21.5473, 25.3245, oneMinusAlphaSq);
+    let b = mix(3.82987, 3.32435, oneMinusAlphaSq);
+    let c = mix(0.19823, 0.16801, oneMinusAlphaSq);
+    let d = mix(-1.97760, -1.27393, oneMinusAlphaSq);
+    let e = mix(-4.32054, -4.85967, oneMinusAlphaSq);
+    return a / (1.0 + b * pow(cosTheta, c)) + d * cosTheta + e;
+}
+
+fn sheenLambda(cosTheta: f32, alphaG: f32) -> f32 {
+    let safeCosTheta = clamp(cosTheta, 1e-4, 1.0);
+    if (safeCosTheta < 0.5) {
+        return exp(sheenL(safeCosTheta, alphaG));
+    }
+    return exp(2.0 * sheenL(0.5, alphaG) - sheenL(1.0 - safeCosTheta, alphaG));
+}
+
+fn sheenVisibility(NdotL: f32, NdotV: f32, sheenRoughness: f32) -> f32 {
+    let alphaG = max(sheenRoughness * sheenRoughness, 1e-4);
+    let visibility = 1.0 + sheenLambda(NdotV, alphaG) + sheenLambda(NdotL, alphaG);
+    return clamp(1.0 / max(visibility * 4.0 * NdotV * NdotL, 1e-6), 0.0, 1.0);
 }
 
 fn dielectricF0FromIor(ior: f32) -> f32 {
@@ -254,6 +429,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let clearcoatNormalUv = applyTextureTransform(in.uv, in.uv1, material.clearcoatNormalTransform0, material.clearcoatNormalTransform1);
     let specularUv = applyTextureTransform(in.uv, in.uv1, material.specularTransform0, material.specularTransform1);
     let specularColorUv = applyTextureTransform(in.uv, in.uv1, material.specularColorTransform0, material.specularColorTransform1);
+    let sheenColorUv = applyTextureTransform(in.uv, in.uv1, material.sheenColorTransform0, material.sheenColorTransform1);
+    let sheenRoughnessUv = applyTextureTransform(in.uv, in.uv1, material.sheenRoughnessTransform0, material.sheenRoughnessTransform1);
+    let iridescenceUv = applyTextureTransform(in.uv, in.uv1, material.iridescenceTransform0, material.iridescenceTransform1);
+    let iridescenceThicknessUv = applyTextureTransform(in.uv, in.uv1, material.iridescenceThicknessTransform0, material.iridescenceThicknessTransform1);
+    let anisotropyUv = applyTextureTransform(in.uv, in.uv1, material.anisotropyTransform0, material.anisotropyTransform1);
     let baseSample = textureSample(baseColorTex, baseColorSampler, baseUv);
     let baseColor = material.color * baseSample;
     let alphaCutoff = material.params2.x;
@@ -275,12 +455,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let clearcoatNormal = applyNormalMap(in.normal, in.tangent, in.worldPos, clearcoatNormalUv, clearcoatNormalSample, material.clearcoatParams.z);
     let specularStrength = clamp(material.specularParams.x * textureSample(specularTex, specularSampler, specularUv).a, 0.0, 1.0);
     let specularColor = material.specularParams.yzw * textureSample(specularColorTex, specularColorSampler, specularColorUv).rgb;
+    let sheenColor = material.sheenParams.rgb * textureSample(sheenColorTex, sheenColorSampler, sheenColorUv).rgb;
+    let sheenRoughness = clamp(material.sheenParams.w * textureSample(sheenRoughnessTex, sheenRoughnessSampler, sheenRoughnessUv).a, 0.0, 1.0);
+    let iridescence = clamp(material.iridescenceParams.x * textureSample(iridescenceTex, iridescenceSampler, iridescenceUv).r, 0.0, 1.0);
+    let iridescenceThicknessSample = textureSample(iridescenceThicknessTex, iridescenceThicknessSampler, iridescenceThicknessUv).g;
+    let iridescenceThickness = mix(material.iridescenceParams.z, material.iridescenceParams.w, iridescenceThicknessSample);
+    let anisotropySample = textureSample(anisotropyTex, anisotropySampler, anisotropyUv).rgb;
+    let anisotropyStrength = clamp(material.anisotropyParams.x * anisotropySample.b, 0.0, 1.0);
+    var anisotropyDirection = anisotropySample.rg * 2.0 - vec2f(1.0);
+    let anisotropyDirectionLength2 = dot(anisotropyDirection, anisotropyDirection);
+    anisotropyDirection = select(vec2f(1.0, 0.0), anisotropyDirection * inverseSqrt(max(anisotropyDirectionLength2, 1e-8)), anisotropyDirectionLength2 > 1e-8);
+    anisotropyDirection = vec2f(
+        material.anisotropyParams.y * anisotropyDirection.x - material.anisotropyParams.z * anisotropyDirection.y,
+        material.anisotropyParams.z * anisotropyDirection.x + material.anisotropyParams.y * anisotropyDirection.y
+    );
     let albedo = baseColor.rgb;
     let V = normalize(camera.position - in.worldPos);
     let dielectricF0 = dielectricF0FromIor(material.extensionParams.x);
     let dielectricF0Color = min(vec3f(dielectricF0) * specularColor, vec3f(1.0)) * specularStrength;
     let F0 = mix(dielectricF0Color, albedo, metallic);
     let F90 = mix(vec3f(specularStrength), vec3f(1.0), metallic);
+    let viewNdotV = max(dot(N, V), 0.0);
+    var iridescenceFresnelColor = F0;
+    if (iridescence > 1e-5 && iridescenceThickness > 0.0) {
+        iridescenceFresnelColor = iridescentFresnel(1.0, material.iridescenceParams.y, F0, iridescenceThickness, viewNdotV);
+    }
+    let geometricN = normalize(in.normal);
+    let anisotropyFrame = buildTangentFrame(geometricN, in.tangent, in.worldPos, anisotropyUv);
     let clearcoatViewFresnel = clamp(clearcoat * (0.04 + 0.96 * pow(1.0 - abs(dot(V, clearcoatNormal)), 5.0)), 0.0, 1.0);
     var Lo = lighting.ambient.rgb * albedo * ao;
     for (var i = 0u; i < lighting.lightCount; i++) {
@@ -306,15 +507,44 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         }
         let H = normalize(V + L);
         let radiance = light.color.rgb * light.color.a * attenuation;
-        let NDF = distributionGGX(N, H, roughness);
-        let G = geometrySmith(N, V, L, roughness);
-        let F = fresnelSchlick(max(dot(H, V), 0.0), F0, F90);
-        let numerator = NDF * G * F;
-        let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-        let specularBrdf = numerator / denominator;
-        let kD = vec3f((1.0 - maxComponent(F)) * (1.0 - metallic));
         let NdotL = max(dot(N, L), 0.0);
-        let baseContribution = (kD * albedo / PI + specularBrdf) * radiance * NdotL;
+        let NdotV = viewNdotV;
+        let NdotH = max(dot(N, H), 0.0);
+        let VdotH = max(dot(V, H), 0.0);
+        let baseF = fresnelSchlick(VdotH, F0, F90);
+        var F = baseF;
+        if (iridescence > 1e-5) {
+            F = mix(baseF, iridescenceFresnelColor, iridescence);
+        }
+        var specularBrdf: vec3f;
+        if (anisotropyStrength > 1e-5) {
+            let anisotropicT = normalize(anisotropyFrame.t * anisotropyDirection.x + anisotropyFrame.b * anisotropyDirection.y);
+            let anisotropicB = normalize(cross(geometricN, anisotropicT));
+            let TdotV = dot(anisotropicT, V);
+            let BdotV = dot(anisotropicB, V);
+            let TdotL = dot(anisotropicT, L);
+            let BdotL = dot(anisotropicB, L);
+            let TdotH = dot(anisotropicT, H);
+            let BdotH = dot(anisotropicB, H);
+            let alphaRoughness = max(roughness * roughness, 0.001);
+            let at = mix(alphaRoughness, 1.0, anisotropyStrength * anisotropyStrength);
+            let ab = alphaRoughness;
+            let D = distributionGGXAnisotropic(NdotH, TdotH, BdotH, at, ab);
+            let Vg = visibilityGGXAnisotropic(NdotL, NdotV, BdotV, TdotV, TdotL, BdotL, at, ab);
+            specularBrdf = F * D * Vg;
+        } else {
+            let NDF = distributionGGX(N, H, roughness);
+            let G = geometrySmith(N, V, L, roughness);
+            let numerator = NDF * G * F;
+            let denominator = 4.0 * NdotV * NdotL + 0.0001;
+            specularBrdf = numerator / denominator;
+        }
+        let sheenD = sheenDistribution(NdotH, sheenRoughness);
+        let sheenV = sheenVisibility(NdotL, NdotV, sheenRoughness);
+        let sheenBrdf = sheenColor * sheenD * sheenV;
+        let diffuseEnergy = max(1.0 - maxComponent(F), 0.0);
+        let kD = vec3f(diffuseEnergy) * (1.0 - metallic);
+        let baseContribution = (kD * albedo / PI + specularBrdf + sheenBrdf) * radiance * NdotL;
         let clearcoatNdotL = max(dot(clearcoatNormal, L), 0.0);
         let clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
         let clearcoatNDF = distributionGGX(clearcoatNormal, H, clearcoatRoughness);

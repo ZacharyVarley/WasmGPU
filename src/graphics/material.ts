@@ -317,23 +317,28 @@ export type StandardMaterialSpecularExtensionDescriptor = {
 export type StandardMaterialSheenExtensionDescriptor = {
     color?: Color;
     colorTexture?: Texture2D | null;
+    colorTextureTransform?: TextureTransformDescriptor | null;
     roughness?: number;
     roughnessTexture?: Texture2D | null;
+    roughnessTextureTransform?: TextureTransformDescriptor | null;
 };
 
 export type StandardMaterialIridescenceExtensionDescriptor = {
     factor?: number;
     texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
     ior?: number;
     thicknessMinimum?: number;
     thicknessMaximum?: number;
     thicknessTexture?: Texture2D | null;
+    thicknessTextureTransform?: TextureTransformDescriptor | null;
 };
 
 export type StandardMaterialAnisotropyExtensionDescriptor = {
     strength?: number;
     rotation?: number;
     texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
 };
 
 export type StandardMaterialIorExtensionDescriptor = {
@@ -392,23 +397,28 @@ export type StandardMaterialSpecularExtension = Readonly<{
 export type StandardMaterialSheenExtension = Readonly<{
     color: Color;
     colorTexture: Texture2D | null;
+    colorTextureTransform: TextureTransform;
     roughness: number;
     roughnessTexture: Texture2D | null;
+    roughnessTextureTransform: TextureTransform;
 }>;
 
 export type StandardMaterialIridescenceExtension = Readonly<{
     factor: number;
     texture: Texture2D | null;
+    textureTransform: TextureTransform;
     ior: number;
     thicknessMinimum: number;
     thicknessMaximum: number;
     thicknessTexture: Texture2D | null;
+    thicknessTextureTransform: TextureTransform;
 }>;
 
 export type StandardMaterialAnisotropyExtension = Readonly<{
     strength: number;
     rotation: number;
     texture: Texture2D | null;
+    textureTransform: TextureTransform;
 }>;
 
 export type StandardMaterialIorExtension = Readonly<{
@@ -521,21 +531,26 @@ const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtens
         sheen: descriptor?.sheen ? {
             color: cloneColor(descriptor.sheen.color, [0, 0, 0]),
             colorTexture: descriptor.sheen.colorTexture ?? null,
+            colorTextureTransform: normalizeTextureTransform(descriptor.sheen.colorTextureTransform),
             roughness: descriptor.sheen.roughness ?? 0,
-            roughnessTexture: descriptor.sheen.roughnessTexture ?? null
+            roughnessTexture: descriptor.sheen.roughnessTexture ?? null,
+            roughnessTextureTransform: normalizeTextureTransform(descriptor.sheen.roughnessTextureTransform)
         } : null,
         iridescence: descriptor?.iridescence ? {
             factor: descriptor.iridescence.factor ?? 0,
             texture: descriptor.iridescence.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.iridescence.textureTransform),
             ior: descriptor.iridescence.ior ?? 1.3,
             thicknessMinimum: descriptor.iridescence.thicknessMinimum ?? 100,
             thicknessMaximum: descriptor.iridescence.thicknessMaximum ?? 400,
-            thicknessTexture: descriptor.iridescence.thicknessTexture ?? null
+            thicknessTexture: descriptor.iridescence.thicknessTexture ?? null,
+            thicknessTextureTransform: normalizeTextureTransform(descriptor.iridescence.thicknessTextureTransform)
         } : null,
         anisotropy: descriptor?.anisotropy ? {
             strength: descriptor.anisotropy.strength ?? 0,
             rotation: descriptor.anisotropy.rotation ?? 0,
-            texture: descriptor.anisotropy.texture ?? null
+            texture: descriptor.anisotropy.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.anisotropy.textureTransform)
         } : null,
         ior: descriptor?.ior ? {
             ior: descriptor.ior.ior ?? 1.5
@@ -573,8 +588,8 @@ export class StandardMaterial extends Material {
     private _extensions: StandardMaterialExtensions;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
-    private static readonly UNIFORM_FLOAT_COUNT = 108;
-    private static readonly TEXTURE_BINDING_COUNT = 10;
+    private static readonly UNIFORM_FLOAT_COUNT = 160;
+    private static readonly TEXTURE_BINDING_COUNT = 15;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
         super({
@@ -870,6 +885,9 @@ export class StandardMaterial extends Material {
         packTextureTransform(f, 48, this._emissiveTextureTransform);
         const clearcoat = this._extensions.clearcoat;
         const specular = this._extensions.specular;
+        const sheen = this._extensions.sheen;
+        const iridescence = this._extensions.iridescence;
+        const anisotropy = this._extensions.anisotropy;
         const ior = this._extensions.ior;
         const emissiveStrength = this._extensions.emissiveStrength;
         f[56] = clearcoat?.factor ?? 0;
@@ -889,6 +907,23 @@ export class StandardMaterial extends Material {
         packTextureTransform(f, 84, clearcoat?.normalTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         packTextureTransform(f, 92, specular?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         packTextureTransform(f, 100, specular?.colorTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        f[108] = sheen?.color[0] ?? 0;
+        f[109] = sheen?.color[1] ?? 0;
+        f[110] = sheen?.color[2] ?? 0;
+        f[111] = sheen?.roughness ?? 0;
+        f[112] = iridescence?.factor ?? 0;
+        f[113] = iridescence?.ior ?? 1.3;
+        f[114] = iridescence?.thicknessMinimum ?? 100;
+        f[115] = iridescence?.thicknessMaximum ?? 400;
+        f[116] = anisotropy?.strength ?? 0;
+        f[117] = Math.cos(anisotropy?.rotation ?? 0);
+        f[118] = Math.sin(anisotropy?.rotation ?? 0);
+        f[119] = 0;
+        packTextureTransform(f, 120, sheen?.colorTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 128, sheen?.roughnessTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 136, iridescence?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 144, iridescence?.thicknessTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 152, anisotropy?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         return f;
     }
 

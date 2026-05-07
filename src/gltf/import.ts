@@ -195,6 +195,14 @@ const validateMaterialTextureCoordinates = (mat: GltfMaterial | undefined, attrs
     const specular = (mat.extensions as any)?.KHR_materials_specular as any;
     validateInfo(specular?.specularTexture as any, "specular");
     validateInfo(specular?.specularColorTexture as any, "specularColor");
+    const sheen = (mat.extensions as any)?.KHR_materials_sheen as any;
+    validateInfo(sheen?.sheenColorTexture as any, "sheenColor");
+    validateInfo(sheen?.sheenRoughnessTexture as any, "sheenRoughness");
+    const iridescence = (mat.extensions as any)?.KHR_materials_iridescence as any;
+    validateInfo(iridescence?.iridescenceTexture as any, "iridescence");
+    validateInfo(iridescence?.iridescenceThicknessTexture as any, "iridescenceThickness");
+    const anisotropy = (mat.extensions as any)?.KHR_materials_anisotropy as any;
+    validateInfo(anisotropy?.anisotropyTexture as any, "anisotropy");
 };
 
 const GL_NEAREST = 9728;
@@ -351,9 +359,9 @@ const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportSt
     KHR_materials_transmission: "deferred",
     KHR_materials_volume: "deferred",
     KHR_materials_specular: "supported",
-    KHR_materials_sheen: "deferred",
-    KHR_materials_iridescence: "deferred",
-    KHR_materials_anisotropy: "deferred",
+    KHR_materials_sheen: "supported",
+    KHR_materials_iridescence: "supported",
+    KHR_materials_anisotropy: "supported",
     KHR_materials_ior: "supported",
     KHR_materials_variants: "supported",
     KHR_node_visibility: "deferred",
@@ -568,15 +576,20 @@ const triangulateFan = (indices: Uint32Array): Uint32Array => {
 const getMaterialTangentTexCoords = (mat: GltfMaterial | undefined): number[] => {
     if (!mat || isMaterialUnlit(mat)) return [];
     const texCoords: number[] = [];
-    const addInfo = (info: any | undefined): void => {
-        if (!info) return;
-        const texCoord = getTextureInfoTexCoord(info);
+    const addTexCoord = (texCoord: number): void => {
         const resolvedTexCoord = texCoord === 1 ? 1 : 0;
         if (!texCoords.includes(resolvedTexCoord)) texCoords.push(resolvedTexCoord);
+    };
+    const addInfo = (info: any | undefined): void => {
+        if (!info) return;
+        addTexCoord(getTextureInfoTexCoord(info));
     };
     addInfo(mat.normalTexture as any);
     const clearcoat = (mat.extensions as any)?.KHR_materials_clearcoat as any;
     addInfo(clearcoat?.clearcoatNormalTexture);
+    const anisotropy = (mat.extensions as any)?.KHR_materials_anisotropy as any;
+    if (anisotropy?.anisotropyTexture) addInfo(anisotropy.anisotropyTexture);
+    else if (anisotropy && texCoords.length === 0) addTexCoord(0);
     return texCoords;
 };
 
@@ -715,6 +728,9 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const emissiveStrength = emissiveStrengthExt?.emissiveStrength ?? 1;
     const clearcoatExt = materialExtensions.KHR_materials_clearcoat as any;
     const specularExt = materialExtensions.KHR_materials_specular as any;
+    const sheenExt = materialExtensions.KHR_materials_sheen as any;
+    const iridescenceExt = materialExtensions.KHR_materials_iridescence as any;
+    const anisotropyExt = materialExtensions.KHR_materials_anisotropy as any;
     const iorExt = materialExtensions.KHR_materials_ior as { ior?: number } | undefined;
     const emissiveIntensity = 1;
     const standardMaterialExtensions: StandardMaterialExtensionsDescriptor = {};
@@ -740,6 +756,37 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             color: [specularColorFactor[0] ?? 1, specularColorFactor[1] ?? 1, specularColorFactor[2] ?? 1],
             colorTexture: getTex(specularExt.specularColorTexture, "specularColor"),
             colorTextureTransform: getTextureTransform(specularExt.specularColorTexture)
+        };
+    }
+    if (sheenExt) {
+        const sheenColorFactor = Array.isArray(sheenExt.sheenColorFactor) ? sheenExt.sheenColorFactor : [0, 0, 0];
+        standardMaterialExtensions.sheen = {
+            color: [sheenColorFactor[0] ?? 0, sheenColorFactor[1] ?? 0, sheenColorFactor[2] ?? 0],
+            colorTexture: getTex(sheenExt.sheenColorTexture, "sheenColor"),
+            colorTextureTransform: getTextureTransform(sheenExt.sheenColorTexture),
+            roughness: sheenExt.sheenRoughnessFactor ?? 0,
+            roughnessTexture: getTex(sheenExt.sheenRoughnessTexture, "sheenRoughness"),
+            roughnessTextureTransform: getTextureTransform(sheenExt.sheenRoughnessTexture)
+        };
+    }
+    if (iridescenceExt) {
+        standardMaterialExtensions.iridescence = {
+            factor: iridescenceExt.iridescenceFactor ?? 0,
+            texture: getTex(iridescenceExt.iridescenceTexture, "iridescence"),
+            textureTransform: getTextureTransform(iridescenceExt.iridescenceTexture),
+            ior: iridescenceExt.iridescenceIor ?? 1.3,
+            thicknessMinimum: iridescenceExt.iridescenceThicknessMinimum ?? 100,
+            thicknessMaximum: iridescenceExt.iridescenceThicknessMaximum ?? 400,
+            thicknessTexture: getTex(iridescenceExt.iridescenceThicknessTexture, "iridescenceThickness"),
+            thicknessTextureTransform: getTextureTransform(iridescenceExt.iridescenceThicknessTexture)
+        };
+    }
+    if (anisotropyExt) {
+        standardMaterialExtensions.anisotropy = {
+            strength: anisotropyExt.anisotropyStrength ?? 0,
+            rotation: anisotropyExt.anisotropyRotation ?? 0,
+            texture: getTex(anisotropyExt.anisotropyTexture, "anisotropy"),
+            textureTransform: getTextureTransform(anisotropyExt.anisotropyTexture)
         };
     }
     if (iorExt) standardMaterialExtensions.ior = { ior: iorExt.ior ?? 1.5 };
