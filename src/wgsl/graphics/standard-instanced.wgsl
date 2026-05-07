@@ -156,7 +156,8 @@ fn applyTextureTransform(uv0: vec2f, uv1: vec2f, transform0: vec4f, transform1: 
 }
 
 fn fresnelSchlick(cosTheta: f32, F0: vec3f, F90: vec3f) -> vec3f {
-    return F0 + (F90 - F0) * pow(1.0 - cosTheta, 5.0);
+    let oneMinusCos = 1.0 - clamp(cosTheta, 0.0, 1.0);
+    return F0 + (F90 - F0) * pow(oneMinusCos, 5.0);
 }
 
 fn maxComponent(v: vec3f) -> f32 {
@@ -230,6 +231,9 @@ fn buildTangentFrame(N: vec3f, tangent: vec4f, worldPos: vec3f, uv: vec2f) -> Ta
 }
 
 fn applyNormalMap(N: vec3f, tangent: vec4f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+    if (normalScale == 0.0) {
+        return normalize(N);
+    }
     let frame = buildTangentFrame(N, tangent, worldPos, uv);
     var ns = normalSample * 2.0 - vec3f(1.0);
     ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
@@ -256,7 +260,8 @@ fn fresnel0ToIor(F0: vec3f) -> vec3f {
 }
 
 fn fresnelSchlickScalar(cosTheta: f32, F0: f32) -> f32 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    let oneMinusCos = 1.0 - clamp(cosTheta, 0.0, 1.0);
+    return F0 + (1.0 - F0) * pow(oneMinusCos, 5.0);
 }
 
 fn sanitizeReflectance(value: vec3f, fallback: vec3f) -> vec3f {
@@ -461,7 +466,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     }
     let geometricN = normalize(in.normal);
     let anisotropyFrame = buildTangentFrame(geometricN, in.tangent, in.worldPos, anisotropyUv);
-    let clearcoatViewFresnel = clamp(clearcoat * (0.04 + 0.96 * pow(1.0 - abs(dot(V, clearcoatNormal)), 5.0)), 0.0, 1.0);
+    let clearcoatViewFresnel = clamp(clearcoat * fresnelSchlickScalar(abs(dot(V, clearcoatNormal)), 0.04), 0.0, 1.0);
     var Lo = lighting.ambient.rgb * albedo * ao;
     for (var i = 0u; i < lighting.lightCount; i++) {
         let light = lighting.lights[i];

@@ -44,7 +44,18 @@ struct MaterialUniforms {
     iridescenceThicknessTransform0: vec4f,
     iridescenceThicknessTransform1: vec4f,
     anisotropyTransform0: vec4f,
-    anisotropyTransform1: vec4f
+    anisotropyTransform1: vec4f,
+    transmissionParams: vec4f,
+    diffuseTransmissionColor: vec4f,
+    volumeAttenuation: vec4f,
+    transmissionTransform0: vec4f,
+    transmissionTransform1: vec4f,
+    volumeThicknessTransform0: vec4f,
+    volumeThicknessTransform1: vec4f,
+    diffuseTransmissionTransform0: vec4f,
+    diffuseTransmissionTransform1: vec4f,
+    diffuseTransmissionColorTransform0: vec4f,
+    diffuseTransmissionColorTransform1: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -68,25 +79,23 @@ struct MaterialUniforms {
 @group(1) @binding(18) var specularTex: texture_2d<f32>;
 @group(1) @binding(19) var specularColorSampler: sampler;
 @group(1) @binding(20) var specularColorTex: texture_2d<f32>;
-@group(1) @binding(21) var sheenColorSampler: sampler;
-@group(1) @binding(22) var sheenColorTex: texture_2d<f32>;
-@group(1) @binding(23) var sheenRoughnessSampler: sampler;
-@group(1) @binding(24) var sheenRoughnessTex: texture_2d<f32>;
-@group(1) @binding(25) var iridescenceSampler: sampler;
-@group(1) @binding(26) var iridescenceTex: texture_2d<f32>;
-@group(1) @binding(27) var iridescenceThicknessSampler: sampler;
-@group(1) @binding(28) var iridescenceThicknessTex: texture_2d<f32>;
-@group(1) @binding(29) var anisotropySampler: sampler;
-@group(1) @binding(30) var anisotropyTex: texture_2d<f32>;
+@group(1) @binding(21) var transmissionSampler: sampler;
+@group(1) @binding(22) var transmissionTex: texture_2d<f32>;
+@group(1) @binding(23) var volumeThicknessSampler: sampler;
+@group(1) @binding(24) var volumeThicknessTex: texture_2d<f32>;
+@group(1) @binding(25) var diffuseTransmissionSampler: sampler;
+@group(1) @binding(26) var diffuseTransmissionTex: texture_2d<f32>;
+@group(1) @binding(27) var diffuseTransmissionColorSampler: sampler;
+@group(1) @binding(28) var diffuseTransmissionColorTex: texture_2d<f32>;
+@group(1) @binding(29) var transmissionSourceSampler: sampler;
+@group(1) @binding(30) var transmissionSourceTex: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
     @location(11) uv1: vec2f,
-    @location(12) tangent: vec4f,
-    @location(3) joints: vec4u,
-    @location(4) weights: vec4f
+    @location(12) tangent: vec4f
 };
 
 struct VertexOutput {
@@ -95,7 +104,8 @@ struct VertexOutput {
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
     @location(3) uv1: vec2f,
-    @location(4) tangent: vec4f
+    @location(4) tangent: vec4f,
+    @location(5) modelScale: vec3f
 };
 
 struct CameraUniforms {
@@ -128,31 +138,17 @@ struct LightingUniforms {
 @group(0) @binding(1) var<uniform> model: ModelUniforms;
 @group(0) @binding(2) var<uniform> lighting: LightingUniforms;
 
-struct SkinBuffer {
-    joints: array<mat4x4f>
-};
-
-@group(2) @binding(0) var<storage, read> skin: SkinBuffer;
-
 const PI: f32 = 3.14159265359;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let j = in.joints;
-    let w = in.weights;
-    let skinMatrix = skin.joints[j.x] * w.x +
-                     skin.joints[j.y] * w.y +
-                     skin.joints[j.z] * w.z +
-                     skin.joints[j.w] * w.w;
-    let localPos = skinMatrix * vec4f(in.position, 1.0);
-    let localNormal = (skinMatrix * vec4f(in.normal, 0.0)).xyz;
-    let localTangent = (skinMatrix * vec4f(in.tangent.xyz, 0.0)).xyz;
-    let worldPos4 = model.model * localPos;
+    let worldPos4 = model.model * vec4f(in.position, 1.0);
     out.position = camera.viewProjection * worldPos4;
     out.worldPos = worldPos4.xyz;
-    out.normal = normalize((model.normalMatrix * vec4f(localNormal, 0.0)).xyz);
-    out.tangent = vec4f((model.normalMatrix * vec4f(localTangent, 0.0)).xyz, in.tangent.w);
+    out.normal = normalize((model.normalMatrix * vec4f(in.normal, 0.0)).xyz);
+    out.tangent = vec4f((model.normalMatrix * vec4f(in.tangent.xyz, 0.0)).xyz, in.tangent.w);
+    out.modelScale = vec3f(length(model.model[0].xyz), length(model.model[1].xyz), length(model.model[2].xyz));
     out.uv = in.uv;
     out.uv1 = in.uv1;
     return out;
@@ -414,6 +410,67 @@ fn computeSpotFactor(L: vec3f, direction: vec3f, cosInner: f32, cosOuter: f32) -
     return clamp((angleCos - cosOuter) / max(cosInner - cosOuter, 1e-4), 0.0, 1.0);
 }
 
+fn screenUvFromFragment(position: vec4f) -> vec2f {
+    let dims = vec2f(textureDimensions(transmissionSourceTex, 0));
+    return clamp(position.xy / max(dims, vec2f(1.0)), vec2f(0.0), vec2f(1.0));
+}
+
+fn projectWorldToScreenUv(worldPos: vec3f) -> vec2f {
+    let clip = camera.viewProjection * vec4f(worldPos, 1.0);
+    let invW = 1.0 / max(abs(clip.w), 1e-5);
+    let ndc = clip.xy * invW * select(-1.0, 1.0, clip.w >= 0.0);
+    return clamp(vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5), vec2f(0.0), vec2f(1.0));
+}
+
+fn transmissionScreenUv(position: vec4f, worldPos: vec3f, N: vec3f, V: vec3f, ior: f32, thickness: f32, modelScale: vec3f) -> vec2f {
+    let baseUv = screenUvFromFragment(position);
+    if (thickness <= 1e-5) {
+        return baseUv;
+    }
+    let eta = 1.0 / max(ior, 1.0001);
+    var ray = refract(-V, N, eta);
+    let rayLength2 = dot(ray, ray);
+    if (rayLength2 <= 1e-8) {
+        ray = -V;
+    } else {
+        ray = ray * inverseSqrt(rayLength2);
+    }
+    let transmissionRay = ray * max(thickness, 0.0) * max(modelScale, vec3f(1e-4));
+    return projectWorldToScreenUv(worldPos + transmissionRay);
+}
+
+fn transmissionSourceToLinear(color: vec3f) -> vec3f {
+    return pow(clamp(color, vec3f(0.0), vec3f(1.0)), vec3f(2.2));
+}
+
+fn sampleTransmissionSourceAt(uv: vec2f) -> vec3f {
+    let sourceColor = textureSampleLevel(transmissionSourceTex, transmissionSourceSampler, clamp(uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb;
+    return transmissionSourceToLinear(sourceColor);
+}
+
+fn dispersionIors(ior: f32, dispersion: f32) -> vec3f {
+    let halfSpread = max(ior - 1.0, 0.0) * 0.025 * max(dispersion, 0.0);
+    return max(vec3f(ior - halfSpread, ior, ior + halfSpread), vec3f(1.0));
+}
+
+fn sampleTransmissionSource(position: vec4f, worldPos: vec3f, N: vec3f, V: vec3f, ior: f32, dispersion: f32, thickness: f32, modelScale: vec3f) -> vec3f {
+    if (dispersion <= 1e-5 || thickness <= 1e-5) {
+        return sampleTransmissionSourceAt(transmissionScreenUv(position, worldPos, N, V, ior, thickness, modelScale));
+    }
+    let iors = dispersionIors(ior, dispersion);
+    let r = sampleTransmissionSourceAt(transmissionScreenUv(position, worldPos, N, V, iors.r, thickness, modelScale)).r;
+    let g = sampleTransmissionSourceAt(transmissionScreenUv(position, worldPos, N, V, iors.g, thickness, modelScale)).g;
+    let b = sampleTransmissionSourceAt(transmissionScreenUv(position, worldPos, N, V, iors.b, thickness, modelScale)).b;
+    return vec3f(r, g, b);
+}
+
+fn volumeTransmissionAttenuation(thickness: f32, attenuationDistance: f32, attenuationColor: vec3f) -> vec3f {
+    if (thickness <= 1e-5 || attenuationDistance <= 1e-5) {
+        return vec3f(1.0);
+    }
+    return pow(max(attenuationColor, vec3f(1e-4)), vec3f(thickness / attenuationDistance));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let baseUv = applyTextureTransform(in.uv, in.uv1, material.baseColorTransform0, material.baseColorTransform1);
@@ -431,6 +488,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let iridescenceUv = applyTextureTransform(in.uv, in.uv1, material.iridescenceTransform0, material.iridescenceTransform1);
     let iridescenceThicknessUv = applyTextureTransform(in.uv, in.uv1, material.iridescenceThicknessTransform0, material.iridescenceThicknessTransform1);
     let anisotropyUv = applyTextureTransform(in.uv, in.uv1, material.anisotropyTransform0, material.anisotropyTransform1);
+    let transmissionUv = applyTextureTransform(in.uv, in.uv1, material.transmissionTransform0, material.transmissionTransform1);
+    let volumeThicknessUv = applyTextureTransform(in.uv, in.uv1, material.volumeThicknessTransform0, material.volumeThicknessTransform1);
+    let diffuseTransmissionUv = applyTextureTransform(in.uv, in.uv1, material.diffuseTransmissionTransform0, material.diffuseTransmissionTransform1);
+    let diffuseTransmissionColorUv = applyTextureTransform(in.uv, in.uv1, material.diffuseTransmissionColorTransform0, material.diffuseTransmissionColorTransform1);
     let baseSample = textureSample(baseColorTex, baseColorSampler, baseUv);
     let baseColor = material.color * baseSample;
     let alphaCutoff = material.params2.x;
@@ -452,12 +513,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let clearcoatNormal = applyNormalMap(in.normal, in.tangent, in.worldPos, clearcoatNormalUv, clearcoatNormalSample, material.clearcoatParams.z);
     let specularStrength = clamp(material.specularParams.x * textureSample(specularTex, specularSampler, specularUv).a, 0.0, 1.0);
     let specularColor = material.specularParams.yzw * textureSample(specularColorTex, specularColorSampler, specularColorUv).rgb;
-    let sheenColor = material.sheenParams.rgb * textureSample(sheenColorTex, sheenColorSampler, sheenColorUv).rgb;
-    let sheenRoughness = clamp(material.sheenParams.w * textureSample(sheenRoughnessTex, sheenRoughnessSampler, sheenRoughnessUv).a, 0.0, 1.0);
-    let iridescence = clamp(material.iridescenceParams.x * textureSample(iridescenceTex, iridescenceSampler, iridescenceUv).r, 0.0, 1.0);
-    let iridescenceThicknessSample = textureSample(iridescenceThicknessTex, iridescenceThicknessSampler, iridescenceThicknessUv).g;
-    let iridescenceThickness = mix(material.iridescenceParams.z, material.iridescenceParams.w, iridescenceThicknessSample);
-    let anisotropySample = textureSample(anisotropyTex, anisotropySampler, anisotropyUv).rgb;
+    let sheenColor = material.sheenParams.rgb;
+    let sheenRoughness = clamp(material.sheenParams.w, 0.0, 1.0);
+    let iridescence = clamp(material.iridescenceParams.x, 0.0, 1.0);
+    let iridescenceThickness = material.iridescenceParams.w;
+    let anisotropySample = vec3f(1.0, 0.5, 1.0);
+    let transmission = clamp(material.transmissionParams.x * textureSample(transmissionTex, transmissionSampler, transmissionUv).r, 0.0, 1.0);
+    let diffuseTransmission = clamp(material.transmissionParams.y * textureSample(diffuseTransmissionTex, diffuseTransmissionSampler, diffuseTransmissionUv).a, 0.0, 1.0);
+    let volumeThickness = max(material.transmissionParams.z * textureSample(volumeThicknessTex, volumeThicknessSampler, volumeThicknessUv).g, 0.0);
+    let dispersion = max(material.transmissionParams.w, 0.0);
+    let diffuseTransmissionColor = material.diffuseTransmissionColor.rgb * textureSample(diffuseTransmissionColorTex, diffuseTransmissionColorSampler, diffuseTransmissionColorUv).rgb;
+    let volumeAttenuation = volumeTransmissionAttenuation(volumeThickness, material.diffuseTransmissionColor.w, material.volumeAttenuation.rgb);
     let anisotropyStrength = clamp(material.anisotropyParams.x * anisotropySample.b, 0.0, 1.0);
     var anisotropyDirection = anisotropySample.rg * 2.0 - vec2f(1.0);
     let anisotropyDirectionLength2 = dot(anisotropyDirection, anisotropyDirection);
@@ -477,10 +543,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     if (iridescence > 1e-5 && iridescenceThickness > 0.0) {
         iridescenceFresnelColor = iridescentFresnel(1.0, material.iridescenceParams.y, F0, iridescenceThickness, viewNdotV);
     }
+    var viewFresnel = fresnelSchlick(viewNdotV, F0, F90);
+    if (iridescence > 1e-5) {
+        viewFresnel = mix(viewFresnel, iridescenceFresnelColor, iridescence);
+    }
+    let transmissionWeight = transmission * (1.0 - metallic) * max(1.0 - maxComponent(viewFresnel), 0.0);
     let geometricN = normalize(in.normal);
     let anisotropyFrame = buildTangentFrame(geometricN, in.tangent, in.worldPos, anisotropyUv);
     let clearcoatViewFresnel = clamp(clearcoat * fresnelSchlickScalar(abs(dot(V, clearcoatNormal)), 0.04), 0.0, 1.0);
-    var Lo = lighting.ambient.rgb * albedo * ao;
+    var Lo = lighting.ambient.rgb * albedo * ao * (1.0 - transmission);
     for (var i = 0u; i < lighting.lightCount; i++) {
         let light = lighting.lights[i];
         var L: vec3f;
@@ -541,7 +612,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let sheenBrdf = sheenColor * sheenD * sheenV;
         let diffuseEnergy = max(1.0 - maxComponent(F), 0.0);
         let kD = vec3f(diffuseEnergy) * (1.0 - metallic);
-        let baseContribution = (kD * albedo / PI + specularBrdf + sheenBrdf) * radiance * NdotL;
+        let frontDiffuse = (1.0 - diffuseTransmission) * kD * albedo * radiance * NdotL / PI;
+        let backDiffuse = diffuseTransmission * kD * diffuseTransmissionColor * radiance * max(dot(-N, L), 0.0) / PI;
+        let diffuseContribution = (frontDiffuse + backDiffuse) * (1.0 - transmission);
+        let specularContribution = (specularBrdf + sheenBrdf) * radiance * NdotL;
+        let baseContribution = diffuseContribution + specularContribution;
         let clearcoatNdotL = max(dot(clearcoatNormal, L), 0.0);
         let clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
         let clearcoatNDF = distributionGGX(clearcoatNormal, H, clearcoatRoughness);
@@ -549,6 +624,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let clearcoatBrdf = clearcoatNDF * clearcoatG / (4.0 * clearcoatNdotV * clearcoatNdotL + 0.0001);
         let clearcoatContribution = vec3f(clearcoatBrdf) * radiance * clearcoatNdotL;
         Lo += mix(baseContribution, clearcoatContribution, clearcoatViewFresnel);
+    }
+    if (transmissionWeight > 1e-5) {
+        let transmittedSource = sampleTransmissionSource(in.position, in.worldPos, N, V, material.extensionParams.x, dispersion, volumeThickness, in.modelScale);
+        Lo += transmittedSource * albedo * volumeAttenuation * transmissionWeight * (1.0 - clearcoatViewFresnel);
     }
     Lo += emissive * (1.0 - clearcoatViewFresnel);
     Lo = Lo / (Lo + vec3f(1.0));

@@ -182,6 +182,11 @@ export class Renderer {
     private smaaEdgeBindGroup: GPUBindGroup | null = null;
     private smaaWeightBindGroup: GPUBindGroup | null = null;
     private smaaNeighborhoodBindGroup: GPUBindGroup | null = null;
+    private transmissionSceneColorTexture: GPUTexture | null = null;
+    private transmissionSceneColorView: GPUTextureView | null = null;
+    private transmissionSourceTexture: GPUTexture | null = null;
+    private transmissionSourceView: GPUTextureView | null = null;
+    private transmissionSourceRevision: number = 0;
     private globalBindGroupLayout!: GPUBindGroupLayout;
     private globalBindGroups: GPUBindGroup[] = [];
     private skinBindGroupLayout!: GPUBindGroupLayout;
@@ -405,11 +410,19 @@ export class Renderer {
         this.context.configure({
             device: this.device,
             format: this.format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
             alphaMode: "opaque"
         });
         if (this.depthTexture) this.depthTexture.destroy();
         this.depthTexture = createDepthTexture(this.device, this.width, this.height);
         this.depthView = this.depthTexture.createView();
+        this.transmissionSceneColorTexture?.destroy();
+        this.transmissionSourceTexture?.destroy();
+        this.transmissionSceneColorTexture = null;
+        this.transmissionSceneColorView = null;
+        this.transmissionSourceTexture = null;
+        this.transmissionSourceView = null;
+        this.transmissionSourceRevision++;
         if (this.smaaEnabled) this.resizeSmaaTargets();
         this.resizePickTargets();
     }
@@ -518,12 +531,18 @@ export class Renderer {
         Transform.updateAll();
         this.writeCameraUniforms(camera);
         this.writeLightingUniforms(scene);
+        this.buildDrawLists(scene, camera);
+        this.buildPointCloudDrawLists(scene, camera);
+        this.buildGlyphFieldDrawLists(scene, camera);
+        this.buildNodeLinkDrawLists(scene, camera);
         const encoder = this.device.createCommandEncoder();
-        const timestampWrites = (this.gpuTimingEnabled && this.gpuQuerySet)
-            ? ({ querySet: this.gpuQuerySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } as any)
-            : undefined;
+        const timestampWrites = (this.gpuTimingEnabled && this.gpuQuerySet) ? ({ querySet: this.gpuQuerySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } as any) : undefined;
+        const timestampBeginWrites = (this.gpuTimingEnabled && this.gpuQuerySet) ? ({ querySet: this.gpuQuerySet, beginningOfPassWriteIndex: 0 } as any) : undefined;
+        const timestampEndWrites = (this.gpuTimingEnabled && this.gpuQuerySet) ? ({ querySet: this.gpuQuerySet, endOfPassWriteIndex: 1 } as any) : undefined;
+        const hasTransmission = this.hasOpticalTransmissionDrawItems();
         if (this.smaaEnabled) {
             if (!this.smaaSceneColorView || !this.smaaEdgesView || !this.smaaBlendView) this.resizeSmaaTargets();
+            if (hasTransmission) this.ensureTransmissionTargets(false);
             const pass = encoder.beginRenderPass({
                 colorAttachments: [
                     {
@@ -539,18 +558,38 @@ export class Renderer {
                     depthLoadOp: "clear",
                     depthStoreOp: "store"
                 },
-                ...(timestampWrites ? { timestampWrites } : {})
+                ...(hasTransmission && timestampBeginWrites ? { timestampWrites: timestampBeginWrites } : timestampWrites ? { timestampWrites } : {})
             });
-            this.buildDrawLists(scene, camera);
-            this.buildPointCloudDrawLists(scene, camera);
-            this.buildGlyphFieldDrawLists(scene, camera);
-            this.buildNodeLinkDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
             this.executeNodeLinkDrawList(pass, this.opaqueNodeLinkDrawList);
-            this.executeTransparentMergedDrawList(pass);
+            if (!hasTransmission) this.executeTransparentMergedDrawList(pass);
             pass.end();
+            if (hasTransmission) {
+                encoder.copyTextureToTexture(
+                    { texture: this.smaaSceneColorTexture! },
+                    { texture: this.transmissionSourceTexture! },
+                    { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+                );
+                const transparentPass = encoder.beginRenderPass({
+                    colorAttachments: [
+                        {
+                            view: this.smaaSceneColorView!,
+                            loadOp: "load",
+                            storeOp: "store"
+                        }
+                    ],
+                    depthStencilAttachment: {
+                        view: this.depthView,
+                        depthLoadOp: "load",
+                        depthStoreOp: "store"
+                    },
+                    ...(timestampEndWrites ? { timestampWrites: timestampEndWrites } : {})
+                });
+                this.executeTransparentMergedDrawList(transparentPass);
+                transparentPass.end();
+            }
             if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
                 encoder.resolveQuerySet(this.gpuQuerySet!, 0, 2, this.gpuResolveBuffer, 0);
                 if (this.gpuResultBuffer.mapState === "unmapped") {
@@ -560,10 +599,12 @@ export class Renderer {
             }
             this.executeSmaa(encoder, swapView);
         } else {
+            if (hasTransmission) this.ensureTransmissionTargets(true);
+            const sceneColorView = hasTransmission ? this.transmissionSceneColorView! : swapView;
             const pass = encoder.beginRenderPass({
                 colorAttachments: [
                     {
-                        view: swapView,
+                        view: sceneColorView,
                         clearValue: { r: scene.background[0], g: scene.background[1], b: scene.background[2], a: 1 },
                         loadOp: "clear",
                         storeOp: "store"
@@ -575,18 +616,43 @@ export class Renderer {
                     depthLoadOp: "clear",
                     depthStoreOp: "store"
                 },
-                ...(timestampWrites ? { timestampWrites } : {})
+                ...(hasTransmission && timestampBeginWrites ? { timestampWrites: timestampBeginWrites } : timestampWrites ? { timestampWrites } : {})
             });
-            this.buildDrawLists(scene, camera);
-            this.buildPointCloudDrawLists(scene, camera);
-            this.buildGlyphFieldDrawLists(scene, camera);
-            this.buildNodeLinkDrawLists(scene, camera);
             this.executeDrawList(pass, this.opaqueDrawList);
             this.executeGlyphFieldDrawList(pass, this.opaqueGlyphFieldDrawList);
             this.executePointCloudDrawList(pass, this.opaquePointCloudDrawList);
             this.executeNodeLinkDrawList(pass, this.opaqueNodeLinkDrawList);
-            this.executeTransparentMergedDrawList(pass);
+            if (!hasTransmission) this.executeTransparentMergedDrawList(pass);
             pass.end();
+            if (hasTransmission) {
+                encoder.copyTextureToTexture(
+                    { texture: this.transmissionSceneColorTexture! },
+                    { texture: this.transmissionSourceTexture! },
+                    { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+                );
+                const transparentPass = encoder.beginRenderPass({
+                    colorAttachments: [
+                        {
+                            view: this.transmissionSceneColorView!,
+                            loadOp: "load",
+                            storeOp: "store"
+                        }
+                    ],
+                    depthStencilAttachment: {
+                        view: this.depthView,
+                        depthLoadOp: "load",
+                        depthStoreOp: "store"
+                    },
+                    ...(timestampEndWrites ? { timestampWrites: timestampEndWrites } : {})
+                });
+                this.executeTransparentMergedDrawList(transparentPass);
+                transparentPass.end();
+                encoder.copyTextureToTexture(
+                    { texture: this.transmissionSceneColorTexture! },
+                    { texture: swapTexture },
+                    { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+                );
+            }
             if (timestampWrites && this.gpuResolveBuffer && this.gpuResultBuffer) {
                 encoder.resolveQuerySet(this.gpuQuerySet!, 0, 2, this.gpuResolveBuffer, 0);
                 if (this.gpuResultBuffer.mapState === "unmapped") {
@@ -964,12 +1030,19 @@ export class Renderer {
         this.smaaSceneColorTexture?.destroy();
         this.smaaEdgesTexture?.destroy();
         this.smaaBlendTexture?.destroy();
+        this.transmissionSceneColorTexture?.destroy();
+        this.transmissionSourceTexture?.destroy();
         this.smaaSceneColorTexture = null;
         this.smaaSceneColorView = null;
         this.smaaEdgesTexture = null;
         this.smaaEdgesView = null;
         this.smaaBlendTexture = null;
         this.smaaBlendView = null;
+        this.transmissionSceneColorTexture = null;
+        this.transmissionSceneColorView = null;
+        this.transmissionSourceTexture = null;
+        this.transmissionSourceView = null;
+        this.transmissionSourceRevision++;
         this.smaaParamsBuffer?.destroy();
         this.smaaParamsBuffer = null;
         this.smaaEdgeBindGroup = null;
@@ -1304,7 +1377,7 @@ export class Renderer {
         this.smaaSceneColorTexture = this.device.createTexture({
             size: { width: w, height: h, depthOrArrayLayers: 1 },
             format: this.format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC
         });
         this.smaaSceneColorView = this.smaaSceneColorTexture.createView();
         const intermediateFormat: GPUTextureFormat = "rgba8unorm";
@@ -1353,6 +1426,43 @@ export class Renderer {
                 { binding: 5, resource: this.smaaBlendView! }
             ]
         });
+    }
+
+    private ensureTransmissionTargets(needSceneTarget: boolean): void {
+        const haveSource = this.transmissionSourceTexture !== null && this.transmissionSourceView !== null;
+        const haveSceneTarget = !needSceneTarget || (this.transmissionSceneColorTexture !== null && this.transmissionSceneColorView !== null);
+        if (haveSource && haveSceneTarget) return;
+        this.resizeTransmissionTargets(needSceneTarget);
+    }
+
+    private resizeTransmissionTargets(needSceneTarget: boolean): void {
+        this.transmissionSceneColorTexture?.destroy();
+        this.transmissionSourceTexture?.destroy();
+        this.transmissionSceneColorTexture = null;
+        this.transmissionSceneColorView = null;
+        this.transmissionSourceTexture = null;
+        this.transmissionSourceView = null;
+        const w = this.width | 0;
+        const h = this.height | 0;
+        if (w <= 0 || h <= 0) {
+            this.transmissionSourceRevision++;
+            return;
+        }
+        if (needSceneTarget) {
+            this.transmissionSceneColorTexture = this.device.createTexture({
+                size: { width: w, height: h, depthOrArrayLayers: 1 },
+                format: this.format,
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC
+            });
+            this.transmissionSceneColorView = this.transmissionSceneColorTexture.createView();
+        }
+        this.transmissionSourceTexture = this.device.createTexture({
+            size: { width: w, height: h, depthOrArrayLayers: 1 },
+            format: this.format,
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+        this.transmissionSourceView = this.transmissionSourceTexture.createView();
+        this.transmissionSourceRevision++;
     }
 
     private resizePickTargets(): void {
@@ -1609,7 +1719,9 @@ export class Renderer {
             const skinned8 = skinned && geometry.joints1 !== null && geometry.weights1 !== null;
             const wb = mesh.transform.worldMatrixPtr >>> 2;
             const mirrored = this.isMirroredWorldMatrix(storeF32, wb);
-            const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8, mirrored);
+            const opticalTransmission = this.isOpticallyTransmissiveMaterial(material);
+            const forceNoDepthWrite = opticalTransmission && material.blendMode !== BlendMode.Opaque;
+            const pipeline = this.getOrCreatePipeline(material, false, skinned, skinned8, mirrored, forceNoDepthWrite);
             const item = this.acquireDrawItem();
             item.mesh = mesh;
             item.geometry = geometry;
@@ -1623,9 +1735,8 @@ export class Renderer {
             item.skinned8 = skinned8;
             item.mirrored = mirrored;
             item.sortKey = 0;
-            if (material.blendMode === BlendMode.Opaque) {
-                this.opaqueDrawList.push(item);
-            } else {
+            if (material.blendMode === BlendMode.Opaque && !opticalTransmission) this.opaqueDrawList.push(item);
+            else {
                 const dx = storeF32[wb + 12] - camX;
                 const dy = storeF32[wb + 13] - camY;
                 const dz = storeF32[wb + 14] - camZ;
@@ -1633,14 +1744,24 @@ export class Renderer {
                 this.transparentDrawList.push(item);
             }
         };
-        if (!this.frustumCullingEnabled) {
-            for (let i = 0; i < count; i++) pushMesh(candidates[i]);
-        } else {
+        if (!this.frustumCullingEnabled) for (let i = 0; i < count; i++) pushMesh(candidates[i]);
+        else {
             const visBase = visibleIndicesBase;
             for (let k = 0; k < visibleCount; k++) pushMesh(candidates[storeU32[visBase + k]]);
         }
         this.opaqueDrawList.sort((a, b) => (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.vertexSourceId - b.vertexSourceId));
         this.transparentDrawList.sort((a, b) => (b.sortKey - a.sortKey) || (a.pipelineId - b.pipelineId) || (a.materialId - b.materialId) || (a.vertexSourceId - b.vertexSourceId));
+    }
+
+    private isOpticallyTransmissiveMaterial(material: Material): boolean {
+        if (!(material instanceof StandardMaterial)) return false;
+        const transmission = material.extensions.transmission;
+        return (transmission?.factor ?? 0) > 0;
+    }
+
+    private hasOpticalTransmissionDrawItems(): boolean {
+        for (const item of this.transparentDrawList) if (this.isOpticallyTransmissiveMaterial(item.material)) return true;
+        return false;
     }
 
     private buildPointCloudDrawLists(scene: Scene, camera: Camera): void {
@@ -2713,13 +2834,14 @@ export class Renderer {
         this.instanceBufferOffset = dstEnd;
     }
 
-    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false, skinned8: boolean = false, mirrored: boolean = false): GPURenderPipeline {
+    private getOrCreatePipeline(material: Material, instanced: boolean = false, skinned: boolean = false, skinned8: boolean = false, mirrored: boolean = false, forceNoDepthWrite: boolean = false): GPURenderPipeline {
         if (instanced && skinned) throw new Error("Renderer: instanced + skinned pipelines are not supported (attribute layout conflict).");
         if (skinned8 && !skinned) skinned = true;
-        const key = this.getPipelineCacheKey(material, instanced, skinned, skinned8, mirrored);
+        const key = this.getPipelineCacheKey(material, instanced, skinned, skinned8, mirrored, forceNoDepthWrite);
         let pipeline = this.pipelineCache.get(key);
         if (pipeline) return pipeline;
-        const shaderCode = material.getShaderCode({ instanced, skinned, skinned8 });
+        const transmissionShader = material instanceof StandardMaterial && material.usesTransmissionLayout();
+        const shaderCode = material.getShaderCode({ instanced, skinned, skinned8, transmission: transmissionShader });
         let shaderModule = this.shaderCache.get(shaderCode);
         if (!shaderModule) {
             shaderModule = this.device.createShaderModule({ code: shaderCode });
@@ -2866,7 +2988,7 @@ export class Renderer {
             },
             depthStencil: {
                 format: "depth24plus",
-                depthWriteEnabled: material.depthWrite,
+                depthWriteEnabled: forceNoDepthWrite ? false : material.depthWrite,
                 depthCompare: material.depthTest ? "less" : "always"
             }
         });
@@ -3061,11 +3183,13 @@ export class Renderer {
         return pipeline;
     }
 
-    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean, mirrored: boolean): string {
+    private getPipelineCacheKey(material: Material, instanced: boolean, skinned: boolean, skinned8: boolean, mirrored: boolean, forceNoDepthWrite: boolean = false): string {
         const ctorId = this.getObjectId(material.constructor as unknown as object);
         const isBuiltin = material.constructor === UnlitMaterial || material.constructor === StandardMaterial || material.constructor === DataMaterial;
         const matKey = isBuiltin ? `${ctorId}` : `${ctorId}_${this.getObjectId(material)}`;
-        return `${matKey}_${material.blendMode}_${material.cullMode}_${material.depthWrite}_${material.depthTest}_${mirrored ? "cw" : "ccw"}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
+        const depthWriteKey = forceNoDepthWrite ? "no-depth-write" : material.depthWrite ? "depth-write" : "no-depth-write";
+        const transmissionShader = material instanceof StandardMaterial && material.usesTransmissionLayout();
+        return `${matKey}_${material.blendMode}_${material.cullMode}_${depthWriteKey}_${material.depthTest}_${transmissionShader ? "transmission" : "standard"}_${mirrored ? "cw" : "ccw"}_${instanced ? "inst" : "mesh"}_${skinned8 ? "skin8" : skinned ? "skin4" : "noskin"}`;
     }
 
     private isMirroredWorldMatrix(storeF32: Float32Array, base: number): boolean {
@@ -3140,6 +3264,9 @@ export class Renderer {
             const sh = extensions.sheen;
             const ir = extensions.iridescence;
             const an = extensions.anisotropy;
+            const tr = extensions.transmission;
+            const vol = extensions.volume;
+            const dt = extensions.diffuseTransmission;
             const ccTex = cc?.texture ?? null;
             const ccRough = cc?.roughnessTexture ?? null;
             const ccNormal = cc?.normalTexture ?? null;
@@ -3150,7 +3277,11 @@ export class Renderer {
             const irTex = ir?.texture ?? null;
             const irThick = ir?.thicknessTexture ?? null;
             const anTex = an?.texture ?? null;
-            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}:${ccTex?.id ?? 0}:${ccTex?.revision ?? 0}:${ccRough?.id ?? 0}:${ccRough?.revision ?? 0}:${ccNormal?.id ?? 0}:${ccNormal?.revision ?? 0}:${spTex?.id ?? 0}:${spTex?.revision ?? 0}:${spColor?.id ?? 0}:${spColor?.revision ?? 0}:${shColor?.id ?? 0}:${shColor?.revision ?? 0}:${shRough?.id ?? 0}:${shRough?.revision ?? 0}:${irTex?.id ?? 0}:${irTex?.revision ?? 0}:${irThick?.id ?? 0}:${irThick?.revision ?? 0}:${anTex?.id ?? 0}:${anTex?.revision ?? 0}`;
+            const trTex = tr?.texture ?? null;
+            const thicknessTex = vol?.thicknessTexture ?? null;
+            const dtTex = dt?.texture ?? null;
+            const dtColor = dt?.colorTexture ?? null;
+            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}:${ccTex?.id ?? 0}:${ccTex?.revision ?? 0}:${ccRough?.id ?? 0}:${ccRough?.revision ?? 0}:${ccNormal?.id ?? 0}:${ccNormal?.revision ?? 0}:${spTex?.id ?? 0}:${spTex?.revision ?? 0}:${spColor?.id ?? 0}:${spColor?.revision ?? 0}:${shColor?.id ?? 0}:${shColor?.revision ?? 0}:${shRough?.id ?? 0}:${shRough?.revision ?? 0}:${irTex?.id ?? 0}:${irTex?.revision ?? 0}:${irThick?.id ?? 0}:${irThick?.revision ?? 0}:${anTex?.id ?? 0}:${anTex?.revision ?? 0}:${trTex?.id ?? 0}:${trTex?.revision ?? 0}:${thicknessTex?.id ?? 0}:${thicknessTex?.revision ?? 0}:${dtTex?.id ?? 0}:${dtTex?.revision ?? 0}:${dtColor?.id ?? 0}:${dtColor?.revision ?? 0}:${this.transmissionSourceRevision}`;
         }
         if (material instanceof DataMaterial) {
             const bufId = material.dataBuffer ? this.getObjectId(material.dataBuffer) : 0;
@@ -3204,6 +3335,9 @@ export class Renderer {
             const sh = extensions.sheen;
             const ir = extensions.iridescence;
             const an = extensions.anisotropy;
+            const tr = extensions.transmission;
+            const vol = extensions.volume;
+            const dt = extensions.diffuseTransmission;
             const ccTex = cc?.texture ?? null;
             const ccRough = cc?.roughnessTexture ?? null;
             const ccNormal = cc?.normalTexture ?? null;
@@ -3214,30 +3348,48 @@ export class Renderer {
             const irTex = ir?.texture ?? null;
             const irThick = ir?.thicknessTexture ?? null;
             const anTex = an?.texture ?? null;
-            material.bindGroup = this.device.createBindGroup({
-                layout,
-                entries: [
-                    { binding: 0, resource: { buffer: material.uniformBuffer } },
-                    { binding: 1, resource: bc ? bc.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 2, resource: bc ? bc.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
-                    { binding: 3, resource: mr ? mr.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 4, resource: mr ? mr.getView(this.device, this.queue, "linear", this.fallbackMRViewLinear) : this.fallbackMRViewLinear },
-                    { binding: 5, resource: n ? n.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 6, resource: n ? n.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
-                    { binding: 7, resource: o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 8, resource: o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear },
-                    { binding: 9, resource: e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 10, resource: e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
-                    { binding: 11, resource: ccTex ? ccTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 12, resource: ccTex ? ccTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
-                    { binding: 13, resource: ccRough ? ccRough.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 14, resource: ccRough ? ccRough.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
-                    { binding: 15, resource: ccNormal ? ccNormal.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 16, resource: ccNormal ? ccNormal.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
-                    { binding: 17, resource: spTex ? spTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 18, resource: spTex ? spTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
-                    { binding: 19, resource: spColor ? spColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 20, resource: spColor ? spColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+            const trTex = tr?.texture ?? null;
+            const thicknessTex = vol?.thicknessTexture ?? null;
+            const dtTex = dt?.texture ?? null;
+            const dtColor = dt?.colorTexture ?? null;
+            const entries: GPUBindGroupEntry[] = [
+                { binding: 0, resource: { buffer: material.uniformBuffer } },
+                { binding: 1, resource: bc ? bc.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 2, resource: bc ? bc.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                { binding: 3, resource: mr ? mr.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 4, resource: mr ? mr.getView(this.device, this.queue, "linear", this.fallbackMRViewLinear) : this.fallbackMRViewLinear },
+                { binding: 5, resource: n ? n.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 6, resource: n ? n.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
+                { binding: 7, resource: o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 8, resource: o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear },
+                { binding: 9, resource: e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 10, resource: e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                { binding: 11, resource: ccTex ? ccTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 12, resource: ccTex ? ccTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                { binding: 13, resource: ccRough ? ccRough.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 14, resource: ccRough ? ccRough.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                { binding: 15, resource: ccNormal ? ccNormal.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 16, resource: ccNormal ? ccNormal.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
+                { binding: 17, resource: spTex ? spTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 18, resource: spTex ? spTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                { binding: 19, resource: spColor ? spColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                { binding: 20, resource: spColor ? spColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb }
+            ];
+            if (material.usesTransmissionLayout()) {
+                entries.push(
+                    { binding: 21, resource: trTex ? trTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 22, resource: trTex ? trTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 23, resource: thicknessTex ? thicknessTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 24, resource: thicknessTex ? thicknessTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 25, resource: dtTex ? dtTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 26, resource: dtTex ? dtTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 27, resource: dtColor ? dtColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 28, resource: dtColor ? dtColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                    { binding: 29, resource: this.fallbackSampler },
+                    { binding: 30, resource: this.transmissionSourceView ?? this.fallbackWhiteViewLinear }
+                );
+            } else {
+                entries.push(
                     { binding: 21, resource: shColor ? shColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
                     { binding: 22, resource: shColor ? shColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
                     { binding: 23, resource: shRough ? shRough.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
@@ -3248,8 +3400,9 @@ export class Renderer {
                     { binding: 28, resource: irThick ? irThick.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
                     { binding: 29, resource: anTex ? anTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
                     { binding: 30, resource: anTex ? anTex.getView(this.device, this.queue, "linear", this.fallbackAnisotropyViewLinear) : this.fallbackAnisotropyViewLinear }
-                ]
-            });
+                );
+            }
+            material.bindGroup = this.device.createBindGroup({ layout, entries });
             material.bindGroupKey = key;
             return;
         }

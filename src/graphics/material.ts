@@ -15,6 +15,10 @@ import standardWGSL from "../wgsl/graphics/standard.wgsl";
 import standardInstancedWGSL from "../wgsl/graphics/standard-instanced.wgsl";
 import standardSkinnedWGSL from "../wgsl/graphics/standard-skinned.wgsl";
 import standardSkinned8WGSL from "../wgsl/graphics/standard-skinned8.wgsl";
+import standardTransmissionWGSL from "../wgsl/graphics/standard-transmission.wgsl";
+import standardTransmissionInstancedWGSL from "../wgsl/graphics/standard-transmission-instanced.wgsl";
+import standardTransmissionSkinnedWGSL from "../wgsl/graphics/standard-transmission-skinned.wgsl";
+import standardTransmissionSkinned8WGSL from "../wgsl/graphics/standard-transmission-skinned8.wgsl";
 import dataWGSL from "../wgsl/graphics/data.wgsl";
 import customDefaultVertexWGSL from "../wgsl/graphics/custom-default-vertex.wgsl";
 import { SCALE_UNIFORM_FLOAT_COUNT, cloneScaleTransform, normalizeScaleTransform, packScaleTransform } from "../scaling";
@@ -148,7 +152,7 @@ export abstract class Material {
     }
 
     abstract getUniformData(): Float32Array;
-    abstract getShaderCode(opts?: { instanced?: boolean; skinned?: boolean; skinned8?: boolean }): string;
+    abstract getShaderCode(opts?: { instanced?: boolean; skinned?: boolean; skinned8?: boolean; transmission?: boolean }): string;
     abstract getUniformBufferSize(): number;
     abstract createBindGroupLayout(device: GPUDevice): GPUBindGroupLayout;
 
@@ -296,13 +300,28 @@ export type StandardMaterialClearcoatExtensionDescriptor = {
 export type StandardMaterialTransmissionExtensionDescriptor = {
     factor?: number;
     texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
 };
 
 export type StandardMaterialVolumeExtensionDescriptor = {
     thicknessFactor?: number;
     thicknessTexture?: Texture2D | null;
+    thicknessTextureTransform?: TextureTransformDescriptor | null;
     attenuationDistance?: number;
     attenuationColor?: Color;
+};
+
+export type StandardMaterialDiffuseTransmissionExtensionDescriptor = {
+    factor?: number;
+    texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
+    color?: Color;
+    colorTexture?: Texture2D | null;
+    colorTextureTransform?: TextureTransformDescriptor | null;
+};
+
+export type StandardMaterialDispersionExtensionDescriptor = {
+    dispersion?: number;
 };
 
 export type StandardMaterialSpecularExtensionDescriptor = {
@@ -357,6 +376,8 @@ export type StandardMaterialExtensionsDescriptor = {
     sheen?: StandardMaterialSheenExtensionDescriptor | null;
     iridescence?: StandardMaterialIridescenceExtensionDescriptor | null;
     anisotropy?: StandardMaterialAnisotropyExtensionDescriptor | null;
+    diffuseTransmission?: StandardMaterialDiffuseTransmissionExtensionDescriptor | null;
+    dispersion?: StandardMaterialDispersionExtensionDescriptor | null;
     ior?: StandardMaterialIorExtensionDescriptor | null;
     emissiveStrength?: StandardMaterialEmissiveStrengthExtensionDescriptor | null;
 };
@@ -376,13 +397,28 @@ export type StandardMaterialClearcoatExtension = Readonly<{
 export type StandardMaterialTransmissionExtension = Readonly<{
     factor: number;
     texture: Texture2D | null;
+    textureTransform: TextureTransform;
 }>;
 
 export type StandardMaterialVolumeExtension = Readonly<{
     thicknessFactor: number;
     thicknessTexture: Texture2D | null;
+    thicknessTextureTransform: TextureTransform;
     attenuationDistance: number;
     attenuationColor: Color;
+}>;
+
+export type StandardMaterialDiffuseTransmissionExtension = Readonly<{
+    factor: number;
+    texture: Texture2D | null;
+    textureTransform: TextureTransform;
+    color: Color;
+    colorTexture: Texture2D | null;
+    colorTextureTransform: TextureTransform;
+}>;
+
+export type StandardMaterialDispersionExtension = Readonly<{
+    dispersion: number;
 }>;
 
 export type StandardMaterialSpecularExtension = Readonly<{
@@ -437,6 +473,8 @@ export type StandardMaterialExtensions = Readonly<{
     sheen: StandardMaterialSheenExtension | null;
     iridescence: StandardMaterialIridescenceExtension | null;
     anisotropy: StandardMaterialAnisotropyExtension | null;
+    diffuseTransmission: StandardMaterialDiffuseTransmissionExtension | null;
+    dispersion: StandardMaterialDispersionExtension | null;
     ior: StandardMaterialIorExtension | null;
     emissiveStrength: StandardMaterialEmissiveStrengthExtension | null;
 }>;
@@ -490,7 +528,11 @@ export const enum StandardMaterialFeatureFlag {
     Anisotropy = 1 << 22,
     AnisotropyTexture = 1 << 23,
     Ior = 1 << 24,
-    EmissiveStrength = 1 << 25
+    EmissiveStrength = 1 << 25,
+    DiffuseTransmission = 1 << 26,
+    DiffuseTransmissionTexture = 1 << 27,
+    DiffuseTransmissionColorTexture = 1 << 28,
+    Dispersion = 1 << 29
 }
 
 const cloneColor = (value: Color | undefined, fallback: Color): Color => {
@@ -512,12 +554,14 @@ const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtens
         } : null,
         transmission: descriptor?.transmission ? {
             factor: descriptor.transmission.factor ?? 0,
-            texture: descriptor.transmission.texture ?? null
+            texture: descriptor.transmission.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.transmission.textureTransform)
         } : null,
         volume: descriptor?.volume ? {
             thicknessFactor: descriptor.volume.thicknessFactor ?? 0,
             thicknessTexture: descriptor.volume.thicknessTexture ?? null,
-            attenuationDistance: descriptor.volume.attenuationDistance ?? 0,
+            thicknessTextureTransform: normalizeTextureTransform(descriptor.volume.thicknessTextureTransform),
+            attenuationDistance: descriptor.volume.attenuationDistance ?? Infinity,
             attenuationColor: cloneColor(descriptor.volume.attenuationColor, [1, 1, 1])
         } : null,
         specular: descriptor?.specular ? {
@@ -551,6 +595,17 @@ const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtens
             rotation: descriptor.anisotropy.rotation ?? 0,
             texture: descriptor.anisotropy.texture ?? null,
             textureTransform: normalizeTextureTransform(descriptor.anisotropy.textureTransform)
+        } : null,
+        diffuseTransmission: descriptor?.diffuseTransmission ? {
+            factor: descriptor.diffuseTransmission.factor ?? 0,
+            texture: descriptor.diffuseTransmission.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.diffuseTransmission.textureTransform),
+            color: cloneColor(descriptor.diffuseTransmission.color, [1, 1, 1]),
+            colorTexture: descriptor.diffuseTransmission.colorTexture ?? null,
+            colorTextureTransform: normalizeTextureTransform(descriptor.diffuseTransmission.colorTextureTransform)
+        } : null,
+        dispersion: descriptor?.dispersion ? {
+            dispersion: descriptor.dispersion.dispersion ?? 0
         } : null,
         ior: descriptor?.ior ? {
             ior: descriptor.ior.ior ?? 1.5
@@ -588,7 +643,7 @@ export class StandardMaterial extends Material {
     private _extensions: StandardMaterialExtensions;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
-    private static readonly UNIFORM_FLOAT_COUNT = 160;
+    private static readonly UNIFORM_FLOAT_COUNT = 204;
     private static readonly TEXTURE_BINDING_COUNT = 15;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
@@ -851,6 +906,13 @@ export class StandardMaterial extends Material {
             mask |= StandardMaterialFeatureFlag.Anisotropy;
             if (anisotropy.texture) mask |= StandardMaterialFeatureFlag.AnisotropyTexture;
         }
+        const diffuseTransmission = this._extensions.diffuseTransmission;
+        if (diffuseTransmission) {
+            mask |= StandardMaterialFeatureFlag.DiffuseTransmission;
+            if (diffuseTransmission.texture) mask |= StandardMaterialFeatureFlag.DiffuseTransmissionTexture;
+            if (diffuseTransmission.colorTexture) mask |= StandardMaterialFeatureFlag.DiffuseTransmissionColorTexture;
+        }
+        if (this._extensions.dispersion) mask |= StandardMaterialFeatureFlag.Dispersion;
         if (this._extensions.ior) mask |= StandardMaterialFeatureFlag.Ior;
         if (this._extensions.emissiveStrength) mask |= StandardMaterialFeatureFlag.EmissiveStrength;
         return mask >>> 0;
@@ -872,7 +934,7 @@ export class StandardMaterial extends Material {
         f[7] = this._emissiveIntensity;
         f[8] = this._metallic;
         f[9] = this._roughness;
-        f[10] = this._normalScale;
+        f[10] = this._normalTexture ? this._normalScale : 0;
         f[11] = this._occlusionStrength;
         f[12] = this._alphaCutoff;
         f[13] = 0;
@@ -888,11 +950,15 @@ export class StandardMaterial extends Material {
         const sheen = this._extensions.sheen;
         const iridescence = this._extensions.iridescence;
         const anisotropy = this._extensions.anisotropy;
+        const transmission = this._extensions.transmission;
+        const volume = this._extensions.volume;
+        const diffuseTransmission = this._extensions.diffuseTransmission;
+        const dispersion = this._extensions.dispersion;
         const ior = this._extensions.ior;
         const emissiveStrength = this._extensions.emissiveStrength;
         f[56] = clearcoat?.factor ?? 0;
         f[57] = clearcoat?.roughness ?? 0;
-        f[58] = clearcoat?.normalScale ?? 1;
+        f[58] = clearcoat?.normalTexture ? (clearcoat.normalScale ?? 1) : 0;
         f[59] = 0;
         f[60] = specular?.factor ?? 1;
         f[61] = specular?.color[0] ?? 1;
@@ -924,6 +990,22 @@ export class StandardMaterial extends Material {
         packTextureTransform(f, 136, iridescence?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         packTextureTransform(f, 144, iridescence?.thicknessTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         packTextureTransform(f, 152, anisotropy?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        f[160] = transmission?.factor ?? 0;
+        f[161] = diffuseTransmission?.factor ?? 0;
+        f[162] = volume?.thicknessFactor ?? 0;
+        f[163] = dispersion?.dispersion ?? 0;
+        f[164] = diffuseTransmission?.color[0] ?? 1;
+        f[165] = diffuseTransmission?.color[1] ?? 1;
+        f[166] = diffuseTransmission?.color[2] ?? 1;
+        f[167] = Number.isFinite(volume?.attenuationDistance ?? Infinity) ? (volume?.attenuationDistance ?? 0) : 0;
+        f[168] = volume?.attenuationColor[0] ?? 1;
+        f[169] = volume?.attenuationColor[1] ?? 1;
+        f[170] = volume?.attenuationColor[2] ?? 1;
+        f[171] = 0;
+        packTextureTransform(f, 172, transmission?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 180, volume?.thicknessTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 188, diffuseTransmission?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 196, diffuseTransmission?.colorTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         return f;
     }
 
@@ -941,7 +1023,19 @@ export class StandardMaterial extends Material {
         return layout;
     }
 
-    getShaderCode(opts: { instanced?: boolean; skinned?: boolean; skinned8?: boolean } = {}): string {
+    usesTransmissionLayout(): boolean {
+        const transmissionFactor = this._extensions.transmission?.factor ?? 0;
+        const diffuseTransmissionFactor = this._extensions.diffuseTransmission?.factor ?? 0;
+        return transmissionFactor > 0 || diffuseTransmissionFactor > 0;
+    }
+
+    getShaderCode(opts: { instanced?: boolean; skinned?: boolean; skinned8?: boolean; transmission?: boolean } = {}): string {
+        if (opts.transmission) {
+            if (opts.instanced) return standardTransmissionInstancedWGSL;
+            if (opts.skinned8) return standardTransmissionSkinned8WGSL;
+            if (opts.skinned) return standardTransmissionSkinnedWGSL;
+            return standardTransmissionWGSL;
+        }
         if (opts.instanced) return standardInstancedWGSL;
         if (opts.skinned8) return standardSkinned8WGSL;
         if (opts.skinned) return standardSkinnedWGSL;

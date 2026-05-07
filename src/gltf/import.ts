@@ -203,6 +203,13 @@ const validateMaterialTextureCoordinates = (mat: GltfMaterial | undefined, attrs
     validateInfo(iridescence?.iridescenceThicknessTexture as any, "iridescenceThickness");
     const anisotropy = (mat.extensions as any)?.KHR_materials_anisotropy as any;
     validateInfo(anisotropy?.anisotropyTexture as any, "anisotropy");
+    const transmission = (mat.extensions as any)?.KHR_materials_transmission as any;
+    validateInfo(transmission?.transmissionTexture as any, "transmission");
+    const volume = (mat.extensions as any)?.KHR_materials_volume as any;
+    validateInfo(volume?.thicknessTexture as any, "volumeThickness");
+    const diffuseTransmission = (mat.extensions as any)?.KHR_materials_diffuse_transmission as any;
+    validateInfo(diffuseTransmission?.diffuseTransmissionTexture as any, "diffuseTransmission");
+    validateInfo(diffuseTransmission?.diffuseTransmissionColorTexture as any, "diffuseTransmissionColor");
 };
 
 const GL_NEAREST = 9728;
@@ -356,8 +363,10 @@ const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportSt
     KHR_materials_emissive_strength: "supported",
     KHR_materials_pbrSpecularGlossiness: "partial",
     KHR_materials_clearcoat: "supported",
-    KHR_materials_transmission: "deferred",
-    KHR_materials_volume: "deferred",
+    KHR_materials_transmission: "supported",
+    KHR_materials_volume: "supported",
+    KHR_materials_diffuse_transmission: "supported",
+    KHR_materials_dispersion: "supported",
     KHR_materials_specular: "supported",
     KHR_materials_sheen: "supported",
     KHR_materials_iridescence: "supported",
@@ -731,6 +740,10 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const sheenExt = materialExtensions.KHR_materials_sheen as any;
     const iridescenceExt = materialExtensions.KHR_materials_iridescence as any;
     const anisotropyExt = materialExtensions.KHR_materials_anisotropy as any;
+    const transmissionExt = materialExtensions.KHR_materials_transmission as any;
+    const volumeExt = materialExtensions.KHR_materials_volume as any;
+    const diffuseTransmissionExt = materialExtensions.KHR_materials_diffuse_transmission as any;
+    const dispersionExt = materialExtensions.KHR_materials_dispersion as any;
     const iorExt = materialExtensions.KHR_materials_ior as { ior?: number } | undefined;
     const emissiveIntensity = 1;
     const standardMaterialExtensions: StandardMaterialExtensionsDescriptor = {};
@@ -789,6 +802,35 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             textureTransform: getTextureTransform(anisotropyExt.anisotropyTexture)
         };
     }
+    if (transmissionExt) {
+        standardMaterialExtensions.transmission = {
+            factor: transmissionExt.transmissionFactor ?? 0,
+            texture: getTex(transmissionExt.transmissionTexture, "transmission"),
+            textureTransform: getTextureTransform(transmissionExt.transmissionTexture)
+        };
+    }
+    if (volumeExt) {
+        const attenuationColor = Array.isArray(volumeExt.attenuationColor) ? volumeExt.attenuationColor : [1, 1, 1];
+        standardMaterialExtensions.volume = {
+            thicknessFactor: volumeExt.thicknessFactor ?? 0,
+            thicknessTexture: getTex(volumeExt.thicknessTexture, "volumeThickness"),
+            thicknessTextureTransform: getTextureTransform(volumeExt.thicknessTexture),
+            attenuationDistance: volumeExt.attenuationDistance ?? Infinity,
+            attenuationColor: [attenuationColor[0] ?? 1, attenuationColor[1] ?? 1, attenuationColor[2] ?? 1]
+        };
+    }
+    if (diffuseTransmissionExt) {
+        const diffuseTransmissionColorFactor = Array.isArray(diffuseTransmissionExt.diffuseTransmissionColorFactor) ? diffuseTransmissionExt.diffuseTransmissionColorFactor : [1, 1, 1];
+        standardMaterialExtensions.diffuseTransmission = {
+            factor: diffuseTransmissionExt.diffuseTransmissionFactor ?? 0,
+            texture: getTex(diffuseTransmissionExt.diffuseTransmissionTexture, "diffuseTransmission"),
+            textureTransform: getTextureTransform(diffuseTransmissionExt.diffuseTransmissionTexture),
+            color: [diffuseTransmissionColorFactor[0] ?? 1, diffuseTransmissionColorFactor[1] ?? 1, diffuseTransmissionColorFactor[2] ?? 1],
+            colorTexture: getTex(diffuseTransmissionExt.diffuseTransmissionColorTexture, "diffuseTransmissionColor"),
+            colorTextureTransform: getTextureTransform(diffuseTransmissionExt.diffuseTransmissionColorTexture)
+        };
+    }
+    if (dispersionExt) standardMaterialExtensions.dispersion = { dispersion: dispersionExt.dispersion ?? 0 };
     if (iorExt) standardMaterialExtensions.ior = { ior: iorExt.ior ?? 1.5 };
     if (emissiveStrengthExt) standardMaterialExtensions.emissiveStrength = { strength: emissiveStrength };
     const isUnlit = isMaterialUnlit(mat);
