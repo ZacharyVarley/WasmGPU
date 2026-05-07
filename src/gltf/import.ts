@@ -5,8 +5,8 @@
  */
 
 import { wasm, mat4f, WasmPtr } from "../wasm";
-import { Geometry, computeGeometryVertexNormals, type GeometryMorphTargetDescriptor } from "../graphics/geometry";
-import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type TextureTransformDescriptor } from "../graphics/material";
+import { Geometry, computeGeometryTangents, computeGeometryVertexNormals, type GeometryMorphTargetDescriptor } from "../graphics/geometry";
+import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type StandardMaterialExtensionsDescriptor, type TextureTransformDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
 import { AnimationClip, Skin } from "../graphics/animation";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
@@ -188,6 +188,13 @@ const validateMaterialTextureCoordinates = (mat: GltfMaterial | undefined, attrs
     const specGloss = (mat.extensions as any)?.KHR_materials_pbrSpecularGlossiness as any;
     validateInfo(specGloss?.diffuseTexture as any, "diffuse");
     validateInfo(specGloss?.specularGlossinessTexture as any, "specularGlossiness");
+    const clearcoat = (mat.extensions as any)?.KHR_materials_clearcoat as any;
+    validateInfo(clearcoat?.clearcoatTexture as any, "clearcoat");
+    validateInfo(clearcoat?.clearcoatRoughnessTexture as any, "clearcoatRoughness");
+    validateInfo(clearcoat?.clearcoatNormalTexture as any, "clearcoatNormal");
+    const specular = (mat.extensions as any)?.KHR_materials_specular as any;
+    validateInfo(specular?.specularTexture as any, "specular");
+    validateInfo(specular?.specularColorTexture as any, "specularColor");
 };
 
 const GL_NEAREST = 9728;
@@ -340,14 +347,14 @@ const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportSt
     KHR_materials_unlit: "supported",
     KHR_materials_emissive_strength: "supported",
     KHR_materials_pbrSpecularGlossiness: "partial",
-    KHR_materials_clearcoat: "deferred",
+    KHR_materials_clearcoat: "supported",
     KHR_materials_transmission: "deferred",
     KHR_materials_volume: "deferred",
-    KHR_materials_specular: "deferred",
+    KHR_materials_specular: "supported",
     KHR_materials_sheen: "deferred",
     KHR_materials_iridescence: "deferred",
     KHR_materials_anisotropy: "deferred",
-    KHR_materials_ior: "deferred",
+    KHR_materials_ior: "supported",
     KHR_materials_variants: "supported",
     KHR_node_visibility: "deferred",
     KHR_animation_pointer: "deferred",
@@ -558,6 +565,21 @@ const triangulateFan = (indices: Uint32Array): Uint32Array => {
     return new Uint32Array(tris);
 };
 
+const getMaterialTangentTexCoords = (mat: GltfMaterial | undefined): number[] => {
+    if (!mat || isMaterialUnlit(mat)) return [];
+    const texCoords: number[] = [];
+    const addInfo = (info: any | undefined): void => {
+        if (!info) return;
+        const texCoord = getTextureInfoTexCoord(info);
+        const resolvedTexCoord = texCoord === 1 ? 1 : 0;
+        if (!texCoords.includes(resolvedTexCoord)) texCoords.push(resolvedTexCoord);
+    };
+    addInfo(mat.normalTexture as any);
+    const clearcoat = (mat.extensions as any)?.KHR_materials_clearcoat as any;
+    addInfo(clearcoat?.clearcoatNormalTexture);
+    return texCoords;
+};
+
 const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: number | undefined, materialCache: Map<number, Material>, textureCache: Map<number, Texture2D>, opts?: ImportGltfOptions): Material => {
     if (materialIndex === undefined) return new StandardMaterial({});
     const existing = materialCache.get(materialIndex);
@@ -691,8 +713,37 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
     const materialExtensions = (mat.extensions as any) ?? {};
     const emissiveStrengthExt = materialExtensions.KHR_materials_emissive_strength as { emissiveStrength?: number } | undefined;
     const emissiveStrength = emissiveStrengthExt?.emissiveStrength ?? 1;
-    const emissiveIntensity = emissiveStrength;
-    const standardMaterialExtensions = emissiveStrengthExt ? { emissiveStrength: { strength: emissiveStrength } } : undefined;
+    const clearcoatExt = materialExtensions.KHR_materials_clearcoat as any;
+    const specularExt = materialExtensions.KHR_materials_specular as any;
+    const iorExt = materialExtensions.KHR_materials_ior as { ior?: number } | undefined;
+    const emissiveIntensity = 1;
+    const standardMaterialExtensions: StandardMaterialExtensionsDescriptor = {};
+    if (clearcoatExt) {
+        standardMaterialExtensions.clearcoat = {
+            factor: clearcoatExt.clearcoatFactor ?? 0,
+            texture: getTex(clearcoatExt.clearcoatTexture, "clearcoat"),
+            textureTransform: getTextureTransform(clearcoatExt.clearcoatTexture),
+            roughness: clearcoatExt.clearcoatRoughnessFactor ?? 0,
+            roughnessTexture: getTex(clearcoatExt.clearcoatRoughnessTexture, "clearcoatRoughness"),
+            roughnessTextureTransform: getTextureTransform(clearcoatExt.clearcoatRoughnessTexture),
+            normalTexture: getTex(clearcoatExt.clearcoatNormalTexture, "clearcoatNormal"),
+            normalTextureTransform: getTextureTransform(clearcoatExt.clearcoatNormalTexture),
+            normalScale: clearcoatExt.clearcoatNormalTexture?.scale ?? 1
+        };
+    }
+    if (specularExt) {
+        const specularColorFactor = Array.isArray(specularExt.specularColorFactor) ? specularExt.specularColorFactor : [1, 1, 1];
+        standardMaterialExtensions.specular = {
+            factor: specularExt.specularFactor ?? 1,
+            texture: getTex(specularExt.specularTexture, "specular"),
+            textureTransform: getTextureTransform(specularExt.specularTexture),
+            color: [specularColorFactor[0] ?? 1, specularColorFactor[1] ?? 1, specularColorFactor[2] ?? 1],
+            colorTexture: getTex(specularExt.specularColorTexture, "specularColor"),
+            colorTextureTransform: getTextureTransform(specularExt.specularColorTexture)
+        };
+    }
+    if (iorExt) standardMaterialExtensions.ior = { ior: iorExt.ior ?? 1.5 };
+    if (emissiveStrengthExt) standardMaterialExtensions.emissiveStrength = { strength: emissiveStrength };
     const isUnlit = isMaterialUnlit(mat);
     const depthWrite = blendMode === BlendMode.Opaque;
     let created: Material;
@@ -728,7 +779,7 @@ const getOrCreateMaterial = (doc: GltfDocument, json: GltfRoot, materialIndex: n
             normalScale,
             occlusionStrength,
             alphaCutoff,
-            extensions: standardMaterialExtensions,
+            extensions: Object.keys(standardMaterialExtensions).length > 0 ? standardMaterialExtensions : undefined,
             blendMode,
             cullMode,
             depthWrite
@@ -780,6 +831,9 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
     let normals: Float32Array | null = null;
     const nAcc = attrs["NORMAL"];
     if (nAcc !== undefined) normals = readAccessorAsFloat32(doc, nAcc);
+    let tangents: Float32Array | null = null;
+    const tangentAcc = attrs["TANGENT"];
+    if (tangentAcc !== undefined) tangents = readAccessorAsFloat32(doc, tangentAcc);
     let uvs: Float32Array | null = null;
     const uvAcc = attrs["TEXCOORD_0"];
     if (uvAcc !== undefined) uvs = readAccessorAsFloat32(doc, uvAcc);
@@ -864,10 +918,22 @@ const buildGeometryFromPrimitive = (doc: GltfDocument, json: GltfRoot, prim: Glt
             morphTargets.push(target);
         }
     }
-    if (!normals && computeMissingNormals) normals = computeGeometryVertexNormals(positions, indices);
+    const tangentTexCoords = getMaterialTangentTexCoords(prim.material !== undefined ? json.materials?.[prim.material] : undefined);
+    const tangentSpaceNeeded = tangentTexCoords.length > 0;
+    if (!normals && (computeMissingNormals || tangentSpaceNeeded)) normals = computeGeometryVertexNormals(positions, indices);
+    if (!tangents && tangentSpaceNeeded) {
+        const tangentTexCoord = tangentTexCoords[0]!;
+        if (tangentTexCoords.length > 1) warn(opts, "Primitive uses tangent-space textures on multiple texture coordinate sets; shader will fall back to derivative tangent space.");
+        else {
+            const tangentUvs = tangentTexCoord === 1 ? uvs1 : uvs;
+            if (normals && tangentUvs) tangents = computeGeometryTangents(positions, normals, tangentUvs, indices);
+            else warn(opts, `Primitive uses tangent-space material features but is missing NORMAL or TEXCOORD_${tangentTexCoord}; shader will fall back to derivative tangent space.`);
+        }
+    }
     return new Geometry({
         positions,
         normals: normals ?? undefined,
+        tangents: tangents ?? undefined,
         uvs: uvs ?? undefined,
         uvs1: uvs1 ?? undefined,
         joints: joints ?? undefined,

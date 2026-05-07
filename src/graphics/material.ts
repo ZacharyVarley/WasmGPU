@@ -58,6 +58,8 @@ const cloneTextureTransform = (transform: TextureTransform): TextureTransform =>
     };
 };
 
+const DEFAULT_TEXTURE_TRANSFORM = normalizeTextureTransform(null);
+
 const packTextureTransform = (f: Float32Array, offset: number, transform: TextureTransform): void => {
     const cos = Math.cos(transform.rotation);
     const sin = Math.sin(transform.rotation);
@@ -282,9 +284,12 @@ export class UnlitMaterial extends Material {
 export type StandardMaterialClearcoatExtensionDescriptor = {
     factor?: number;
     texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
     roughness?: number;
     roughnessTexture?: Texture2D | null;
+    roughnessTextureTransform?: TextureTransformDescriptor | null;
     normalTexture?: Texture2D | null;
+    normalTextureTransform?: TextureTransformDescriptor | null;
     normalScale?: number;
 };
 
@@ -303,8 +308,10 @@ export type StandardMaterialVolumeExtensionDescriptor = {
 export type StandardMaterialSpecularExtensionDescriptor = {
     factor?: number;
     texture?: Texture2D | null;
+    textureTransform?: TextureTransformDescriptor | null;
     color?: Color;
     colorTexture?: Texture2D | null;
+    colorTextureTransform?: TextureTransformDescriptor | null;
 };
 
 export type StandardMaterialSheenExtensionDescriptor = {
@@ -352,9 +359,12 @@ export type StandardMaterialExtensionsDescriptor = {
 export type StandardMaterialClearcoatExtension = Readonly<{
     factor: number;
     texture: Texture2D | null;
+    textureTransform: TextureTransform;
     roughness: number;
     roughnessTexture: Texture2D | null;
+    roughnessTextureTransform: TextureTransform;
     normalTexture: Texture2D | null;
+    normalTextureTransform: TextureTransform;
     normalScale: number;
 }>;
 
@@ -373,8 +383,10 @@ export type StandardMaterialVolumeExtension = Readonly<{
 export type StandardMaterialSpecularExtension = Readonly<{
     factor: number;
     texture: Texture2D | null;
+    textureTransform: TextureTransform;
     color: Color;
     colorTexture: Texture2D | null;
+    colorTextureTransform: TextureTransform;
 }>;
 
 export type StandardMaterialSheenExtension = Readonly<{
@@ -480,9 +492,12 @@ const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtens
         clearcoat: descriptor?.clearcoat ? {
             factor: descriptor.clearcoat.factor ?? 0,
             texture: descriptor.clearcoat.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.clearcoat.textureTransform),
             roughness: descriptor.clearcoat.roughness ?? 0,
             roughnessTexture: descriptor.clearcoat.roughnessTexture ?? null,
+            roughnessTextureTransform: normalizeTextureTransform(descriptor.clearcoat.roughnessTextureTransform),
             normalTexture: descriptor.clearcoat.normalTexture ?? null,
+            normalTextureTransform: normalizeTextureTransform(descriptor.clearcoat.normalTextureTransform),
             normalScale: descriptor.clearcoat.normalScale ?? 1
         } : null,
         transmission: descriptor?.transmission ? {
@@ -498,8 +513,10 @@ const normalizeStandardMaterialExtensions = (descriptor?: StandardMaterialExtens
         specular: descriptor?.specular ? {
             factor: descriptor.specular.factor ?? 1,
             texture: descriptor.specular.texture ?? null,
+            textureTransform: normalizeTextureTransform(descriptor.specular.textureTransform),
             color: cloneColor(descriptor.specular.color, [1, 1, 1]),
-            colorTexture: descriptor.specular.colorTexture ?? null
+            colorTexture: descriptor.specular.colorTexture ?? null,
+            colorTextureTransform: normalizeTextureTransform(descriptor.specular.colorTextureTransform)
         } : null,
         sheen: descriptor?.sheen ? {
             color: cloneColor(descriptor.sheen.color, [0, 0, 0]),
@@ -556,8 +573,8 @@ export class StandardMaterial extends Material {
     private _extensions: StandardMaterialExtensions;
     private static _cachedBindGroupLayout: GPUBindGroupLayout | null = null;
     private static _cachedLayoutDevice: GPUDevice | null = null;
-    private static readonly UNIFORM_FLOAT_COUNT = 56;
-    private static readonly TEXTURE_BINDING_COUNT = 5;
+    private static readonly UNIFORM_FLOAT_COUNT = 108;
+    private static readonly TEXTURE_BINDING_COUNT = 10;
 
     constructor(descriptor: StandardMaterialDescriptor = {}) {
         super({
@@ -768,6 +785,7 @@ export class StandardMaterial extends Material {
 
     setExtensions(descriptor?: StandardMaterialExtensionsDescriptor): this {
         this._extensions = normalizeStandardMaterialExtensions(descriptor);
+        this.invalidateBindings();
         return this;
     }
 
@@ -850,6 +868,27 @@ export class StandardMaterial extends Material {
         packTextureTransform(f, 32, this._normalTextureTransform);
         packTextureTransform(f, 40, this._occlusionTextureTransform);
         packTextureTransform(f, 48, this._emissiveTextureTransform);
+        const clearcoat = this._extensions.clearcoat;
+        const specular = this._extensions.specular;
+        const ior = this._extensions.ior;
+        const emissiveStrength = this._extensions.emissiveStrength;
+        f[56] = clearcoat?.factor ?? 0;
+        f[57] = clearcoat?.roughness ?? 0;
+        f[58] = clearcoat?.normalScale ?? 1;
+        f[59] = 0;
+        f[60] = specular?.factor ?? 1;
+        f[61] = specular?.color[0] ?? 1;
+        f[62] = specular?.color[1] ?? 1;
+        f[63] = specular?.color[2] ?? 1;
+        f[64] = ior?.ior ?? 1.5;
+        f[65] = emissiveStrength?.strength ?? 1;
+        f[66] = 0;
+        f[67] = 0;
+        packTextureTransform(f, 68, clearcoat?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 76, clearcoat?.roughnessTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 84, clearcoat?.normalTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 92, specular?.textureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
+        packTextureTransform(f, 100, specular?.colorTextureTransform ?? DEFAULT_TEXTURE_TRANSFORM);
         return f;
     }
 

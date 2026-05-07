@@ -1970,12 +1970,17 @@ export class Renderer {
                 pass.setVertexBuffer(1, buffers.normalBuffer);
                 pass.setVertexBuffer(2, geometry.uvBuffer);
                 pass.setVertexBuffer(3, geometry.uv1Buffer);
+                const standardMaterial = material instanceof StandardMaterial;
+                if (standardMaterial) pass.setVertexBuffer(4, geometry.tangentBuffer);
                 if (first.skinned) {
-                    pass.setVertexBuffer(4, geometry.jointsBuffer!);
-                    pass.setVertexBuffer(5, geometry.weightsBuffer!);
-                    if (first.skinned8) {
-                        pass.setVertexBuffer(6, geometry.joints1Buffer!);
-                        pass.setVertexBuffer(7, geometry.weights1Buffer!);
+                    if (standardMaterial) pass.setVertexBuffer(5, geometry.skinInfluenceBuffer!);
+                    else {
+                        pass.setVertexBuffer(4, geometry.jointsBuffer!);
+                        pass.setVertexBuffer(5, geometry.weightsBuffer!);
+                        if (first.skinned8) {
+                            pass.setVertexBuffer(6, geometry.joints1Buffer!);
+                            pass.setVertexBuffer(7, geometry.weights1Buffer!);
+                        }
                     }
                 }
                 if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
@@ -2255,12 +2260,17 @@ export class Renderer {
                     pass.setVertexBuffer(1, buffers.normalBuffer);
                     pass.setVertexBuffer(2, geometry.uvBuffer);
                     pass.setVertexBuffer(3, geometry.uv1Buffer);
+                    const standardMaterial = material instanceof StandardMaterial;
+                    if (standardMaterial) pass.setVertexBuffer(4, geometry.tangentBuffer);
                     if (drawItem.skinned) {
-                        pass.setVertexBuffer(4, geometry.jointsBuffer!);
-                        pass.setVertexBuffer(5, geometry.weightsBuffer!);
-                        if (drawItem.skinned8) {
-                            pass.setVertexBuffer(6, geometry.joints1Buffer!);
-                            pass.setVertexBuffer(7, geometry.weights1Buffer!);
+                        if (standardMaterial) pass.setVertexBuffer(5, geometry.skinInfluenceBuffer!);
+                        else {
+                            pass.setVertexBuffer(4, geometry.jointsBuffer!);
+                            pass.setVertexBuffer(5, geometry.weightsBuffer!);
+                            if (drawItem.skinned8) {
+                                pass.setVertexBuffer(6, geometry.joints1Buffer!);
+                                pass.setVertexBuffer(7, geometry.weights1Buffer!);
+                            }
                         }
                     }
                     if (geometry.isIndexed) pass.setIndexBuffer(geometry.indexBuffer!, "uint32");
@@ -2688,7 +2698,10 @@ export class Renderer {
         const bytes = wasmInterop.bytes();
         this.queue.writeBuffer(this.instanceBuffer!, dstOffset, bytes, outPtr, outBytes);
         pass.setBindGroup(0, this.globalBindGroups[0]);
-        pass.setVertexBuffer(4, this.instanceBuffer!, dstOffset, outBytes);
+        if (material instanceof StandardMaterial) {
+            pass.setVertexBuffer(4, geometry.tangentBuffer);
+            pass.setVertexBuffer(5, this.instanceBuffer!, dstOffset, outBytes);
+        } else pass.setVertexBuffer(4, this.instanceBuffer!, dstOffset, outBytes);
         if (geometry.isIndexed) pass.drawIndexed(geometry.indexCount, count);
         else pass.draw(geometry.vertexCount, count);
         this.instanceBufferOffset = dstEnd;
@@ -2711,7 +2724,30 @@ export class Renderer {
         if (skinned) bindGroupLayouts.push(this.skinBindGroupLayout);
         const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts });
         let buffers: GPUVertexBufferLayout[];
-        if (instanced) {
+        const standardMaterial = material instanceof StandardMaterial;
+        if (instanced && standardMaterial) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 12, offset: 0, format: "float32x4" }] },
+                {
+                    arrayStride: this.INSTANCE_STRIDE_BYTES,
+                    stepMode: "instance",
+                    attributes: [
+                        { shaderLocation: 3, offset: 0, format: "float32x4" },
+                        { shaderLocation: 4, offset: 16, format: "float32x4" },
+                        { shaderLocation: 5, offset: 32, format: "float32x4" },
+                        { shaderLocation: 6, offset: 48, format: "float32x4" },
+                        { shaderLocation: 7, offset: 64, format: "float32x4" },
+                        { shaderLocation: 8, offset: 80, format: "float32x4" },
+                        { shaderLocation: 9, offset: 96, format: "float32x4" },
+                        { shaderLocation: 10, offset: 112, format: "float32x4" }
+                    ]
+                }
+            ];
+        } else if (instanced) {
             buffers = [
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
                 { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
@@ -2732,6 +2768,23 @@ export class Renderer {
                     ]
                 }
             ];
+        } else if (skinned8 && standardMaterial) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 12, offset: 0, format: "float32x4" }] },
+                {
+                    arrayStride: 48,
+                    attributes: [
+                        { shaderLocation: 3, offset: 0, format: "uint16x4" },
+                        { shaderLocation: 4, offset: 8, format: "float32x4" },
+                        { shaderLocation: 5, offset: 24, format: "uint16x4" },
+                        { shaderLocation: 6, offset: 32, format: "float32x4" }
+                    ]
+                }
+            ];
         } else if (skinned8) {
             buffers = [
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
@@ -2743,6 +2796,21 @@ export class Renderer {
                 { arrayStride: 8, attributes: [{ shaderLocation: 5, offset: 0, format: "uint16x4" }] },
                 { arrayStride: 16, attributes: [{ shaderLocation: 6, offset: 0, format: "float32x4" }] }
             ];
+        } else if (skinned && standardMaterial) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 12, offset: 0, format: "float32x4" }] },
+                {
+                    arrayStride: 24,
+                    attributes: [
+                        { shaderLocation: 3, offset: 0, format: "uint16x4" },
+                        { shaderLocation: 4, offset: 8, format: "float32x4" }
+                    ]
+                }
+            ];
         } else if (skinned) {
             buffers = [
                 { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
@@ -2751,6 +2819,14 @@ export class Renderer {
                 { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
                 { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "uint16x4" }] },
                 { arrayStride: 16, attributes: [{ shaderLocation: 4, offset: 0, format: "float32x4" }] }
+            ];
+        } else if (standardMaterial) {
+            buffers = [
+                { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+                { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+                { arrayStride: 8, attributes: [{ shaderLocation: 11, offset: 0, format: "float32x2" }] },
+                { arrayStride: 16, attributes: [{ shaderLocation: 12, offset: 0, format: "float32x4" }] }
             ];
         } else {
             buffers = [
@@ -3052,7 +3128,15 @@ export class Renderer {
             const n = material.normalTexture;
             const o = material.occlusionTexture;
             const e = material.emissiveTexture;
-            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}`;
+            const extensions = material.extensions;
+            const cc = extensions.clearcoat;
+            const sp = extensions.specular;
+            const ccTex = cc?.texture ?? null;
+            const ccRough = cc?.roughnessTexture ?? null;
+            const ccNormal = cc?.normalTexture ?? null;
+            const spTex = sp?.texture ?? null;
+            const spColor = sp?.colorTexture ?? null;
+            return `standard:${bc?.id ?? 0}:${bc?.revision ?? 0}:${mr?.id ?? 0}:${mr?.revision ?? 0}:${n?.id ?? 0}:${n?.revision ?? 0}:${o?.id ?? 0}:${o?.revision ?? 0}:${e?.id ?? 0}:${e?.revision ?? 0}:${ccTex?.id ?? 0}:${ccTex?.revision ?? 0}:${ccRough?.id ?? 0}:${ccRough?.revision ?? 0}:${ccNormal?.id ?? 0}:${ccNormal?.revision ?? 0}:${spTex?.id ?? 0}:${spTex?.revision ?? 0}:${spColor?.id ?? 0}:${spColor?.revision ?? 0}`;
         }
         if (material instanceof DataMaterial) {
             const bufId = material.dataBuffer ? this.getObjectId(material.dataBuffer) : 0;
@@ -3100,6 +3184,14 @@ export class Renderer {
             const n = material.normalTexture;
             const o = material.occlusionTexture;
             const e = material.emissiveTexture;
+            const extensions = material.extensions;
+            const cc = extensions.clearcoat;
+            const sp = extensions.specular;
+            const ccTex = cc?.texture ?? null;
+            const ccRough = cc?.roughnessTexture ?? null;
+            const ccNormal = cc?.normalTexture ?? null;
+            const spTex = sp?.texture ?? null;
+            const spColor = sp?.colorTexture ?? null;
             material.bindGroup = this.device.createBindGroup({
                 layout,
                 entries: [
@@ -3113,7 +3205,17 @@ export class Renderer {
                     { binding: 7, resource: o ? o.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
                     { binding: 8, resource: o ? o.getView(this.device, this.queue, "linear", this.fallbackOcclusionViewLinear) : this.fallbackOcclusionViewLinear },
                     { binding: 9, resource: e ? e.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
-                    { binding: 10, resource: e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb }
+                    { binding: 10, resource: e ? e.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb },
+                    { binding: 11, resource: ccTex ? ccTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 12, resource: ccTex ? ccTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 13, resource: ccRough ? ccRough.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 14, resource: ccRough ? ccRough.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 15, resource: ccNormal ? ccNormal.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 16, resource: ccNormal ? ccNormal.getView(this.device, this.queue, "linear", this.fallbackNormalViewLinear) : this.fallbackNormalViewLinear },
+                    { binding: 17, resource: spTex ? spTex.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 18, resource: spTex ? spTex.getView(this.device, this.queue, "linear", this.fallbackWhiteViewLinear) : this.fallbackWhiteViewLinear },
+                    { binding: 19, resource: spColor ? spColor.getSampler(this.device, this.fallbackSampler) : this.fallbackSampler },
+                    { binding: 20, resource: spColor ? spColor.getView(this.device, this.queue, "srgb", this.fallbackWhiteViewSrgb) : this.fallbackWhiteViewSrgb }
                 ]
             });
             material.bindGroupKey = key;

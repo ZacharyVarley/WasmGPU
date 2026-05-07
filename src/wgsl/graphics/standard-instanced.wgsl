@@ -18,7 +18,20 @@ struct MaterialUniforms {
     occlusionTransform0: vec4f,
     occlusionTransform1: vec4f,
     emissiveTransform0: vec4f,
-    emissiveTransform1: vec4f
+    emissiveTransform1: vec4f,
+    clearcoatParams: vec4f,
+    specularParams: vec4f,
+    extensionParams: vec4f,
+    clearcoatTransform0: vec4f,
+    clearcoatTransform1: vec4f,
+    clearcoatRoughnessTransform0: vec4f,
+    clearcoatRoughnessTransform1: vec4f,
+    clearcoatNormalTransform0: vec4f,
+    clearcoatNormalTransform1: vec4f,
+    specularTransform0: vec4f,
+    specularTransform1: vec4f,
+    specularColorTransform0: vec4f,
+    specularColorTransform1: vec4f
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -32,12 +45,23 @@ struct MaterialUniforms {
 @group(1) @binding(8) var occlusionTex: texture_2d<f32>;
 @group(1) @binding(9) var emissiveSampler: sampler;
 @group(1) @binding(10) var emissiveTex: texture_2d<f32>;
+@group(1) @binding(11) var clearcoatSampler: sampler;
+@group(1) @binding(12) var clearcoatTex: texture_2d<f32>;
+@group(1) @binding(13) var clearcoatRoughnessSampler: sampler;
+@group(1) @binding(14) var clearcoatRoughnessTex: texture_2d<f32>;
+@group(1) @binding(15) var clearcoatNormalSampler: sampler;
+@group(1) @binding(16) var clearcoatNormalTex: texture_2d<f32>;
+@group(1) @binding(17) var specularSampler: sampler;
+@group(1) @binding(18) var specularTex: texture_2d<f32>;
+@group(1) @binding(19) var specularColorSampler: sampler;
+@group(1) @binding(20) var specularColorTex: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
     @location(11) uv1: vec2f,
+    @location(12) tangent: vec4f,
     @location(3) m0: vec4f,
     @location(4) m1: vec4f,
     @location(5) m2: vec4f,
@@ -53,7 +77,8 @@ struct VertexOutput {
     @location(0) worldPos: vec3f,
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
-    @location(3) uv1: vec2f
+    @location(3) uv1: vec2f,
+    @location(4) tangent: vec4f
 };
 
 struct CameraUniforms {
@@ -91,6 +116,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.position = camera.viewProjection * worldPos4;
     out.worldPos = worldPos4.xyz;
     out.normal = normalize((normalM * vec4f(in.normal, 0.0)).xyz);
+    out.tangent = vec4f(normalize((normalM * vec4f(in.tangent.xyz, 0.0)).xyz), in.tangent.w);
     out.uv = in.uv;
     out.uv1 = in.uv1;
     return out;
@@ -106,8 +132,8 @@ fn applyTextureTransform(uv0: vec2f, uv1: vec2f, transform0: vec4f, transform1: 
     return rotated + transform0.xy;
 }
 
-fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+fn fresnelSchlick(cosTheta: f32, F0: vec3f, F90: vec3f) -> vec3f {
+    return F0 + (F90 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
 fn distributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
@@ -131,7 +157,7 @@ fn geometrySmith(N: vec3f, V: vec3f, L: vec3f, roughness: f32) -> f32 {
     return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
 }
 
-fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+fn applyDerivativeNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
     let n = normalize(N);
     let dp1 = dpdx(worldPos);
     let dp2 = dpdy(worldPos);
@@ -150,6 +176,32 @@ fn applyNormalMap(N: vec3f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, nor
     var ns = normalSample * 2.0 - vec3f(1.0);
     ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
     return normalize(tbn * ns);
+}
+
+fn applyNormalMap(N: vec3f, tangent: vec4f, worldPos: vec3f, uv: vec2f, normalSample: vec3f, normalScale: f32) -> vec3f {
+    let n = normalize(N);
+    let derivativeNormal = applyDerivativeNormalMap(n, worldPos, uv, normalSample, normalScale);
+    var t = tangent.xyz - n * dot(n, tangent.xyz);
+    let tLen2 = dot(t, t);
+    t = t * inverseSqrt(max(tLen2, 1e-20));
+    let b = cross(n, t) * select(-1.0, 1.0, tangent.w >= 0.0);
+    var ns = normalSample * 2.0 - vec3f(1.0);
+    ns = vec3f(ns.x * normalScale, ns.y * normalScale, ns.z);
+    let tangentNormal = normalize(t * ns.x + b * ns.y + n * ns.z);
+    return select(derivativeNormal, tangentNormal, tLen2 > 1e-20);
+}
+
+fn maxComponent(v: vec3f) -> f32 {
+    return max(max(v.x, v.y), v.z);
+}
+
+fn dielectricF0FromIor(ior: f32) -> f32 {
+    if (ior == 0.0) {
+        return 1.0;
+    }
+    let safeIor = max(ior, 1.0);
+    let r = (safeIor - 1.0) / (safeIor + 1.0);
+    return r * r;
 }
 
 fn computeRangeAttenuation(distance: f32, range: f32) -> f32 {
@@ -176,6 +228,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let normalUv = applyTextureTransform(in.uv, in.uv1, material.normalTransform0, material.normalTransform1);
     let occlusionUv = applyTextureTransform(in.uv, in.uv1, material.occlusionTransform0, material.occlusionTransform1);
     let emissiveUv = applyTextureTransform(in.uv, in.uv1, material.emissiveTransform0, material.emissiveTransform1);
+    let clearcoatUv = applyTextureTransform(in.uv, in.uv1, material.clearcoatTransform0, material.clearcoatTransform1);
+    let clearcoatRoughnessUv = applyTextureTransform(in.uv, in.uv1, material.clearcoatRoughnessTransform0, material.clearcoatRoughnessTransform1);
+    let clearcoatNormalUv = applyTextureTransform(in.uv, in.uv1, material.clearcoatNormalTransform0, material.clearcoatNormalTransform1);
+    let specularUv = applyTextureTransform(in.uv, in.uv1, material.specularTransform0, material.specularTransform1);
+    let specularColorUv = applyTextureTransform(in.uv, in.uv1, material.specularColorTransform0, material.specularColorTransform1);
     let baseSample = textureSample(baseColorTex, baseColorSampler, baseUv);
     let baseColor = material.color * baseSample;
     let alphaCutoff = material.params2.x;
@@ -186,14 +243,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let metallic = clamp(material.params.x * mrSample.b, 0.0, 1.0);
     let roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
     let normalSample = textureSample(normalTex, normalSampler, normalUv).xyz;
-    let N = applyNormalMap(in.normal, in.worldPos, normalUv, normalSample, material.params.z);
+    let N = applyNormalMap(in.normal, in.tangent, in.worldPos, normalUv, normalSample, material.params.z);
     let occlSample = textureSample(occlusionTex, occlusionSampler, occlusionUv).r;
     let ao = 1.0 + material.params.w * (occlSample - 1.0);
     let emissiveSample = textureSample(emissiveTex, emissiveSampler, emissiveUv).rgb;
-    let emissive = emissiveSample * material.emissive.rgb * material.emissive.a;
+    let emissive = emissiveSample * material.emissive.rgb * material.emissive.a * material.extensionParams.y;
+    let clearcoat = clamp(material.clearcoatParams.x * textureSample(clearcoatTex, clearcoatSampler, clearcoatUv).r, 0.0, 1.0);
+    let clearcoatRoughness = clamp(material.clearcoatParams.y * textureSample(clearcoatRoughnessTex, clearcoatRoughnessSampler, clearcoatRoughnessUv).g, 0.04, 1.0);
+    let clearcoatNormalSample = textureSample(clearcoatNormalTex, clearcoatNormalSampler, clearcoatNormalUv).xyz;
+    let clearcoatNormal = applyNormalMap(in.normal, in.tangent, in.worldPos, clearcoatNormalUv, clearcoatNormalSample, material.clearcoatParams.z);
+    let specularStrength = clamp(material.specularParams.x * textureSample(specularTex, specularSampler, specularUv).a, 0.0, 1.0);
+    let specularColor = material.specularParams.yzw * textureSample(specularColorTex, specularColorSampler, specularColorUv).rgb;
     let albedo = baseColor.rgb;
     let V = normalize(camera.position - in.worldPos);
-    let F0 = mix(vec3f(0.04), albedo, metallic);
+    let dielectricF0 = dielectricF0FromIor(material.extensionParams.x);
+    let dielectricF0Color = min(vec3f(dielectricF0) * specularColor, vec3f(1.0)) * specularStrength;
+    let F0 = mix(dielectricF0Color, albedo, metallic);
+    let F90 = mix(vec3f(specularStrength), vec3f(1.0), metallic);
+    let clearcoatViewFresnel = clamp(clearcoat * (0.04 + 0.96 * pow(1.0 - abs(dot(V, clearcoatNormal)), 5.0)), 0.0, 1.0);
     var Lo = lighting.ambient.rgb * albedo * ao;
     for (var i = 0u; i < lighting.lightCount; i++) {
         let light = lighting.lights[i];
@@ -220,16 +287,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let radiance = light.color.rgb * light.color.a * attenuation;
         let NDF = distributionGGX(N, H, roughness);
         let G = geometrySmith(N, V, L, roughness);
-        let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        let F = fresnelSchlick(max(dot(H, V), 0.0), F0, F90);
         let numerator = NDF * G * F;
         let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-        let specular = numerator / denominator;
-        let kS = F;
-        let kD = (1.0 - kS) * (1.0 - metallic);
+        let specularBrdf = numerator / denominator;
+        let kD = vec3f((1.0 - maxComponent(F)) * (1.0 - metallic));
         let NdotL = max(dot(N, L), 0.0);
-        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+        let baseContribution = (kD * albedo / PI + specularBrdf) * radiance * NdotL;
+        let clearcoatNdotL = max(dot(clearcoatNormal, L), 0.0);
+        let clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
+        let clearcoatNDF = distributionGGX(clearcoatNormal, H, clearcoatRoughness);
+        let clearcoatG = geometrySmith(clearcoatNormal, V, L, clearcoatRoughness);
+        let clearcoatBrdf = clearcoatNDF * clearcoatG / (4.0 * clearcoatNdotV * clearcoatNdotL + 0.0001);
+        let clearcoatContribution = vec3f(clearcoatBrdf) * radiance * clearcoatNdotL;
+        Lo += mix(baseContribution, clearcoatContribution, clearcoatViewFresnel);
     }
-    Lo += emissive;
+    Lo += emissive * (1.0 - clearcoatViewFresnel);
     Lo = Lo / (Lo + vec3f(1.0));
     Lo = pow(Lo, vec3f(1.0 / 2.2));
     return vec4f(Lo, baseColor.a);

@@ -20,6 +20,7 @@ export type GeometryMorphTargetDescriptor = {
 export type GeometryDescriptor = {
     positions: Float32Array;
     normals?: Float32Array;
+    tangents?: Float32Array;
     uvs?: Float32Array;
     uvs1?: Float32Array;
     joints?: Uint16Array;
@@ -148,9 +149,91 @@ export const computeGeometryVertexNormals = (positions: Float32Array, indices: U
     return out;
 };
 
+const normalizeVec3At = (data: Float32Array, offset: number, fallback: [number, number, number]): [number, number, number] => {
+    let x = data[offset + 0] ?? fallback[0], y = data[offset + 1] ?? fallback[1], z = data[offset + 2] ?? fallback[2];
+    const len = Math.hypot(x, y, z);
+    if (len <= 1e-12) return fallback;
+    x /= len; y /= len; z /= len;
+    return [x, y, z];
+};
+
+const fallbackTangentForNormal = (nx: number, ny: number, nz: number): [number, number, number] => {
+    const ax = Math.abs(nx) < 0.9 ? 1 : 0, ay = ax === 1 ? 0 : 1, az = 0;
+    let tx = ay * nz - az * ny, ty = az * nx - ax * nz, tz = ax * ny - ay * nx;
+    const len = Math.hypot(tx, ty, tz);
+    if (len <= 1e-12) return [1, 0, 0];
+    tx /= len; ty /= len; tz /= len;
+    return [tx, ty, tz];
+};
+
+export const computeGeometryTangents = (positions: Float32Array, normals: Float32Array, uvs: Float32Array, indices: Uint32Array | null): Float32Array => {
+    const vertexCount = (positions.length / 3) | 0;
+    const out = new Float32Array(vertexCount * 4), tan1 = new Float32Array(vertexCount * 3), tan2 = new Float32Array(vertexCount * 3);
+    const indexCount = indices ? indices.length : vertexCount;
+    const indexAt = (i: number): number => indices ? indices[i]! : i;
+    for (let i = 0; i + 2 < indexCount; i += 3) {
+        const i0 = indexAt(i + 0), i1 = indexAt(i + 1), i2 = indexAt(i + 2);
+        const p0 = i0 * 3, p1 = i1 * 3, p2 = i2 * 3;
+        const uv0 = i0 * 2, uv1 = i1 * 2, uv2 = i2 * 2;
+        const x1 = positions[p1 + 0] - positions[p0 + 0], y1 = positions[p1 + 1] - positions[p0 + 1], z1 = positions[p1 + 2] - positions[p0 + 2], x2 = positions[p2 + 0] - positions[p0 + 0], y2 = positions[p2 + 1] - positions[p0 + 1], z2 = positions[p2 + 2] - positions[p0 + 2];
+        const s1 = uvs[uv1 + 0] - uvs[uv0 + 0], t1 = uvs[uv1 + 1] - uvs[uv0 + 1], s2 = uvs[uv2 + 0] - uvs[uv0 + 0], t2 = uvs[uv2 + 1] - uvs[uv0 + 1];
+        const denom = s1 * t2 - s2 * t1;
+        if (Math.abs(denom) <= 1e-12) continue;
+        const r = 1 / denom;
+        const sx = (t2 * x1 - t1 * x2) * r, sy = (t2 * y1 - t1 * y2) * r, sz = (t2 * z1 - t1 * z2) * r, tx = (s1 * x2 - s2 * x1) * r, ty = (s1 * y2 - s2 * y1) * r, tz = (s1 * z2 - s2 * z1) * r;
+        const o0 = i0 * 3;
+        tan1[o0 + 0] += sx; tan1[o0 + 1] += sy; tan1[o0 + 2] += sz; tan2[o0 + 0] += tx; tan2[o0 + 1] += ty; tan2[o0 + 2] += tz;
+        const o1 = i1 * 3;
+        tan1[o1 + 0] += sx; tan1[o1 + 1] += sy; tan1[o1 + 2] += sz; tan2[o1 + 0] += tx; tan2[o1 + 1] += ty; tan2[o1 + 2] += tz;
+        const o2 = i2 * 3;
+        tan1[o2 + 0] += sx; tan1[o2 + 1] += sy; tan1[o2 + 2] += sz; tan2[o2 + 0] += tx; tan2[o2 + 1] += ty; tan2[o2 + 2] += tz;
+    }
+    for (let i = 0; i < vertexCount; i++) {
+        const nOff = i * 3, tOff = i * 3, o = i * 4;
+        const [nx, ny, nz] = normalizeVec3At(normals, nOff, [0, 1, 0]);
+        let tx = tan1[tOff + 0], ty = tan1[tOff + 1], tz = tan1[tOff + 2];
+        const ndott = nx * tx + ny * ty + nz * tz;
+        tx -= nx * ndott; ty -= ny * ndott; tz -= nz * ndott;
+        const tLen = Math.hypot(tx, ty, tz);
+        if (tLen <= 1e-12) [tx, ty, tz] = fallbackTangentForNormal(nx, ny, nz);
+        else { tx /= tLen; ty /= tLen; tz /= tLen; }
+        const bx = ny * tz - nz * ty, by = nz * tx - nx * tz, bz = nx * ty - ny * tx;
+        const cx = tan2[tOff + 0], cy = tan2[tOff + 1], cz = tan2[tOff + 2];
+        const handedness = (bx * cx + by * cy + bz * cz) < 0 ? -1 : 1;
+        out[o + 0] = tx; out[o + 1] = ty; out[o + 2] = tz; out[o + 3] = handedness;
+    }
+    return out;
+};
+
+const createDerivativeFallbackTangents = (vertexCount: number): Float32Array => {
+    const out = new Float32Array(vertexCount * 4);
+    for (let i = 0; i < vertexCount; i++) out[i * 4 + 3] = 1;
+    return out;
+};
+
+const packSkinInfluences = (joints: Uint16Array, weights: Float32Array, joints1: Uint16Array | null, weights1: Float32Array | null): Uint8Array => {
+    const vertexCount = (joints.length / 4) | 0;
+    const hasSecondSet = joints1 !== null && weights1 !== null;
+    const stride = hasSecondSet ? 48 : 24;
+    const out = new Uint8Array(vertexCount * stride);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < vertexCount; i++) {
+        const vertexBase = i * stride;
+        const src = i * 4;
+        for (let c = 0; c < 4; c++) view.setUint16(vertexBase + c * 2, joints[src + c] ?? 0, true);
+        for (let c = 0; c < 4; c++) view.setFloat32(vertexBase + 8 + c * 4, weights[src + c] ?? 0, true);
+        if (hasSecondSet) {
+            for (let c = 0; c < 4; c++) view.setUint16(vertexBase + 24 + c * 2, joints1[src + c] ?? 0, true);
+            for (let c = 0; c < 4; c++) view.setFloat32(vertexBase + 32 + c * 4, weights1[src + c] ?? 0, true);
+        }
+    }
+    return out;
+};
+
 export class Geometry {
     readonly positions: Float32Array;
     readonly normals: Float32Array;
+    readonly tangents: Float32Array;
     readonly uvs: Float32Array;
     readonly uvs1: Float32Array;
     readonly joints: Uint16Array | null;
@@ -161,6 +244,7 @@ export class Geometry {
     private _weightsBuffer: GPUBuffer | null = null;
     private _joints1Buffer: GPUBuffer | null = null;
     private _weights1Buffer: GPUBuffer | null = null;
+    private _skinInfluenceBuffer: GPUBuffer | null = null;
     readonly indices: Uint32Array | null;
     readonly morphTargets: ReadonlyArray<GeometryMorphTargetDescriptor>;
     readonly authoredNormals: boolean;
@@ -172,6 +256,7 @@ export class Geometry {
     private _boundsRadius: number;
     private _positionBuffer: GPUBuffer | null = null;
     private _normalBuffer: GPUBuffer | null = null;
+    private _tangentBuffer: GPUBuffer | null = null;
     private _uvBuffer: GPUBuffer | null = null;
     private _uv1Buffer: GPUBuffer | null = null;
     private _indexBuffer: GPUBuffer | null = null;
@@ -196,6 +281,12 @@ export class Geometry {
         if (fallbackNormals) for (let i = 1; i < normals.length; i += 3) normals[i] = 1;
         this.authoredNormals = authoredNormals;
         this.normals = normals;
+        const expectedTangentLength = this.vertexCount * 4;
+        let tangents = descriptor.tangents ?? null;
+        if (tangents && tangents.length !== expectedTangentLength) {
+            console.warn(`[Geometry] tangents length mismatch (got ${tangents.length}, expected ${expectedTangentLength}). Using fallback tangents.`);
+            tangents = null;
+        }
         const expectedUvLength = this.vertexCount * 2;
         let uvs = descriptor.uvs ?? new Float32Array(expectedUvLength);
         if (uvs.length !== expectedUvLength) {
@@ -203,6 +294,7 @@ export class Geometry {
             uvs = new Float32Array(expectedUvLength);
         }
         this.uvs = uvs;
+        this.tangents = tangents ?? createDerivativeFallbackTangents(this.vertexCount);
         let uvs1 = descriptor.uvs1 ?? new Float32Array(expectedUvLength);
         if (uvs1.length !== expectedUvLength) {
             console.warn(`[Geometry] uvs1 length mismatch (got ${uvs1.length}, expected ${expectedUvLength}). TEXCOORD_1 disabled.`);
@@ -281,12 +373,14 @@ export class Geometry {
         this._device = device;
         this._positionBuffer = createBuffer(device, this.positions, GPUBufferUsage.VERTEX);
         this._normalBuffer = createBuffer(device, this.normals, GPUBufferUsage.VERTEX);
+        this._tangentBuffer = createBuffer(device, this.tangents, GPUBufferUsage.VERTEX);
         this._uvBuffer = createBuffer(device, this.uvs, GPUBufferUsage.VERTEX);
         this._uv1Buffer = createBuffer(device, this.uvs1, GPUBufferUsage.VERTEX);
         if (this.joints) this._jointsBuffer = createBuffer(device, this.joints, GPUBufferUsage.VERTEX);
         if (this.weights) this._weightsBuffer = createBuffer(device, this.weights, GPUBufferUsage.VERTEX);
         if (this.joints1) this._joints1Buffer = createBuffer(device, this.joints1, GPUBufferUsage.VERTEX);
         if (this.weights1) this._weights1Buffer = createBuffer(device, this.weights1, GPUBufferUsage.VERTEX);
+        if (this.joints && this.weights) this._skinInfluenceBuffer = createBuffer(device, packSkinInfluences(this.joints, this.weights, this.joints1, this.weights1), GPUBufferUsage.VERTEX);
         if (this.indices) this._indexBuffer = createBuffer(device, this.indices, GPUBufferUsage.INDEX);
     }
 
@@ -300,6 +394,12 @@ export class Geometry {
         this.assertAlive("access normalBuffer");
         if (!this._normalBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
         return this._normalBuffer;
+    }
+
+    get tangentBuffer(): GPUBuffer {
+        this.assertAlive("access tangentBuffer");
+        if (!this._tangentBuffer) throw new Error("Geometry not uploaded. Call upload(device) first.");
+        return this._tangentBuffer;
     }
 
     get uvBuffer(): GPUBuffer {
@@ -328,6 +428,10 @@ export class Geometry {
 
     get weights1Buffer(): GPUBuffer | null {
         return this._weights1Buffer;
+    }
+
+    get skinInfluenceBuffer(): GPUBuffer | null {
+        return this._skinInfluenceBuffer;
     }
 
     get indexBuffer(): GPUBuffer | null {
@@ -369,19 +473,23 @@ export class Geometry {
     private disposeResources(): void {
         this._positionBuffer?.destroy();
         this._normalBuffer?.destroy();
+        this._tangentBuffer?.destroy();
         this._uvBuffer?.destroy();
         this._uv1Buffer?.destroy();
         this._jointsBuffer?.destroy();
         this._weightsBuffer?.destroy();
         this._joints1Buffer?.destroy();
         this._weights1Buffer?.destroy();
+        this._skinInfluenceBuffer?.destroy();
         this._jointsBuffer = null;
         this._weightsBuffer = null;
         this._joints1Buffer = null;
         this._weights1Buffer = null;
+        this._skinInfluenceBuffer = null;
         this._indexBuffer?.destroy();
         this._positionBuffer = null;
         this._normalBuffer = null;
+        this._tangentBuffer = null;
         this._uvBuffer = null;
         this._uv1Buffer = null;
         this._indexBuffer = null;
@@ -1599,6 +1707,7 @@ export class Geometry {
     private static _makeDoubleSided(descriptor: GeometryDescriptor): GeometryDescriptor {
         const positions = descriptor.positions;
         const normals = descriptor.normals ?? new Float32Array((positions.length / 3) * 3);
+        const tangents = descriptor.tangents ?? null;
         const uvs = descriptor.uvs ?? new Float32Array((positions.length / 3) * 2);
         const uvs1 = descriptor.uvs1 ?? new Float32Array((positions.length / 3) * 2);
         const indices = descriptor.indices;
@@ -1621,6 +1730,18 @@ export class Geometry {
         const outUvs1 = new Float32Array(uvs1.length * 2);
         outUvs1.set(uvs1, 0);
         outUvs1.set(uvs1, uvs1.length);
+        let outTangents: Float32Array | undefined;
+        if (tangents) {
+            outTangents = new Float32Array(tangents.length * 2);
+            outTangents.set(tangents, 0);
+            for (let i = 0; i < baseVertexCount; i++) {
+                const o = i * 4;
+                outTangents[tangents.length + o + 0] = tangents[o + 0];
+                outTangents[tangents.length + o + 1] = tangents[o + 1];
+                outTangents[tangents.length + o + 2] = tangents[o + 2];
+                outTangents[tangents.length + o + 3] = -tangents[o + 3];
+            }
+        }
         const outIndices = new Uint32Array(indices.length * 2);
         outIndices.set(indices, 0);
         for (let i = 0; i < indices.length; i += 3) {
@@ -1636,6 +1757,7 @@ export class Geometry {
             ...descriptor,
             positions: outPositions,
             normals: outNormals,
+            tangents: outTangents,
             uvs: outUvs,
             uvs1: outUvs1,
             indices: outIndices
