@@ -35,9 +35,24 @@ type AnimationWeightChannel = {
     scratch: Float32Array;
 };
 
+export type AnimationPointerSampler = {
+    interpolation: "LINEAR" | "STEP" | "CUBICSPLINE";
+    input: Float32Array;
+    output: Float32Array;
+    valueSize: number;
+};
+
+export type AnimationPointerChannel = {
+    sampler: number;
+    scratch: Float32Array;
+    setValue: (value: Float32Array) => void;
+};
+
 type AnimationClipInternalDescriptor = AnimationClipDescriptor & {
     weightSamplers?: ReadonlyArray<AnimationWeightSampler>;
     weightChannels?: ReadonlyArray<AnimationWeightChannel>;
+    pointerSamplers?: ReadonlyArray<AnimationPointerSampler>;
+    pointerChannels?: ReadonlyArray<AnimationPointerChannel>;
 };
 
 const findKeyframe = (times: Float32Array, time: number): { i0: number; i1: number; alpha: number; dt: number } => {
@@ -70,7 +85,7 @@ const hermite = (t: number): [number, number, number, number] => {
     ];
 };
 
-const sampleWeightSampler = (sampler: AnimationWeightSampler, time: number, out: Float32Array): void => {
+const sampleValueSampler = (sampler: AnimationWeightSampler | AnimationPointerSampler, time: number, out: Float32Array): void => {
     out.fill(0);
     const valueSize = sampler.valueSize | 0;
     if (valueSize <= 0) return;
@@ -125,6 +140,8 @@ export class AnimationClip {
     private _ownedU32Allocs: ReadonlyArray<{ ptr: WasmPtr; len: number }> | null;
     private _weightSamplers: ReadonlyArray<AnimationWeightSampler> | null;
     private _weightChannels: ReadonlyArray<AnimationWeightChannel> | null;
+    private _pointerSamplers: ReadonlyArray<AnimationPointerSampler> | null;
+    private _pointerChannels: ReadonlyArray<AnimationPointerChannel> | null;
     private _disposed: boolean = false;
 
     constructor(desc: AnimationClipInternalDescriptor) {
@@ -139,6 +156,8 @@ export class AnimationClip {
         this._ownedU32Allocs = desc.ownedU32Allocs ?? null;
         this._weightSamplers = desc.weightSamplers ?? null;
         this._weightChannels = desc.weightChannels ?? null;
+        this._pointerSamplers = desc.pointerSamplers ?? null;
+        this._pointerChannels = desc.pointerChannels ?? null;
     }
 
     get duration(): number {
@@ -156,8 +175,16 @@ export class AnimationClip {
             for (const channel of this._weightChannels) {
                 const sampler = this._weightSamplers[channel.sampler];
                 if (!sampler || channel.meshes.length === 0) continue;
-                sampleWeightSampler(sampler, timeSeconds, channel.scratch);
+                sampleValueSampler(sampler, timeSeconds, channel.scratch);
                 for (const mesh of channel.meshes) setMeshMorphWeights(mesh, channel.scratch);
+            }
+        }
+        if (this._pointerSamplers && this._pointerChannels) {
+            for (const channel of this._pointerChannels) {
+                const sampler = this._pointerSamplers[channel.sampler];
+                if (!sampler) continue;
+                sampleValueSampler(sampler, timeSeconds, channel.scratch);
+                channel.setValue(channel.scratch);
             }
         }
     }
@@ -171,6 +198,8 @@ export class AnimationClip {
         this._ownedU32Allocs = null;
         this._weightSamplers = null;
         this._weightChannels = null;
+        this._pointerSamplers = null;
+        this._pointerChannels = null;
     }
 }
 

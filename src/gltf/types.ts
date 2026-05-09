@@ -211,7 +211,7 @@ export type GltfAnimationSampler = {
 
 export type GltfAnimationChannelTarget = {
     node?: GltfID;
-    path: "translation" | "rotation" | "scale" | "weights";
+    path: "translation" | "rotation" | "scale" | "weights" | "pointer";
     extras?: GltfExtras;
     extensions?: GltfExtensions;
 };

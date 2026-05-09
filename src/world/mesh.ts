@@ -138,6 +138,17 @@ export const setMeshMorphWeights = (mesh: Mesh, weights: ArrayLike<number>): voi
     runtime.dirty = true;
 };
 
+export const setMeshMorphWeight = (mesh: Mesh, index: number, weight: number): void => {
+    const runtime = meshMorphRuntimes.get(mesh);
+    if (!runtime) return;
+    const slot = index | 0;
+    if (slot < 0 || slot >= runtime.targetCount) return;
+    const next = Number(weight) || 0;
+    if (runtime.weights[slot] === next) return;
+    runtime.weights[slot] = next;
+    runtime.dirty = true;
+};
+
 export const getMeshMorphWeights = (mesh: Mesh): Float32Array | null => {
     const runtime = meshMorphRuntimes.get(mesh);
     if (!runtime) return null;

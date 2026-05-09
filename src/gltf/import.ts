@@ -8,10 +8,10 @@ import { wasm, mat4f, WasmPtr } from "../wasm";
 import { Geometry, computeGeometryTangents, computeGeometryVertexNormals, type GeometryMorphTargetDescriptor } from "../graphics/geometry";
 import { BlendMode, CullMode, Material, StandardMaterial, UnlitMaterial, type StandardMaterialExtensionsDescriptor, type TextureTransformDescriptor } from "../graphics/material";
 import { Texture2D } from "../graphics/texture";
-import { AnimationClip, Skin } from "../graphics/animation";
+import { AnimationClip, Skin, type AnimationPointerChannel, type AnimationPointerSampler } from "../graphics/animation";
 import { Camera, OrthographicCamera, PerspectiveCamera } from "../world/camera";
 import { Scene } from "../world/scene";
-import { Mesh, initializeMeshMorphRuntime } from "../world/mesh";
+import { Mesh, initializeMeshMorphRuntime, setMeshMorphWeight } from "../world/mesh";
 import { DirectionalLight, PointLight, SpotLight, bindLightToTransform, unbindLightTransform, type Light } from "../world/light";
 import { Transform } from "../core/transform";
 import type { GltfDocument, GltfAnimation, GltfAnimationChannel, GltfAnimationSampler, GltfAsset, GltfCamera, GltfExtensions, GltfExtras, GltfMaterial, GltfMesh, GltfNode, GltfPrimitive, GltfPrimitiveAttributes, GltfRoot, GltfScene, GltfSkin, KHRLightsPunctualLight, KHRLightsPunctualNode, KHRLightsPunctualRoot } from "./types";
@@ -35,7 +35,8 @@ export type ImportedAnimationSampler = {
 export type ImportedAnimationChannel = {
     sampler: number;
     targetNode: Transform | null;
-    path: "translation" | "rotation" | "scale" | "weights";
+    path: "translation" | "rotation" | "scale" | "weights" | "pointer";
+    targetPointer?: string;
 };
 
 export type ImportedAnimation = {
@@ -102,6 +103,11 @@ export type GltfImportVariantsMetadata = {
     clear(): void;
 };
 
+const getNodeVisibility = (source: GltfNode | undefined): boolean => {
+    const ext = source?.extensions?.["KHR_node_visibility"] as { visible?: unknown } | undefined;
+    return typeof ext?.visible === "boolean" ? ext.visible : true;
+};
+
 export class GltfImportedNode {
     readonly index: number;
     name?: string;
@@ -112,6 +118,9 @@ export class GltfImportedNode {
     camera: Camera | null;
     light: Light | null;
     private _visible: boolean;
+    private _effectiveVisible: boolean;
+    private _parentNode: GltfImportedNode | null;
+    private _childNodes: GltfImportedNode[];
 
     constructor(index: number, transform: Transform, source?: GltfNode) {
         this.index = index;
@@ -122,7 +131,10 @@ export class GltfImportedNode {
         this.meshes = [];
         this.camera = null;
         this.light = null;
-        this._visible = true;
+        this._visible = getNodeVisibility(source);
+        this._effectiveVisible = this._visible;
+        this._parentNode = null;
+        this._childNodes = [];
     }
 
     get visible(): boolean {
@@ -130,9 +142,30 @@ export class GltfImportedNode {
     }
 
     set visible(value: boolean) {
-        this._visible = value;
-        for (const mesh of this.meshes) mesh.visible = value;
-        if (this.light) this.light.enabled = value;
+        this._visible = !!value;
+        this.updateEffectiveVisibility();
+    }
+
+    get effectiveVisible(): boolean {
+        return this._effectiveVisible;
+    }
+
+    setParentNode(parent: GltfImportedNode): void {
+        this._parentNode = parent;
+        if (!parent._childNodes.includes(this)) parent._childNodes.push(this);
+        this.updateEffectiveVisibility();
+    }
+
+    applyVisibility(): void {
+        for (const mesh of this.meshes) mesh.visible = this._effectiveVisible;
+        if (this.light) this.light.enabled = this._effectiveVisible;
+    }
+
+    private updateEffectiveVisibility(): void {
+        const next = this._visible && (this._parentNode?.effectiveVisible ?? true);
+        this._effectiveVisible = next;
+        this.applyVisibility();
+        for (const child of this._childNodes) child.updateEffectiveVisibility();
     }
 }
 
@@ -373,8 +406,8 @@ const GLTF_EXTENSION_SUPPORT_STATES: Record<string, GltfImportExtensionSupportSt
     KHR_materials_anisotropy: "supported",
     KHR_materials_ior: "supported",
     KHR_materials_variants: "supported",
-    KHR_node_visibility: "deferred",
-    KHR_animation_pointer: "deferred",
+    KHR_node_visibility: "supported",
+    KHR_animation_pointer: "supported",
     KHR_xmp_json_ld: "supported",
     KHR_draco_mesh_compression: "unsupported",
     KHR_texture_transform: "supported"
@@ -1109,7 +1142,7 @@ const instantiateCameraNode = (json: GltfRoot, node: GltfNode, nodeT: Transform,
             warn(opts, `camera[${node.camera}] missing perspective block; skipping`);
             return null;
         }
-        out = new PerspectiveCamera({ fov: p.yfov, near: p.znear, far: p.zfar ?? 1000 });
+        out = new PerspectiveCamera({ fov: (p.yfov * 180) / Math.PI, aspect: p.aspectRatio, near: p.znear, far: p.zfar ?? 1000 });
     } else {
         const o = cam.orthographic;
         if (!o) {
@@ -1192,7 +1225,385 @@ const parseSkins = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedNode[]
     return out;
 };
 
-const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedNode[], opts: ImportGltfOptions): ImportedAnimation[] => {
+type AnimationPointerTarget =
+    | { kind: "trs"; canonical: string; targetIndex: number; pathCode: number }
+    | { kind: "weights"; canonical: string; meshes: Mesh[] }
+    | { kind: "pointer"; canonical: string; valueSize: number; requiresStep?: boolean; allowDuplicateTarget?: boolean; setValue: (value: Float32Array) => void };
+
+type AnimationPointerContext = {
+    json: GltfRoot;
+    nodes: GltfImportedNode[];
+    materialCache: Map<number, Material>;
+    cameraRuntimeMap: Map<number, Camera[]>;
+    lightRuntimeMap: Map<number, Light[]>;
+    opts: ImportGltfOptions;
+};
+
+const decodeJsonPointer = (pointer: string): string[] | null => {
+    if (pointer === "") return [];
+    if (!pointer.startsWith("/")) return null;
+    return pointer.slice(1).split("/").map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+};
+
+const parsePointerIndex = (tokens: readonly string[], index: number): number | null => {
+    const token = tokens[index];
+    if (token === undefined || !/^(0|[1-9]\d*)$/.test(token)) return null;
+    const value = Number(token);
+    return Number.isSafeInteger(value) ? value : null;
+};
+
+const getChannelPointer = (channel: GltfAnimationChannel): string | null => {
+    const ext = channel.target.extensions?.["KHR_animation_pointer"] as { pointer?: unknown } | undefined;
+    return typeof ext?.pointer === "string" ? ext.pointer : null;
+};
+
+const getTextureTransformValueSize = (property: string): number | null => {
+    if (property === "rotation") return 1;
+    if (property === "offset" || property === "scale") return 2;
+    return null;
+};
+
+const makeTextureTransformPatch = (current: TextureTransformDescriptor | null | undefined, property: string, value: Float32Array): TextureTransformDescriptor => {
+    const out: TextureTransformDescriptor = {
+        offset: [current?.offset?.[0] ?? 0, current?.offset?.[1] ?? 0],
+        rotation: current?.rotation ?? 0,
+        scale: [current?.scale?.[0] ?? 1, current?.scale?.[1] ?? 1],
+        texCoord: current?.texCoord
+    };
+    if (property === "offset") out.offset = [value[0] ?? 0, value[1] ?? 0];
+    else if (property === "rotation") out.rotation = value[0] ?? 0;
+    else if (property === "scale") out.scale = [value[0] ?? 1, value[1] ?? 1];
+    return out;
+};
+
+const patchStandardMaterialExtensions = (material: StandardMaterial, update: (extensions: StandardMaterialExtensionsDescriptor) => void): void => {
+    const extensions = material.extensions as unknown as StandardMaterialExtensionsDescriptor;
+    update(extensions);
+    material.setExtensions(extensions);
+};
+
+const makeStandardExtensionValueTarget = (material: Material, extensionName: keyof StandardMaterialExtensionsDescriptor, valueSize: number, update: (extension: any, value: Float32Array) => void, allowDuplicateTarget: boolean = false): AnimationPointerTarget | null => {
+    if (!(material instanceof StandardMaterial)) return null;
+    const extensions = material.extensions as any;
+    if (!extensions[extensionName]) return null;
+    return {
+        kind: "pointer",
+        canonical: "",
+        valueSize,
+        allowDuplicateTarget,
+        setValue: (value: Float32Array): void => {
+            patchStandardMaterialExtensions(material, (next) => {
+                const extension = (next as any)[extensionName];
+                if (extension) update(extension, value);
+            });
+        }
+    };
+};
+
+const makeStandardExtensionTextureTransformTarget = (material: Material, extensionName: keyof StandardMaterialExtensionsDescriptor, transformField: string, property: string): AnimationPointerTarget | null => {
+    const valueSize = getTextureTransformValueSize(property);
+    if (valueSize === null) return null;
+    return makeStandardExtensionValueTarget(material, extensionName, valueSize, (extension, value) => { extension[transformField] = makeTextureTransformPatch(extension[transformField], property, value); }, true);
+};
+
+const resolveMaterialTextureTransformPointer = (material: Material, slot: string, property: string): AnimationPointerTarget | null => {
+    const valueSize = getTextureTransformValueSize(property);
+    if (valueSize === null) return null;
+    const setTransform = (getCurrent: () => TextureTransformDescriptor, setCurrent: (next: TextureTransformDescriptor) => void): AnimationPointerTarget => ({
+        kind: "pointer",
+        canonical: "",
+        valueSize,
+        allowDuplicateTarget: true,
+        setValue: (value: Float32Array): void => setCurrent(makeTextureTransformPatch(getCurrent(), property, value))
+    });
+    if (slot === "baseColorTexture" && (material instanceof StandardMaterial || material instanceof UnlitMaterial)) return setTransform(() => material.baseColorTextureTransform, (next) => { material.baseColorTextureTransform = next; });
+    if (!(material instanceof StandardMaterial)) return null;
+    switch (slot) {
+        case "metallicRoughnessTexture":
+            return setTransform(() => material.metallicRoughnessTextureTransform, (next) => { material.metallicRoughnessTextureTransform = next; });
+        case "normalTexture":
+            return setTransform(() => material.normalTextureTransform, (next) => { material.normalTextureTransform = next; });
+        case "occlusionTexture":
+            return setTransform(() => material.occlusionTextureTransform, (next) => { material.occlusionTextureTransform = next; });
+        case "emissiveTexture":
+            return setTransform(() => material.emissiveTextureTransform, (next) => { material.emissiveTextureTransform = next; });
+        default:
+            return null;
+    }
+};
+
+const hasTextureTransformExtension = (info: any | undefined): boolean => {
+    return !!info?.extensions?.KHR_texture_transform;
+};
+
+const resolveMaterialPointer = (ctx: AnimationPointerContext, tokens: readonly string[], canonical: string): AnimationPointerTarget | null => {
+    const materialIndex = parsePointerIndex(tokens, 1);
+    const matJson = materialIndex !== null ? ctx.json.materials?.[materialIndex] : undefined;
+    const material = materialIndex !== null ? ctx.materialCache.get(materialIndex) : undefined;
+    if (materialIndex === null || !matJson || !material) {
+        warn(ctx.opts, `KHR_animation_pointer: material pointer '${canonical}' does not resolve to an imported runtime material.`);
+        return null;
+    }
+    const withCanonical = (target: AnimationPointerTarget | null): AnimationPointerTarget | null => {
+        if (target) target.canonical = canonical;
+        return target;
+    };
+    const pbr = matJson.pbrMetallicRoughness;
+    if (tokens[2] === "pbrMetallicRoughness") {
+        if (!pbr) return null;
+        if (tokens.length === 4 && tokens[3] === "baseColorFactor" && (material instanceof StandardMaterial || material instanceof UnlitMaterial)) {
+            return withCanonical({
+                kind: "pointer",
+                canonical,
+                valueSize: 4,
+                setValue: (value) => {
+                    material.color = [value[0] ?? 1, value[1] ?? 1, value[2] ?? 1];
+                    material.opacity = value[3] ?? 1;
+                }
+            });
+        }
+        if (tokens.length === 4 && tokens[3] === "metallicFactor" && material instanceof StandardMaterial) return withCanonical({ kind: "pointer", canonical, valueSize: 1, setValue: (value) => { material.metallic = value[0] ?? 0; } });
+        if (tokens.length === 4 && tokens[3] === "roughnessFactor" && material instanceof StandardMaterial) return withCanonical({ kind: "pointer", canonical, valueSize: 1, setValue: (value) => { material.roughness = value[0] ?? 1; } });
+        if (tokens.length === 7 && tokens[4] === "extensions" && tokens[5] === "KHR_texture_transform" && hasTextureTransformExtension((pbr as any)[tokens[3]!])) return withCanonical(resolveMaterialTextureTransformPointer(material, tokens[3]!, tokens[6]!));
+        return null;
+    }
+    if (tokens.length === 3 && tokens[2] === "alphaCutoff" && (material instanceof StandardMaterial || material instanceof UnlitMaterial)) return withCanonical({ kind: "pointer", canonical, valueSize: 1, setValue: (value) => { material.alphaCutoff = value[0] ?? 0; } });
+    if (tokens.length === 3 && tokens[2] === "emissiveFactor" && material instanceof StandardMaterial) return withCanonical({ kind: "pointer", canonical, valueSize: 3, setValue: (value) => { material.emissive = [value[0] ?? 0, value[1] ?? 0, value[2] ?? 0]; } });
+    if (tokens.length === 4 && tokens[2] === "normalTexture" && tokens[3] === "scale" && matJson.normalTexture && material instanceof StandardMaterial) return withCanonical({ kind: "pointer", canonical, valueSize: 1, setValue: (value) => { material.normalScale = value[0] ?? 1; } });
+    if (tokens.length === 4 && tokens[2] === "occlusionTexture" && tokens[3] === "strength" && matJson.occlusionTexture && material instanceof StandardMaterial) return withCanonical({ kind: "pointer", canonical, valueSize: 1, setValue: (value) => { material.occlusionStrength = value[0] ?? 1; } });
+    if (tokens.length === 6 && tokens[3] === "extensions" && tokens[4] === "KHR_texture_transform" && hasTextureTransformExtension((matJson as any)[tokens[2]!])) return withCanonical(resolveMaterialTextureTransformPointer(material, tokens[2]!, tokens[5]!));
+    if (tokens[2] !== "extensions" || tokens.length < 5) return null;
+    const extensions = matJson.extensions as any;
+    const extName = tokens[3]!;
+    const extJson = extensions?.[extName];
+    if (!extJson || !(material instanceof StandardMaterial)) return null;
+    const prop = tokens[4]!;
+    const standardExt = material.extensions as any;
+    if (tokens.length === 5) {
+        switch (extName) {
+            case "KHR_materials_anisotropy":
+                if (prop === "anisotropyStrength") return withCanonical(makeStandardExtensionValueTarget(material, "anisotropy", 1, (ext, value) => { ext.strength = value[0] ?? 0; }));
+                if (prop === "anisotropyRotation") return withCanonical(makeStandardExtensionValueTarget(material, "anisotropy", 1, (ext, value) => { ext.rotation = value[0] ?? 0; }));
+                break;
+            case "KHR_materials_clearcoat":
+                if (prop === "clearcoatFactor") return withCanonical(makeStandardExtensionValueTarget(material, "clearcoat", 1, (ext, value) => { ext.factor = value[0] ?? 0; }));
+                if (prop === "clearcoatRoughnessFactor") return withCanonical(makeStandardExtensionValueTarget(material, "clearcoat", 1, (ext, value) => { ext.roughness = value[0] ?? 0; }));
+                break;
+            case "KHR_materials_dispersion":
+                if (prop === "dispersion") return withCanonical(makeStandardExtensionValueTarget(material, "dispersion", 1, (ext, value) => { ext.dispersion = value[0] ?? 0; }));
+                break;
+            case "KHR_materials_emissive_strength":
+                if (prop === "emissiveStrength") return withCanonical(makeStandardExtensionValueTarget(material, "emissiveStrength", 1, (ext, value) => { ext.strength = value[0] ?? 1; }));
+                break;
+            case "KHR_materials_ior":
+                if (prop === "ior") return withCanonical(makeStandardExtensionValueTarget(material, "ior", 1, (ext, value) => { ext.ior = value[0] ?? 1.5; }));
+                break;
+            case "KHR_materials_iridescence":
+                if (prop === "iridescenceFactor") return withCanonical(makeStandardExtensionValueTarget(material, "iridescence", 1, (ext, value) => { ext.factor = value[0] ?? 0; }));
+                if (prop === "iridescenceIor") return withCanonical(makeStandardExtensionValueTarget(material, "iridescence", 1, (ext, value) => { ext.ior = value[0] ?? 1.3; }));
+                if (prop === "iridescenceThicknessMinimum") return withCanonical(makeStandardExtensionValueTarget(material, "iridescence", 1, (ext, value) => { ext.thicknessMinimum = value[0] ?? 100; }));
+                if (prop === "iridescenceThicknessMaximum") return withCanonical(makeStandardExtensionValueTarget(material, "iridescence", 1, (ext, value) => { ext.thicknessMaximum = value[0] ?? 400; }));
+                break;
+            case "KHR_materials_sheen":
+                if (prop === "sheenColorFactor") return withCanonical(makeStandardExtensionValueTarget(material, "sheen", 3, (ext, value) => { ext.color = [value[0] ?? 0, value[1] ?? 0, value[2] ?? 0]; }));
+                if (prop === "sheenRoughnessFactor") return withCanonical(makeStandardExtensionValueTarget(material, "sheen", 1, (ext, value) => { ext.roughness = value[0] ?? 0; }));
+                break;
+            case "KHR_materials_specular":
+                if (prop === "specularFactor") return withCanonical(makeStandardExtensionValueTarget(material, "specular", 1, (ext, value) => { ext.factor = value[0] ?? 1; }));
+                if (prop === "specularColorFactor") return withCanonical(makeStandardExtensionValueTarget(material, "specular", 3, (ext, value) => { ext.color = [value[0] ?? 1, value[1] ?? 1, value[2] ?? 1]; }));
+                break;
+            case "KHR_materials_transmission":
+                if (prop === "transmissionFactor") return withCanonical(makeStandardExtensionValueTarget(material, "transmission", 1, (ext, value) => { ext.factor = value[0] ?? 0; }));
+                break;
+            case "KHR_materials_volume":
+                if (prop === "thicknessFactor") return withCanonical(makeStandardExtensionValueTarget(material, "volume", 1, (ext, value) => { ext.thicknessFactor = value[0] ?? 0; }));
+                if (prop === "attenuationDistance") return withCanonical(makeStandardExtensionValueTarget(material, "volume", 1, (ext, value) => { ext.attenuationDistance = value[0] ?? Infinity; }));
+                if (prop === "attenuationColor") return withCanonical(makeStandardExtensionValueTarget(material, "volume", 3, (ext, value) => { ext.attenuationColor = [value[0] ?? 1, value[1] ?? 1, value[2] ?? 1]; }));
+                break;
+            case "KHR_materials_diffuse_transmission":
+                if (prop === "diffuseTransmissionFactor") return withCanonical(makeStandardExtensionValueTarget(material, "diffuseTransmission", 1, (ext, value) => { ext.factor = value[0] ?? 0; }));
+                if (prop === "diffuseTransmissionColorFactor") return withCanonical(makeStandardExtensionValueTarget(material, "diffuseTransmission", 3, (ext, value) => { ext.color = [value[0] ?? 1, value[1] ?? 1, value[2] ?? 1]; }));
+                break;
+        }
+    }
+    if (tokens.length === 6 && tokens[5] === "scale" && extName === "KHR_materials_clearcoat" && prop === "clearcoatNormalTexture" && extJson.clearcoatNormalTexture && standardExt.clearcoat) return withCanonical(makeStandardExtensionValueTarget(material, "clearcoat", 1, (ext, value) => { ext.normalScale = value[0] ?? 1; }));
+    if (tokens.length === 8 && tokens[5] === "extensions" && tokens[6] === "KHR_texture_transform" && hasTextureTransformExtension(extJson[prop])) {
+        const transformFields: Record<string, Record<string, string>> = {
+            KHR_materials_anisotropy: { anisotropyTexture: "textureTransform" },
+            KHR_materials_clearcoat: { clearcoatTexture: "textureTransform", clearcoatRoughnessTexture: "roughnessTextureTransform", clearcoatNormalTexture: "normalTextureTransform" },
+            KHR_materials_iridescence: { iridescenceTexture: "textureTransform", iridescenceThicknessTexture: "thicknessTextureTransform" },
+            KHR_materials_sheen: { sheenColorTexture: "colorTextureTransform", sheenRoughnessTexture: "roughnessTextureTransform" },
+            KHR_materials_specular: { specularTexture: "textureTransform", specularColorTexture: "colorTextureTransform" },
+            KHR_materials_transmission: { transmissionTexture: "textureTransform" },
+            KHR_materials_volume: { thicknessTexture: "thicknessTextureTransform" },
+            KHR_materials_diffuse_transmission: { diffuseTransmissionTexture: "textureTransform", diffuseTransmissionColorTexture: "colorTextureTransform" }
+        };
+        const extensionFields: Record<string, keyof StandardMaterialExtensionsDescriptor> = {
+            KHR_materials_anisotropy: "anisotropy",
+            KHR_materials_clearcoat: "clearcoat",
+            KHR_materials_iridescence: "iridescence",
+            KHR_materials_sheen: "sheen",
+            KHR_materials_specular: "specular",
+            KHR_materials_transmission: "transmission",
+            KHR_materials_volume: "volume",
+            KHR_materials_diffuse_transmission: "diffuseTransmission"
+        };
+        const transformField = transformFields[extName]?.[prop];
+        const extensionField = extensionFields[extName];
+        if (transformField && extensionField) return withCanonical(makeStandardExtensionTextureTransformTarget(material, extensionField, transformField, tokens[7]!));
+    }
+    return null;
+};
+
+const resolveNodePointer = (ctx: AnimationPointerContext, tokens: readonly string[], canonical: string): AnimationPointerTarget | null => {
+    const nodeIndex = parsePointerIndex(tokens, 1);
+    const importedNode = nodeIndex !== null ? ctx.nodes[nodeIndex] : undefined;
+    const nodeJson = nodeIndex !== null ? ctx.json.nodes?.[nodeIndex] : undefined;
+    if (nodeIndex === null || !importedNode || !nodeJson) {
+        warn(ctx.opts, `KHR_animation_pointer: node pointer '${canonical}' does not resolve to an imported node.`);
+        return null;
+    }
+    if (tokens.length === 3) {
+        const path = tokens[2];
+        if (path === "translation") return { kind: "trs", canonical, targetIndex: importedNode.transform.index >>> 0, pathCode: 0 };
+        if (path === "rotation") {
+            if (nodeJson.matrix) return null;
+            return { kind: "trs", canonical, targetIndex: importedNode.transform.index >>> 0, pathCode: 1 };
+        }
+        if (path === "scale") {
+            if (nodeJson.matrix) return null;
+            return { kind: "trs", canonical, targetIndex: importedNode.transform.index >>> 0, pathCode: 2 };
+        }
+        if (path === "weights") {
+            const morphMeshes = importedNode.meshes.filter((mesh) => mesh.geometry.morphTargets.length > 0);
+            return morphMeshes.length > 0 ? { kind: "weights", canonical, meshes: morphMeshes } : null;
+        }
+    }
+    if (tokens.length === 4 && tokens[2] === "weights") {
+        const weightIndex = parsePointerIndex(tokens, 3);
+        if (weightIndex === null) return null;
+        const morphMeshes = importedNode.meshes.filter((mesh) => mesh.geometry.morphTargets.length > weightIndex);
+        if (morphMeshes.length === 0) return null;
+        return {
+            kind: "pointer",
+            canonical,
+            valueSize: 1,
+            setValue: (value) => {
+                const weight = value[0] ?? 0;
+                for (const mesh of morphMeshes) setMeshMorphWeight(mesh, weightIndex, weight);
+            }
+        };
+    }
+    if (tokens.length === 5 && tokens[2] === "extensions" && tokens[3] === "KHR_node_visibility" && tokens[4] === "visible") {
+        if (!nodeJson.extensions?.["KHR_node_visibility"]) return null;
+        return {
+            kind: "pointer",
+            canonical,
+            valueSize: 1,
+            requiresStep: true,
+            setValue: (value) => { importedNode.visible = (value[0] ?? 0) !== 0; }
+        };
+    }
+    return null;
+};
+
+const resolveCameraPointer = (ctx: AnimationPointerContext, tokens: readonly string[], canonical: string): AnimationPointerTarget | null => {
+    const cameraIndex = parsePointerIndex(tokens, 1);
+    const cameraJson = cameraIndex !== null ? ctx.json.cameras?.[cameraIndex] : undefined;
+    const cameras = cameraIndex !== null ? ctx.cameraRuntimeMap.get(cameraIndex) ?? [] : [];
+    if (cameraIndex === null || !cameraJson || cameras.length === 0) return null;
+    if (tokens.length !== 4) return null;
+    const family = tokens[2];
+    const prop = tokens[3];
+    if (family === "perspective" && cameraJson.type === "perspective") {
+        const perspectiveCameras = cameras.filter((camera): camera is PerspectiveCamera => camera instanceof PerspectiveCamera);
+        if (perspectiveCameras.length === 0) return null;
+        if (prop === "aspectRatio" && cameraJson.perspective?.aspectRatio === undefined) return null;
+        if (prop === "zfar" && cameraJson.perspective?.zfar === undefined) return null;
+        const setters: Record<string, (camera: PerspectiveCamera, value: number) => void> = {
+            aspectRatio: (camera, value) => { camera.aspect = value; },
+            yfov: (camera, value) => { camera.fov = (value * 180) / Math.PI; },
+            znear: (camera, value) => { camera.near = value; },
+            zfar: (camera, value) => { camera.far = value; }
+        };
+        const setter = setters[prop];
+        if (!setter) return null;
+        return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const camera of perspectiveCameras) setter(camera, value[0] ?? 0); } };
+    }
+    if (family === "orthographic" && cameraJson.type === "orthographic") {
+        const orthographicCameras = cameras.filter((camera): camera is OrthographicCamera => camera instanceof OrthographicCamera);
+        if (orthographicCameras.length === 0) return null;
+        const setters: Record<string, (camera: OrthographicCamera, value: number) => void> = {
+            xmag: (camera, value) => { camera.left = -value; camera.right = value; },
+            ymag: (camera, value) => { camera.top = value; camera.bottom = -value; },
+            znear: (camera, value) => { camera.near = value; },
+            zfar: (camera, value) => { camera.far = value; }
+        };
+        const setter = setters[prop];
+        if (!setter) return null;
+        return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const camera of orthographicCameras) setter(camera, value[0] ?? 0); } };
+    }
+    return null;
+};
+
+const resolveLightPointer = (ctx: AnimationPointerContext, tokens: readonly string[], canonical: string): AnimationPointerTarget | null => {
+    if (tokens.length < 5 || tokens[0] !== "extensions" || tokens[1] !== "KHR_lights_punctual" || tokens[2] !== "lights") return null;
+    const lightIndex = parsePointerIndex(tokens, 3);
+    const root = getKHRLightsFromRoot(ctx.json);
+    const lightJson = lightIndex !== null ? root?.lights?.[lightIndex] : undefined;
+    const lights = lightIndex !== null ? ctx.lightRuntimeMap.get(lightIndex) ?? [] : [];
+    if (lightIndex === null || !lightJson || lights.length === 0) return null;
+    if (tokens.length === 5) {
+        const prop = tokens[4];
+        if (prop === "color") return { kind: "pointer", canonical, valueSize: 3, setValue: (value) => { for (const light of lights) light.color = [value[0] ?? 1, value[1] ?? 1, value[2] ?? 1]; } };
+        if (prop === "intensity") return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const light of lights) light.intensity = value[0] ?? 1; } };
+        if (prop === "range") {
+            const rangedLights = lights.filter((light): light is PointLight | SpotLight => light instanceof PointLight || light instanceof SpotLight);
+            if (rangedLights.length === 0) return null;
+            return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const light of rangedLights) light.range = value[0] ?? 0; } };
+        }
+    }
+    if (tokens.length === 6 && tokens[4] === "spot" && lightJson.type === "spot") {
+        const spotLights = lights.filter((light): light is SpotLight => light instanceof SpotLight);
+        if (tokens[5] === "innerConeAngle") return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const light of spotLights) light.innerCone = value[0] ?? 0; } };
+        if (tokens[5] === "outerConeAngle") return { kind: "pointer", canonical, valueSize: 1, setValue: (value) => { for (const light of spotLights) light.outerCone = value[0] ?? Math.PI / 4; } };
+    }
+    return null;
+};
+
+const canonicalizePointerTokens = (tokens: readonly string[]): string => {
+    return `/${tokens.map((token) => token.replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`;
+};
+
+const resolveAnimationPointer = (ctx: AnimationPointerContext, pointer: string): AnimationPointerTarget | null => {
+    const tokens = decodeJsonPointer(pointer);
+    if (!tokens) {
+        warn(ctx.opts, `KHR_animation_pointer: invalid JSON pointer '${pointer}'.`);
+        return null;
+    }
+    const canonical = canonicalizePointerTokens(tokens);
+    if (tokens[0] === "nodes") return resolveNodePointer(ctx, tokens, canonical);
+    if (tokens[0] === "materials") return resolveMaterialPointer(ctx, tokens, canonical);
+    if (tokens[0] === "cameras") return resolveCameraPointer(ctx, tokens, canonical);
+    if (tokens[0] === "extensions") return resolveLightPointer(ctx, tokens, canonical);
+    return null;
+};
+
+const trackAnimationTarget = (seen: Set<string>, canonical: string, animationName: string, opts: ImportGltfOptions, allowDuplicateTarget: boolean): void => {
+    const weightElementMatch = canonical.match(/^\/nodes\/(\d+)\/weights\/(\d+)$/);
+    const weightBase = weightElementMatch ? `/nodes/${weightElementMatch[1]}/weights` : canonical.match(/^\/nodes\/(\d+)\/weights$/)?.[0] ?? null;
+    for (const target of seen) {
+        if (target === canonical) {
+            if (!allowDuplicateTarget) throw new Error(`glTF animation '${animationName}' targets '${canonical}' more than once.`);
+            warn(opts, `KHR_animation_pointer: animation '${animationName}' targets '${canonical}' more than once; applying duplicate pointer channels in file order.`);
+            continue;
+        }
+        if (weightBase && (canonical === weightBase ? target.startsWith(`${weightBase}/`) : target === weightBase)) throw new Error(`glTF animation '${animationName}' targets overlapping morph weight paths '${target}' and '${canonical}'.`);
+    }
+    seen.add(canonical);
+};
+
+const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedNode[], materialCache: Map<number, Material>, cameraRuntimeMap: Map<number, Camera[]>, lightRuntimeMap: Map<number, Light[]>, opts: ImportGltfOptions): ImportedAnimation[] => {
     const anims = json.animations ?? [];
     const out: ImportedAnimation[] = [];
     const interpToCode = (interp: string): number => {
@@ -1214,8 +1625,11 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
     for (let i = 0; i < anims.length; i++) {
         const a: GltfAnimation = anims[i]!;
         const samplers: ImportedAnimationSampler[] = [];
-        const weightSamplers: Array<{ interpolation: "LINEAR" | "STEP" | "CUBICSPLINE"; input: Float32Array; output: Float32Array; valueSize: number }> = [];
+        const valueSamplers: Array<{ interpolation: "LINEAR" | "STEP" | "CUBICSPLINE"; input: Float32Array; output: Float32Array; valueSize: number }> = [];
+        const pointerChannels: AnimationPointerChannel[] = [];
         const channels: ImportedAnimationChannel[] = [];
+        const seenTargets = new Set<string>();
+        const animationName = a.name ?? `anim_${i}`;
         const samplerCount = a.samplers.length | 0;
         const samplerTablePtr = samplerCount > 0 ? (wasm.allocU32(samplerCount * 5) as WasmPtr) : (0 as WasmPtr);
         const samplerTable = samplerCount > 0 ? wasm.u32view(samplerTablePtr, samplerCount * 5) : null;
@@ -1237,7 +1651,7 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
             const interpolation = (s.interpolation ?? "LINEAR") as ImportedAnimationSampler["interpolation"];
             const denom = interpolation === "CUBICSPLINE" ? Math.max(1, (input.length | 0) * 3) : Math.max(1, input.length | 0);
             const valueSize = Math.max(0, Math.floor(output.length / denom));
-            weightSamplers.push({ interpolation, input, output, valueSize });
+            valueSamplers.push({ interpolation, input, output, valueSize });
             if (input.length > 0) {
                 startTime = Math.min(startTime, input[0]!);
                 endTime = Math.max(endTime, input[input.length - 1]!);
@@ -1259,6 +1673,7 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
         }
         const runtimeChannels: { sampler: number; targetIndex: number; pathCode: number }[] = [];
         const runtimeWeightChannels: { sampler: number; meshes: Mesh[] }[] = [];
+        const pointerContext: AnimationPointerContext = { json, nodes, materialCache, cameraRuntimeMap, lightRuntimeMap, opts };
         for (let ci = 0; ci < a.channels.length; ci++) {
             const c: GltfAnimationChannel = a.channels[ci]!;
             const nodeIndex = c.target.node;
@@ -1269,15 +1684,66 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
                 targetNode: t,
                 path: c.target.path,
             };
+            if (c.target.path === "pointer") chan.targetPointer = getChannelPointer(c) ?? undefined;
             channels.push(chan);
+            if (c.target.path === "pointer") {
+                if (nodeIndex !== undefined) {
+                    warn(opts, `KHR_animation_pointer: animation '${animationName}' channel ${ci} sets target.node; skipping pointer channel.`);
+                    continue;
+                }
+                const pointer = getChannelPointer(c);
+                if (!pointer) {
+                    warn(opts, `KHR_animation_pointer: animation '${animationName}' channel ${ci} is missing extensions.KHR_animation_pointer.pointer.`);
+                    continue;
+                }
+                const resolved = resolveAnimationPointer(pointerContext, pointer);
+                if (!resolved) {
+                    warn(opts, `KHR_animation_pointer: animation '${animationName}' channel ${ci} pointer '${pointer}' is not supported by this importer.`);
+                    continue;
+                }
+                trackAnimationTarget(seenTargets, resolved.canonical, animationName, opts, resolved.kind === "pointer" && resolved.allowDuplicateTarget === true);
+                if (resolved.kind === "trs") {
+                    runtimeChannels.push({
+                        sampler: chan.sampler | 0,
+                        targetIndex: resolved.targetIndex,
+                        pathCode: resolved.pathCode
+                    });
+                    continue;
+                }
+                if (resolved.kind === "weights") {
+                    runtimeWeightChannels.push({ sampler: chan.sampler | 0, meshes: resolved.meshes });
+                    continue;
+                }
+                const sampler = valueSamplers[chan.sampler];
+                if (!sampler) {
+                    warn(opts, `KHR_animation_pointer: animation '${animationName}' channel ${ci} references missing sampler ${chan.sampler}.`);
+                    continue;
+                }
+                if (resolved.requiresStep && sampler.interpolation !== "STEP") {
+                    warn(opts, `KHR_animation_pointer: boolean pointer '${resolved.canonical}' requires STEP interpolation; skipping channel.`);
+                    continue;
+                }
+                if ((sampler.valueSize | 0) !== (resolved.valueSize | 0)) {
+                    warn(opts, `KHR_animation_pointer: pointer '${resolved.canonical}' expects ${resolved.valueSize} output component(s), got ${sampler.valueSize}; skipping channel.`);
+                    continue;
+                }
+                pointerChannels.push({
+                    sampler: chan.sampler | 0,
+                    scratch: new Float32Array(resolved.valueSize),
+                    setValue: resolved.setValue
+                });
+                continue;
+            }
             const pathCode = pathToCode(chan.path);
             if (t && pathCode >= 0) {
+                if (nodeIndex !== undefined) trackAnimationTarget(seenTargets, `/nodes/${nodeIndex}/${chan.path}`, animationName, opts, false);
                 runtimeChannels.push({
                     sampler: chan.sampler | 0,
                     targetIndex: t.index >>> 0,
                     pathCode,
                 });
             } else if (chan.path === "weights" && nodeIndex !== undefined) {
+                trackAnimationTarget(seenTargets, `/nodes/${nodeIndex}/weights`, animationName, opts, false);
                 const meshes = (nodes[nodeIndex]?.meshes ?? []).filter((mesh) => mesh.geometry.morphTargets.length > 0);
                 if (meshes.length > 0) runtimeWeightChannels.push({ sampler: chan.sampler | 0, meshes });
             }
@@ -1285,7 +1751,8 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
         let clip: AnimationClip | null = null;
         const channelCount = runtimeChannels.length | 0;
         const weightChannelCount = runtimeWeightChannels.length | 0;
-        if (samplerCount > 0 && (channelCount > 0 || weightChannelCount > 0)) {
+        const pointerChannelCount = pointerChannels.length | 0;
+        if (samplerCount > 0 && (channelCount > 0 || weightChannelCount > 0 || pointerChannelCount > 0)) {
             let channelsPtr = 0 as WasmPtr;
             if (channelCount > 0) {
                 channelsPtr = wasm.allocU32(channelCount * 3) as WasmPtr;
@@ -1311,12 +1778,14 @@ const parseAnimations = (doc: GltfDocument, json: GltfRoot, nodes: GltfImportedN
                 endTime,
                 ownedF32Allocs,
                 ownedU32Allocs,
-                weightSamplers,
+                weightSamplers: valueSamplers,
                 weightChannels: runtimeWeightChannels.map((channel) => ({
                     sampler: channel.sampler,
                     meshes: channel.meshes,
-                    scratch: new Float32Array(weightSamplers[channel.sampler]?.valueSize ?? 0)
-                }))
+                    scratch: new Float32Array(valueSamplers[channel.sampler]?.valueSize ?? 0)
+                })),
+                pointerSamplers: valueSamplers as AnimationPointerSampler[],
+                pointerChannels
             });
         } else {
             for (const a of ownedF32Allocs) wasm.freeF32(a.ptr, a.len);
@@ -1357,6 +1826,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
             if (childNode) {
                 childNode.transform.setParent(parentNode.transform);
                 childNode.parentIndex = i;
+                childNode.setParentNode(parentNode);
             }
             else warn(opts, `Node ${i} child ${child} missing transform`);
         }
@@ -1371,6 +1841,8 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const meshes: Mesh[] = [];
     const cameras: Camera[] = [];
     const lights: Light[] = [];
+    const cameraRuntimeMap = new Map<number, Camera[]>();
+    const lightRuntimeMap = new Map<number, Light[]>();
     const khrLights = getKHRLightsFromRoot(json);
     const instantiateNodeRecursive = (nodeIndex: number, inheritedSkinIndex: number | undefined): void => {
         const node = gltfNodes[nodeIndex];
@@ -1380,7 +1852,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
         if (!importedNode || !nodeT) return;
         const createdMeshes = instantiateMeshNode(doc, json, nodeIndex, node, nodeT, materialCache, textureCache, geometryCache, variantsController, opts);
         importedNode.meshes = createdMeshes;
-        importedNode.visible = importedNode.visible;
+        importedNode.applyVisibility();
         const skinIndex = node.skin !== undefined ? (node.skin | 0) : inheritedSkinIndex;
         if (skinIndex !== undefined) {
             const skinDef = skins[skinIndex];
@@ -1393,7 +1865,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
             }
         }
         for (const m of createdMeshes) { meshes.push(m); if (addToScene) scene.add(m); }
-        if (opts.importCameras) { const cam = instantiateCameraNode(json, node, nodeT, opts); if (cam) { cameras.push(cam); importedNode.camera = cam; } }
+        if (opts.importCameras) { const cam = instantiateCameraNode(json, node, nodeT, opts); if (cam) { cameras.push(cam); importedNode.camera = cam; if (node.camera !== undefined) { const cameraIndex = node.camera | 0; const list = cameraRuntimeMap.get(cameraIndex) ?? []; list.push(cam); cameraRuntimeMap.set(cameraIndex, list); } } }
         if (opts.importLights && khrLights) {
             const nodeLight = getNodeKHRLight(node);
             if (nodeLight) {
@@ -1405,7 +1877,11 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
                         bindLightToTransform(created, nodeT);
                         lights.push(created);
                         importedNode.light = created;
-                        importedNode.visible = importedNode.visible;
+                        const lightIndex = nodeLight.light | 0;
+                        const list = lightRuntimeMap.get(lightIndex) ?? [];
+                        list.push(created);
+                        lightRuntimeMap.set(lightIndex, list);
+                        importedNode.applyVisibility();
                         if (addToScene) scene.addLight(created);
                     } else warn(opts, `Light '${node.name ?? `index ${nodeIndex}`}' has unsupported type '${lightDef.type}' and was skipped.`);
                 }
@@ -1416,7 +1892,7 @@ export const importGltf = (doc: GltfDocument, opts: ImportGltfOptions = {}): Glt
     const gltfScene: GltfScene | undefined = json.scenes?.[sceneIndex];
     const roots = gltfScene?.nodes ?? [];
     for (const root of roots) instantiateNodeRecursive(root, undefined);
-    const animations = parseAnimations(doc, json, nodes, opts);
+    const animations = parseAnimations(doc, json, nodes, materialCache, cameraRuntimeMap, lightRuntimeMap, opts);
     const clips = animations.map((a) => a.clip).filter((c): c is AnimationClip => c !== null);
     const metadata = buildImportMetadata(json, sceneIndex, extensions, xmp, variantsController.public);
     let destroyed = false;
